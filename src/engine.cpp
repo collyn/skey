@@ -725,34 +725,32 @@ void SKeyState::clearUI() {
 
 void SKeyState::showModeMenu() {
     modeMenuActive_ = true;
-    auto mode = engine_->config().outputMode.value();
+    auto mode = effectiveMode();
 
     // Build candidate list for dropdown menu
     auto candList = std::make_unique<CommonCandidateList>();
     candList->setPageSize(3);
     candList->setLayoutHint(CandidateLayoutHint::Vertical);
 
-    std::vector<std::string> labels = {"1", "2", "3"};
-    candList->setLabels(labels);
-
-    auto mark = [&](int idx) -> std::string {
-        SKeyOutputMode m = (idx == 1)   ? SKeyOutputMode::SurroundingText
-                           : (idx == 2) ? SKeyOutputMode::Preedit
-                                        : SKeyOutputMode::SurroundingTextSlow;
-        return (mode == m) ? "▶ " : "  ";
-    };
     candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, mark(1) + "Surrounding Text",
+        engine_, this, "1. Surrounding Text",
         SKeyOutputMode::SurroundingText));
     candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, mark(2) + "Preedit", SKeyOutputMode::Preedit));
+        engine_, this, "2. Preedit", SKeyOutputMode::Preedit));
     candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, mark(3) + "Surrounding Text (slow)",
+        engine_, this, "3. Surrounding Text (slow)",
         SKeyOutputMode::SurroundingTextSlow));
+
+    // Highlight the currently active mode via cursor index
+    int cursorIdx = (mode == SKeyOutputMode::SurroundingText)       ? 0
+                    : (mode == SKeyOutputMode::Preedit)             ? 1
+                    : (mode == SKeyOutputMode::SurroundingTextSlow) ? 2
+                                                                     : 0;
+    candList->setGlobalCursorIndex(cursorIdx);
 
     ic_->inputPanel().setCandidateList(std::move(candList));
     ic_->updateUserInterface(UserInterfaceComponent::InputPanel);
-    SKEY_DEBUG() << "Menu: mode switch dropdown shown";
+    SKEY_DEBUG() << "Menu: mode switch dropdown shown (cursor=" << cursorIdx << ")";
 }
 
 void SKeyState::dismissModeMenu() {
