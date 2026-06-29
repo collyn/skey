@@ -1,0 +1,9 @@
+[Addon]
+Name=SKey Vietnamese Input
+Name[vi]=SKey - Bộ gõ Tiếng Việt
+Category=InputMethod
+Version=0.1.0
+Library=skey
+Type=SharedLibrary
+OnDemand=True
+Configurable=True

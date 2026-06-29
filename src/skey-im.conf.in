@@ -1,0 +1,8 @@
+[InputMethod]
+Name=SKey Vietnamese
+Name[vi]=SKey Tiếng Việt
+Icon=fcitx-skey
+Label=Vi
+LangCode=vi
+Addon=skey
+Configurable=True
