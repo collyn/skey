@@ -505,7 +505,10 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
                         ic_->surroundingText().deleteText(-deleteLen, deleteLen);
                     }
                     committedLen_ = newLen;
-                    scheduleDeferredCommit(addedPart, stablePrefix);
+                    if (!addedPart.empty()) {
+                        SKEY_DEBUG() << "Surr: direct commit '" << addedPart << "'";
+                        ic_->commitString(addedPart);
+                    }
                 }
             } else {
                 SKEY_DEBUG() << "Surr: client has no surrounding text capability, fallback BS";
