@@ -428,7 +428,6 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
         [this](EventSourceTime *, uint64_t) {
             SKEY_DEBUG() << "Surr deferred: timer commit '" << deferredCommitText_ << "'";
             ic_->commitString(deferredCommitText_);
-            committedLen_ = static_cast<int>(utf8::length(deferredCommitText_));
             deferredCommitText_.clear();
             deferredPrefix_.clear();
             deferredCommitTimer_.reset();
