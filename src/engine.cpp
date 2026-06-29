@@ -4,6 +4,7 @@
 #include <fcitx-utils/log.h>
 #include <fcitx-utils/utf8.h>
 #include <fcitx/inputcontext.h>
+#include <fcitx/candidatelist.h>
 #include <fcitx/inputpanel.h>
 
 #include <fstream>
@@ -56,6 +57,31 @@ FCITX_DEFINE_LOG_CATEGORY(skey_log, "skey");
 #define SKEY_INFO() SKeyLogger()
 
 FCITX_ADDON_FACTORY(SKeyEngineFactory);
+
+// Candidate word for mode switch dropdown menu
+class ModeCandidateWord : public CandidateWord {
+public:
+    ModeCandidateWord(SKeyEngine *engine, SKeyState *state,
+                      const std::string &text, SKeyOutputMode mode)
+        : CandidateWord(Text(text)), engine_(engine), state_(state),
+          mode_(mode) {}
+
+    void select(InputContext *) const override {
+        engine_->setOutputMode(mode_);
+        SKEY_INFO() << "Mode switched to "
+                    << (mode_ == SKeyOutputMode::SurroundingText
+                            ? "SurroundingText"
+                            : (mode_ == SKeyOutputMode::Preedit
+                                   ? "Preedit"
+                                   : "SurroundingTextSlow"));
+        state_->dismissModeMenu();
+    }
+
+private:
+    SKeyEngine *engine_;
+    SKeyState *state_;
+    SKeyOutputMode mode_;
+};
 
 // ---------------------------------------------------------------------------
 // SKeyEngine
@@ -117,12 +143,43 @@ void SKeyEngine::setConfig(const RawConfig &config) {
     reloadConfig();
 }
 
+void SKeyEngine::setOutputMode(SKeyOutputMode mode) {
+    config_.outputMode.setValue(mode);
+    safeSaveAsIni(config_, "conf/skey.conf");
+}
+
+void SKeyEngine::saveAppMode(const std::string &app, SKeyOutputMode mode) {
+    RawConfig cfg;
+    readAsIni(cfg, "conf/skey-app-modes.conf");
+    const char *val = (mode == SKeyOutputMode::SurroundingText)   ? "SurroundingText"
+                      : (mode == SKeyOutputMode::Preedit)         ? "Preedit"
+                                                               : "SurroundingTextSlow";
+    cfg.setValueByPath(app, val);
+    safeSaveAsIni(cfg, "conf/skey-app-modes.conf");
+    SKEY_INFO() << "Saved app mode: " << app << " -> " << val;
+}
+
+SKeyOutputMode SKeyEngine::loadAppMode(const std::string &app) const {
+    RawConfig cfg;
+    readAsIni(cfg, "conf/skey-app-modes.conf");
+    auto *val = cfg.valueByPath(app);
+    if (val) {
+        if (*val == "Preedit") return SKeyOutputMode::Preedit;
+        if (*val == "SurroundingTextSlow") return SKeyOutputMode::SurroundingTextSlow;
+        if (*val == "SurroundingText") return SKeyOutputMode::SurroundingText;
+    }
+    // Not found — return the configured default
+    return config_.outputMode.value();
+}
+
 void SKeyEngine::reloadConfig() {
     readAsIni(config_, "conf/skey.conf");
-    SKEY_INFO() << "Config: outputMode="
-                << (config_.outputMode.value() == SKeyOutputMode::SurroundingText
-                        ? "SurroundingText"
-                        : "Preedit");
+    const char *modeStr = "Preedit";
+    if (config_.outputMode.value() == SKeyOutputMode::SurroundingText)
+        modeStr = "SurroundingText";
+    else if (config_.outputMode.value() == SKeyOutputMode::SurroundingTextSlow)
+        modeStr = "SurroundingTextSlow";
+    SKEY_INFO() << "Config: outputMode=" << modeStr;
 }
 
 std::string SKeyEngine::subMode(const InputMethodEntry &entry,
@@ -151,9 +208,20 @@ SKeyState::SKeyState(SKeyEngine *engine, InputContext *ic)
     viet_.setFreeMarking(*cfg.freeMarking);
 }
 
+SKeyOutputMode SKeyState::effectiveMode() const {
+    if (hasAppModeOverride_)
+        return appModeOverride_;
+    return engine_->config().outputMode.value();
+}
+
 bool SKeyState::useSurroundingText() const {
-    return engine_->config().outputMode.value() ==
-           SKeyOutputMode::SurroundingText;
+    auto mode = effectiveMode();
+    return mode == SKeyOutputMode::SurroundingText ||
+           mode == SKeyOutputMode::SurroundingTextSlow;
+}
+
+bool SKeyState::useSlowMode() const {
+    return effectiveMode() == SKeyOutputMode::SurroundingTextSlow;
 }
 
 bool SKeyState::canEditWithSurroundingText() const {
@@ -172,22 +240,41 @@ bool SKeyState::useHiddenComposition() const {
 void SKeyState::activate() {
     viet_.reset();
     committedLen_ = 0;
+    modeMenuActive_ = false;
     deferredCommitTimer_.reset();
     deferredCommitText_.clear();
     deferredPrefix_.clear();
+    // Load per-app mode preference
+    auto savedMode = engine_->loadAppMode(ic_->program());
+    auto defaultMode = engine_->config().outputMode.value();
+    if (savedMode != defaultMode) {
+        appModeOverride_ = savedMode;
+        hasAppModeOverride_ = true;
+    } else {
+        hasAppModeOverride_ = false;
+    }
+
+    auto caps = ic_->capabilityFlags();
+    auto mode = effectiveMode();
     SKEY_DEBUG() << "Activated: mode="
-                 << (useSurroundingText()
+                 << (mode == SKeyOutputMode::SurroundingText
                          ? "surrounding"
-                         : "preedit")
+                         : (mode == SKeyOutputMode::Preedit
+                                ? "preedit"
+                                : "surrounding-slow"))
                  << " configured="
-                 << (engine_->config().outputMode.value() ==
-                             SKeyOutputMode::SurroundingText
+                 << (defaultMode == SKeyOutputMode::SurroundingText
                          ? "surrounding"
-                         : "preedit")
+                         : (defaultMode == SKeyOutputMode::Preedit
+                                ? "preedit"
+                                : "surrounding-slow"))
                  << " surroundingCap="
-                 << ic_->capabilityFlags().test(CapabilityFlag::SurroundingText)
+                 << caps.test(CapabilityFlag::SurroundingText)
+                 << " password=" << caps.test(CapabilityFlag::Password)
+                 << " preeditCap=" << caps.test(CapabilityFlag::Preedit)
                  << " nativeSurrounding=" << useNativeSurroundingApi()
                  << " frontend=" << ic_->frontendName()
+                 << " display=" << ic_->display()
                  << " app=" << ic_->program();
 }
 
@@ -218,6 +305,56 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     }
 
     auto key = keyEvent.key();
+
+    // ── Mode switch menu (activated by ` key) ──
+    if (modeMenuActive_) {
+        if (key.check(FcitxKey_Escape)) {
+            SKEY_DEBUG() << "Menu: cancelled";
+            dismissModeMenu();
+            keyEvent.filterAndAccept();
+            return;
+        }
+        auto sym = key.sym();
+        int choice = 0;
+        if (sym == FcitxKey_1 || sym == FcitxKey_KP_1) choice = 1;
+        else if (sym == FcitxKey_2 || sym == FcitxKey_KP_2) choice = 2;
+        else if (sym == FcitxKey_3 || sym == FcitxKey_KP_3) choice = 3;
+
+        if (choice > 0) {
+            SKeyOutputMode newMode;
+            switch (choice) {
+            case 1: newMode = SKeyOutputMode::SurroundingText; break;
+            case 2: newMode = SKeyOutputMode::Preedit; break;
+            case 3: newMode = SKeyOutputMode::SurroundingTextSlow; break;
+            default: dismissModeMenu(); keyEvent.filterAndAccept(); return;
+            }
+            engine_->setOutputMode(newMode);
+            SKEY_INFO() << "Mode switched to "
+                        << (newMode == SKeyOutputMode::SurroundingText
+                                ? "SurroundingText"
+                                : (newMode == SKeyOutputMode::Preedit
+                                       ? "Preedit"
+                                       : "SurroundingTextSlow"));
+            // Save per-app mode preference
+            engine_->saveAppMode(ic_->program(), newMode);
+            dismissModeMenu();
+            keyEvent.filterAndAccept();
+            return;
+        }
+        // Any other key: dismiss menu, pass key through to app
+        SKEY_DEBUG() << "Menu: dismissed by key";
+        dismissModeMenu();
+        // Not filtered — key passes through
+        return;
+    }
+
+    // ── Backtick (`) shows mode switch menu when not composing ──
+    if (key.check(FcitxKey_grave) && viet_.getRawInput().empty() &&
+        !hasDeferredCommitPending()) {
+        showModeMenu();
+        keyEvent.filterAndAccept();
+        return;
+    }
 
     auto sym = key.sym();
     bool pendingCanMerge = false;
@@ -495,20 +632,19 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             // so we can commit immediately. D-Bus apps need a deferred commit
             // because the key goes through multiple async IPC hops.
             auto deleteViaBackspace = [&]() {
-                bool isXim = ic_->frontendName() == "xim";
+                bool needDelay = useSlowMode();
                 SKEY_DEBUG() << "Surr: BS x" << deleteLen
-                             << " frontend=" << ic_->frontendName()
-                             << (isXim ? " (XIM, sync)" : " (dbus, deferred)");
+                             << (needDelay ? " (slow mode, deferred)" : " (direct)");
                 for (int i = 0; i < deleteLen; ++i) {
                     ic_->forwardKey(Key(FcitxKey_BackSpace));
                 }
                 committedLen_ = newLen;
                 if (!addedPart.empty()) {
-                    if (isXim) {
+                    if (needDelay) {
+                        scheduleDeferredCommit(addedPart, stablePrefix);
+                    } else {
                         SKEY_DEBUG() << "Surr: direct commit after BS '" << addedPart << "'";
                         ic_->commitString(addedPart);
-                    } else {
-                        scheduleDeferredCommit(addedPart, stablePrefix);
                     }
                 }
             };
@@ -584,6 +720,45 @@ void SKeyState::clearUI() {
     ic_->inputPanel().reset();
     ic_->updatePreedit();
     ic_->updateUserInterface(UserInterfaceComponent::InputPanel);
+    modeMenuActive_ = false;
+}
+
+void SKeyState::showModeMenu() {
+    modeMenuActive_ = true;
+    auto mode = engine_->config().outputMode.value();
+
+    // Build candidate list for dropdown menu
+    auto candList = std::make_unique<CommonCandidateList>();
+    candList->setPageSize(3);
+    candList->setLayoutHint(CandidateLayoutHint::Vertical);
+
+    std::vector<std::string> labels = {"1", "2", "3"};
+    candList->setLabels(labels);
+
+    auto mark = [&](int idx) -> std::string {
+        SKeyOutputMode m = (idx == 1)   ? SKeyOutputMode::SurroundingText
+                           : (idx == 2) ? SKeyOutputMode::Preedit
+                                        : SKeyOutputMode::SurroundingTextSlow;
+        return (mode == m) ? "▶ " : "  ";
+    };
+    candList->append(std::make_unique<ModeCandidateWord>(
+        engine_, this, mark(1) + "Surrounding Text",
+        SKeyOutputMode::SurroundingText));
+    candList->append(std::make_unique<ModeCandidateWord>(
+        engine_, this, mark(2) + "Preedit", SKeyOutputMode::Preedit));
+    candList->append(std::make_unique<ModeCandidateWord>(
+        engine_, this, mark(3) + "Surrounding Text (slow)",
+        SKeyOutputMode::SurroundingTextSlow));
+
+    ic_->inputPanel().setCandidateList(std::move(candList));
+    ic_->updateUserInterface(UserInterfaceComponent::InputPanel);
+    SKEY_DEBUG() << "Menu: mode switch dropdown shown";
+}
+
+void SKeyState::dismissModeMenu() {
+    modeMenuActive_ = false;
+    ic_->inputPanel().setCandidateList(nullptr);
+    clearUI();
 }
 
 } // namespace fcitx

@@ -27,11 +27,17 @@ public:
     void deactivate();
     void reset();
 
+    // Mode switch menu (called from ModeCandidateWord)
+    void dismissModeMenu();
+
 private:
+    friend class ModeCandidateWord;
+    SKeyOutputMode effectiveMode() const;
     bool useSurroundingText() const;
     bool canEditWithSurroundingText() const;
     bool useNativeSurroundingApi() const;
     bool useHiddenComposition() const;
+    bool useSlowMode() const;
     void commitBuffer();
     void surroundingCommit(const std::string &oldComposed,
                            const std::string &newComposed);
@@ -42,11 +48,15 @@ private:
     void flushDeferredCommit();
     void updatePreedit();
     void clearUI();
+    void showModeMenu();
 
     SKeyEngine *engine_;
     InputContext *ic_;
     skey::VietnameseEngine viet_;
     int committedLen_ = 0;
+    bool modeMenuActive_ = false;
+    bool hasAppModeOverride_ = false;
+    SKeyOutputMode appModeOverride_ = SKeyOutputMode::SurroundingText;
     std::unique_ptr<EventSourceTime> deferredCommitTimer_;
     std::string deferredCommitText_;
     std::string deferredPrefix_;
@@ -77,6 +87,9 @@ public:
 
     const SKeyConfig &config() const { return config_; }
     Instance *instance() { return instance_; }
+    void setOutputMode(SKeyOutputMode mode);
+    void saveAppMode(const std::string &app, SKeyOutputMode mode);
+    SKeyOutputMode loadAppMode(const std::string &app) const;
 
 private:
     Instance *instance_;
