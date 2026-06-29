@@ -134,18 +134,41 @@ bool SKeyState::useSurroundingText() const {
            SKeyOutputMode::SurroundingText;
 }
 
+bool SKeyState::canEditWithSurroundingText() const {
+    return useSurroundingText() &&
+           ic_->capabilityFlags().test(CapabilityFlag::SurroundingText);
+}
+
+bool SKeyState::useNativeSurroundingApi() const {
+    return canEditWithSurroundingText();
+}
+
+bool SKeyState::useHiddenComposition() const {
+    return false;
+}
+
 void SKeyState::activate() {
     viet_.reset();
     committedLen_ = 0;
-    fallbackTimer_.reset();
-    fallbackText_.clear();
+    deferredCommitTimer_.reset();
+    deferredCommitText_.clear();
     SKEY_DEBUG() << "Activated: mode="
-                 << (useSurroundingText() ? "surrounding" : "preedit")
+                 << (useSurroundingText()
+                         ? "surrounding"
+                         : "preedit")
+                 << " configured="
+                 << (engine_->config().outputMode.value() ==
+                             SKeyOutputMode::SurroundingText
+                         ? "surrounding"
+                         : "preedit")
+                 << " surroundingCap="
+                 << ic_->capabilityFlags().test(CapabilityFlag::SurroundingText)
+                 << " nativeSurrounding=" << useNativeSurroundingApi()
                  << " app=" << ic_->program();
 }
 
 void SKeyState::deactivate() {
-    flushFallbackCommit();
+    flushDeferredCommit();
     if (!viet_.getComposed().empty() && !useSurroundingText()) {
         commitBuffer();
     }
@@ -155,10 +178,13 @@ void SKeyState::deactivate() {
 }
 
 void SKeyState::reset() {
-    fallbackTimer_.reset();
-    fallbackText_.clear();
+    if (hasDeferredCommitPending()) {
+        SKEY_DEBUG() << "Reset: keeping deferred commit";
+    }
     viet_.reset();
-    committedLen_ = 0;
+    if (!hasDeferredCommitPending()) {
+        committedLen_ = 0;
+    }
     clearUI();
 }
 
@@ -173,7 +199,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     if (key.states() &
         ~KeyStates({KeyState::Shift, KeyState::CapsLock})) {
         if (!viet_.getRawInput().empty()) {
-            if (!useSurroundingText()) {
+            if (useSurroundingText()) {
+                flushDeferredCommit();
+            } else {
                 commitBuffer();
                 clearUI();
             }
@@ -213,7 +241,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     // Handle Enter
     if (key.check(FcitxKey_Return) || key.check(FcitxKey_KP_Enter)) {
         if (!viet_.getRawInput().empty()) {
-            if (!useSurroundingText()) {
+            if (useSurroundingText()) {
+                flushDeferredCommit();
+            } else {
                 commitBuffer();
                 clearUI();
             }
@@ -226,7 +256,11 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     // Handle Space
     if (key.check(FcitxKey_space)) {
         if (!viet_.getRawInput().empty()) {
-            if (!useSurroundingText()) {
+            if (useSurroundingText()) {
+                flushDeferredCommit();
+                ic_->commitString(" ");
+                keyEvent.filterAndAccept();
+            } else {
                 commitBuffer();
                 clearUI();
             }
@@ -239,7 +273,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     // Handle Tab
     if (key.check(FcitxKey_Tab)) {
         if (!viet_.getRawInput().empty()) {
-            if (!useSurroundingText()) {
+            if (useSurroundingText()) {
+                flushDeferredCommit();
+            } else {
                 commitBuffer();
                 clearUI();
             }
@@ -296,7 +332,11 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
         // Non-letter: finalize
         if (!viet_.getRawInput().empty()) {
-            if (!useSurroundingText()) {
+            if (useSurroundingText()) {
+                flushDeferredCommit();
+                ic_->commitString(std::string(1, ch));
+                keyEvent.filterAndAccept();
+            } else {
                 commitBuffer();
                 clearUI();
             }
@@ -308,7 +348,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
     // Any other key: finalize
     if (!viet_.getRawInput().empty()) {
-        if (!useSurroundingText()) {
+        if (useSurroundingText()) {
+            flushDeferredCommit();
+        } else {
             commitBuffer();
             clearUI();
         }
@@ -326,35 +368,39 @@ void SKeyState::commitBuffer() {
     viet_.reset();
 }
 
-bool SKeyState::hasFallbackCommitPending() const {
-    return fallbackTimer_ && !fallbackText_.empty();
+bool SKeyState::hasDeferredCommitPending() const {
+    return deferredCommitTimer_ && !deferredCommitText_.empty();
 }
 
-void SKeyState::scheduleFallbackCommit(const std::string &text) {
-    fallbackTimer_.reset();
-    fallbackText_ = text;
-    SKEY_DEBUG() << "Surr fallback: schedule commit '" << text << "' in 20ms";
-    fallbackTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+void SKeyState::scheduleDeferredCommit(const std::string &text) {
+    deferredCommitTimer_.reset();
+    deferredCommitText_ = text;
+    uint64_t delayUsec = ic_->program().find("systemsettings") != std::string::npos
+                             ? 250000
+                             : 80000;
+    SKEY_DEBUG() << "Surr deferred: schedule commit '" << text << "' in "
+                 << (delayUsec / 1000) << "ms";
+    deferredCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC,
-        now(CLOCK_MONOTONIC) + 20000,
+        now(CLOCK_MONOTONIC) + delayUsec,
         0,
         [this](EventSourceTime *, uint64_t) {
-            SKEY_DEBUG() << "Surr fallback: timer commit '" << fallbackText_ << "'";
-            ic_->commitString(fallbackText_);
-            committedLen_ = static_cast<int>(utf8::length(fallbackText_));
-            fallbackText_.clear();
-            fallbackTimer_.reset();
+            SKEY_DEBUG() << "Surr deferred: timer commit '" << deferredCommitText_ << "'";
+            ic_->commitString(deferredCommitText_);
+            committedLen_ = static_cast<int>(utf8::length(deferredCommitText_));
+            deferredCommitText_.clear();
+            deferredCommitTimer_.reset();
             return true;
         });
 }
 
-void SKeyState::flushFallbackCommit() {
-    if (hasFallbackCommitPending()) {
-        SKEY_DEBUG() << "Surr fallback: flush commit '" << fallbackText_ << "'";
-        ic_->commitString(fallbackText_);
+void SKeyState::flushDeferredCommit() {
+    if (hasDeferredCommitPending()) {
+        SKEY_DEBUG() << "Surr deferred: flush commit '" << deferredCommitText_ << "'";
+        ic_->commitString(deferredCommitText_);
     }
-    fallbackText_.clear();
-    fallbackTimer_.reset();
+    deferredCommitText_.clear();
+    deferredCommitTimer_.reset();
 }
 
 void SKeyState::surroundingCommit(const std::string &oldComposed,
@@ -363,11 +409,11 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
 
     int newLen = static_cast<int>(utf8::length(newComposed));
 
-    if (hasFallbackCommitPending()) {
-        SKEY_DEBUG() << "Surr fallback: update pending '" << fallbackText_
+    if (hasDeferredCommitPending()) {
+        SKEY_DEBUG() << "Surr deferred: update pending '" << deferredCommitText_
                      << "' -> '" << newComposed << "'";
-        fallbackText_ = newComposed;
         committedLen_ = newLen;
+        scheduleDeferredCommit(newComposed);
         return;
     }
 
@@ -389,21 +435,32 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
                      << newComposed << "' (delete surrounding x"
                      << committedLen_ << ")";
         if (committedLen_ > 0) {
-            if (ic_->capabilityFlags().test(CapabilityFlag::SurroundingText)) {
-                ic_->deleteSurroundingText(-committedLen_, committedLen_);
-                if (ic_->surroundingText().isValid()) {
-                    ic_->surroundingText().deleteText(-committedLen_,
-                                                     committedLen_);
+            if (useNativeSurroundingApi()) {
+                const auto &surrounding = ic_->surroundingText();
+                if (!surrounding.isValid() ||
+                    surrounding.cursor() < static_cast<unsigned int>(committedLen_)) {
+                    SKEY_DEBUG() << "Surr: native surrounding not ready, fallback BS";
+                    for (int i = 0; i < committedLen_; ++i) {
+                        ic_->forwardKey(Key(FcitxKey_BackSpace));
+                    }
+                    committedLen_ = newLen;
+                    scheduleDeferredCommit(newComposed);
+                } else {
+                    ic_->deleteSurroundingText(-committedLen_, committedLen_);
+                    if (surrounding.isValid()) {
+                        ic_->surroundingText().deleteText(-committedLen_,
+                                                         committedLen_);
+                    }
+                    committedLen_ = newLen;
+                    scheduleDeferredCommit(newComposed);
                 }
-                ic_->commitString(newComposed);
-                committedLen_ = newLen;
             } else {
                 SKEY_DEBUG() << "Surr: client has no surrounding text capability, fallback BS";
                 for (int i = 0; i < committedLen_; ++i) {
                     ic_->forwardKey(Key(FcitxKey_BackSpace));
                 }
                 committedLen_ = newLen;
-                scheduleFallbackCommit(newComposed);
+                scheduleDeferredCommit(newComposed);
             }
         } else {
             ic_->commitString(newComposed);
@@ -418,7 +475,7 @@ void SKeyState::surroundingBackspace() {
     SKEY_DEBUG() << "SurrBS: delete surrounding 1, len=" << committedLen_
                  << " -> " << (committedLen_ - 1);
 
-    if (ic_->capabilityFlags().test(CapabilityFlag::SurroundingText)) {
+    if (useNativeSurroundingApi()) {
         ic_->deleteSurroundingText(-1, 1);
         if (ic_->surroundingText().isValid()) {
             ic_->surroundingText().deleteText(-1, 1);

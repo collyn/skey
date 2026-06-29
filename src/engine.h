@@ -29,13 +29,16 @@ public:
 
 private:
     bool useSurroundingText() const;
+    bool canEditWithSurroundingText() const;
+    bool useNativeSurroundingApi() const;
+    bool useHiddenComposition() const;
     void commitBuffer();
     void surroundingCommit(const std::string &oldComposed,
                            const std::string &newComposed);
     void surroundingBackspace();
-    bool hasFallbackCommitPending() const;
-    void scheduleFallbackCommit(const std::string &text);
-    void flushFallbackCommit();
+    bool hasDeferredCommitPending() const;
+    void scheduleDeferredCommit(const std::string &text);
+    void flushDeferredCommit();
     void updatePreedit();
     void clearUI();
 
@@ -43,8 +46,8 @@ private:
     InputContext *ic_;
     skey::VietnameseEngine viet_;
     int committedLen_ = 0;
-    std::unique_ptr<EventSourceTime> fallbackTimer_;
-    std::string fallbackText_;
+    std::unique_ptr<EventSourceTime> deferredCommitTimer_;
+    std::string deferredCommitText_;
 };
 
 /// Main fcitx5 engine class.
