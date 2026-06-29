@@ -187,6 +187,7 @@ void SKeyState::activate() {
                  << " surroundingCap="
                  << ic_->capabilityFlags().test(CapabilityFlag::SurroundingText)
                  << " nativeSurrounding=" << useNativeSurroundingApi()
+                 << " frontend=" << ic_->frontendName()
                  << " app=" << ic_->program();
 }
 
@@ -489,16 +490,35 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
                      << newComposed << "' (delete suffix x"
                      << deleteLen << ")";
         if (deleteLen > 0) {
+            // Helper: delete via BackSpace forwarding, then commit.
+            // XIM apps process forwarded keys synchronously (same X11 connection),
+            // so we can commit immediately. D-Bus apps need a deferred commit
+            // because the key goes through multiple async IPC hops.
+            auto deleteViaBackspace = [&]() {
+                bool isXim = ic_->frontendName() == "xim";
+                SKEY_DEBUG() << "Surr: BS x" << deleteLen
+                             << " frontend=" << ic_->frontendName()
+                             << (isXim ? " (XIM, sync)" : " (dbus, deferred)");
+                for (int i = 0; i < deleteLen; ++i) {
+                    ic_->forwardKey(Key(FcitxKey_BackSpace));
+                }
+                committedLen_ = newLen;
+                if (!addedPart.empty()) {
+                    if (isXim) {
+                        SKEY_DEBUG() << "Surr: direct commit after BS '" << addedPart << "'";
+                        ic_->commitString(addedPart);
+                    } else {
+                        scheduleDeferredCommit(addedPart, stablePrefix);
+                    }
+                }
+            };
+
             if (useNativeSurroundingApi()) {
                 const auto &surrounding = ic_->surroundingText();
                 if (!surrounding.isValid() ||
                     surrounding.cursor() < static_cast<unsigned int>(deleteLen)) {
-                    SKEY_DEBUG() << "Surr: native surrounding not ready, fallback BS";
-                    for (int i = 0; i < deleteLen; ++i) {
-                        ic_->forwardKey(Key(FcitxKey_BackSpace));
-                    }
-                    committedLen_ = newLen;
-                    scheduleDeferredCommit(addedPart, stablePrefix);
+                    SKEY_DEBUG() << "Surr: native surrounding not ready";
+                    deleteViaBackspace();
                 } else {
                     ic_->deleteSurroundingText(-deleteLen, deleteLen);
                     if (surrounding.isValid()) {
@@ -511,12 +531,8 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
                     }
                 }
             } else {
-                SKEY_DEBUG() << "Surr: client has no surrounding text capability, fallback BS";
-                for (int i = 0; i < deleteLen; ++i) {
-                    ic_->forwardKey(Key(FcitxKey_BackSpace));
-                }
-                committedLen_ = newLen;
-                scheduleDeferredCommit(addedPart, stablePrefix);
+                SKEY_DEBUG() << "Surr: client has no surrounding text capability";
+                deleteViaBackspace();
             }
         } else {
             ic_->commitString(newComposed);
