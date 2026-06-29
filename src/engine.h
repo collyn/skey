@@ -37,7 +37,8 @@ private:
                            const std::string &newComposed);
     void surroundingBackspace();
     bool hasDeferredCommitPending() const;
-    void scheduleDeferredCommit(const std::string &text);
+    void scheduleDeferredCommit(const std::string &text,
+                                const std::string &stablePrefix = "");
     void flushDeferredCommit();
     void updatePreedit();
     void clearUI();
@@ -48,6 +49,7 @@ private:
     int committedLen_ = 0;
     std::unique_ptr<EventSourceTime> deferredCommitTimer_;
     std::string deferredCommitText_;
+    std::string deferredPrefix_;
 };
 
 /// Main fcitx5 engine class.

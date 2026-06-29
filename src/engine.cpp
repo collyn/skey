@@ -8,6 +8,7 @@
 
 #include <fstream>
 #include <sstream>
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 
@@ -28,6 +29,27 @@ private:
 };
 
 namespace fcitx {
+
+static bool isUtf8ContinuationByte(char ch) {
+    return (static_cast<unsigned char>(ch) & 0xC0) == 0x80;
+}
+
+static size_t commonUtf8PrefixBytes(const std::string &a,
+                                    const std::string &b) {
+    size_t prefix = 0;
+    size_t limit = std::min(a.size(), b.size());
+    while (prefix < limit && a[prefix] == b[prefix]) {
+        ++prefix;
+    }
+    while (prefix > 0 && prefix < a.size() && isUtf8ContinuationByte(a[prefix])) {
+        --prefix;
+    }
+    while (prefix > 0 && prefix < b.size() && isUtf8ContinuationByte(b[prefix])) {
+        --prefix;
+    }
+    return prefix;
+}
+
 
 FCITX_DEFINE_LOG_CATEGORY(skey_log, "skey");
 #define SKEY_DEBUG() SKeyLogger()
@@ -152,6 +174,7 @@ void SKeyState::activate() {
     committedLen_ = 0;
     deferredCommitTimer_.reset();
     deferredCommitText_.clear();
+    deferredPrefix_.clear();
     SKEY_DEBUG() << "Activated: mode="
                  << (useSurroundingText()
                          ? "surrounding"
@@ -194,6 +217,25 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     }
 
     auto key = keyEvent.key();
+
+    auto sym = key.sym();
+    bool pendingCanMerge = false;
+    if (hasDeferredCommitPending()) {
+        char pendingCh = 0;
+        bool pendingIsDigit = false;
+        if (sym >= FcitxKey_exclam && sym <= FcitxKey_asciitilde) {
+            pendingCh = static_cast<char>(sym);
+            pendingIsDigit = pendingCh >= '0' && pendingCh <= '9';
+            pendingCanMerge = (pendingCh >= 'a' && pendingCh <= 'z') ||
+                              (pendingCh >= 'A' && pendingCh <= 'Z') ||
+                              (engine_->config().inputMethod.value() ==
+                                   SKeyInputMethod::VNI &&
+                               pendingIsDigit && !viet_.getRawInput().empty());
+        }
+        if (!pendingCanMerge) {
+            flushDeferredCommit();
+        }
+    }
 
     // Pass through modifier keys (except Shift and CapsLock)
     if (key.states() &
@@ -286,7 +328,6 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     }
 
     // Process printable ASCII
-    auto sym = key.sym();
     if (sym >= FcitxKey_exclam && sym <= FcitxKey_asciitilde) {
         char ch = static_cast<char>(sym);
 
@@ -372,12 +413,12 @@ bool SKeyState::hasDeferredCommitPending() const {
     return deferredCommitTimer_ && !deferredCommitText_.empty();
 }
 
-void SKeyState::scheduleDeferredCommit(const std::string &text) {
+void SKeyState::scheduleDeferredCommit(const std::string &text,
+                                       const std::string &stablePrefix) {
     deferredCommitTimer_.reset();
     deferredCommitText_ = text;
-    uint64_t delayUsec = ic_->program().find("systemsettings") != std::string::npos
-                             ? 250000
-                             : 80000;
+    deferredPrefix_ = stablePrefix;
+    uint64_t delayUsec = 80000;
     SKEY_DEBUG() << "Surr deferred: schedule commit '" << text << "' in "
                  << (delayUsec / 1000) << "ms";
     deferredCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
@@ -389,6 +430,7 @@ void SKeyState::scheduleDeferredCommit(const std::string &text) {
             ic_->commitString(deferredCommitText_);
             committedLen_ = static_cast<int>(utf8::length(deferredCommitText_));
             deferredCommitText_.clear();
+            deferredPrefix_.clear();
             deferredCommitTimer_.reset();
             return true;
         });
@@ -400,6 +442,7 @@ void SKeyState::flushDeferredCommit() {
         ic_->commitString(deferredCommitText_);
     }
     deferredCommitText_.clear();
+    deferredPrefix_.clear();
     deferredCommitTimer_.reset();
 }
 
@@ -413,7 +456,13 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         SKEY_DEBUG() << "Surr deferred: update pending '" << deferredCommitText_
                      << "' -> '" << newComposed << "'";
         committedLen_ = newLen;
-        scheduleDeferredCommit(newComposed);
+        if (!deferredPrefix_.empty() &&
+            newComposed.compare(0, deferredPrefix_.size(), deferredPrefix_) == 0) {
+            scheduleDeferredCommit(newComposed.substr(deferredPrefix_.size()),
+                                   deferredPrefix_);
+        } else {
+            scheduleDeferredCommit(newComposed);
+        }
         return;
     }
 
@@ -431,36 +480,41 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         ic_->commitString(appended);
         committedLen_ = newLen;
     } else {
+        size_t commonPrefix = commonUtf8PrefixBytes(oldComposed, newComposed);
+        std::string deletedPart = oldComposed.substr(commonPrefix);
+        std::string addedPart = newComposed.substr(commonPrefix);
+        std::string stablePrefix = newComposed.substr(0, commonPrefix);
+        int deleteLen = static_cast<int>(utf8::length(deletedPart));
+
         SKEY_DEBUG() << "Surr: replace '" << oldComposed << "' -> '"
-                     << newComposed << "' (delete surrounding x"
-                     << committedLen_ << ")";
-        if (committedLen_ > 0) {
+                     << newComposed << "' (delete suffix x"
+                     << deleteLen << ")";
+        if (deleteLen > 0) {
             if (useNativeSurroundingApi()) {
                 const auto &surrounding = ic_->surroundingText();
                 if (!surrounding.isValid() ||
-                    surrounding.cursor() < static_cast<unsigned int>(committedLen_)) {
+                    surrounding.cursor() < static_cast<unsigned int>(deleteLen)) {
                     SKEY_DEBUG() << "Surr: native surrounding not ready, fallback BS";
-                    for (int i = 0; i < committedLen_; ++i) {
+                    for (int i = 0; i < deleteLen; ++i) {
                         ic_->forwardKey(Key(FcitxKey_BackSpace));
                     }
                     committedLen_ = newLen;
-                    scheduleDeferredCommit(newComposed);
+                    scheduleDeferredCommit(addedPart, stablePrefix);
                 } else {
-                    ic_->deleteSurroundingText(-committedLen_, committedLen_);
+                    ic_->deleteSurroundingText(-deleteLen, deleteLen);
                     if (surrounding.isValid()) {
-                        ic_->surroundingText().deleteText(-committedLen_,
-                                                         committedLen_);
+                        ic_->surroundingText().deleteText(-deleteLen, deleteLen);
                     }
                     committedLen_ = newLen;
-                    scheduleDeferredCommit(newComposed);
+                    scheduleDeferredCommit(addedPart, stablePrefix);
                 }
             } else {
                 SKEY_DEBUG() << "Surr: client has no surrounding text capability, fallback BS";
-                for (int i = 0; i < committedLen_; ++i) {
+                for (int i = 0; i < deleteLen; ++i) {
                     ic_->forwardKey(Key(FcitxKey_BackSpace));
                 }
                 committedLen_ = newLen;
-                scheduleDeferredCommit(newComposed);
+                scheduleDeferredCommit(addedPart, stablePrefix);
             }
         } else {
             ic_->commitString(newComposed);
