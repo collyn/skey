@@ -67,8 +67,6 @@ static std::string outputModeName(SKeyOutputMode mode) {
         return "SurroundingText";
     case SKeyOutputMode::Preedit:
         return "Preedit";
-    case SKeyOutputMode::SurroundingTextSlow:
-        return "SurroundingTextSlow";
     case SKeyOutputMode::Uinput:
         return "Uinput";
     }
@@ -189,16 +187,12 @@ void SKeyEngine::setupTrayMenu() {
     omPreedit_.setShortText(_("Preedit"));
     omPreedit_.setCheckable(true);
     omPreedit_.registerAction("skey-om-preedit", &uiManager);
-    omSurroundingSlow_.setShortText(_("Surrounding Text (slow)"));
-    omSurroundingSlow_.setCheckable(true);
-    omSurroundingSlow_.registerAction("skey-om-surrounding-slow", &uiManager);
     omUinput_.setShortText(_("Uinput"));
     omUinput_.setCheckable(true);
     omUinput_.registerAction("skey-om-uinput", &uiManager);
 
     omMenu_.addAction(&omSurrounding_);
     omMenu_.addAction(&omPreedit_);
-    omMenu_.addAction(&omSurroundingSlow_);
     omMenu_.addAction(&omUinput_);
 
     omAction_.setShortText(_("Output Mode"));
@@ -212,10 +206,6 @@ void SKeyEngine::setupTrayMenu() {
     omPreedit_.connect<SimpleAction::Activated>([this](InputContext *ic) {
         FCITX_UNUSED(ic);
         setOutputMode(SKeyOutputMode::Preedit);
-    });
-    omSurroundingSlow_.connect<SimpleAction::Activated>([this](InputContext *ic) {
-        FCITX_UNUSED(ic);
-        setOutputMode(SKeyOutputMode::SurroundingTextSlow);
     });
     omUinput_.connect<SimpleAction::Activated>([this](InputContext *ic) {
         FCITX_UNUSED(ic);
@@ -309,13 +299,10 @@ void SKeyEngine::updateMenuActions() {
     auto om = config_.outputMode.value();
     omSurrounding_.setChecked(om == SKeyOutputMode::SurroundingText);
     omPreedit_.setChecked(om == SKeyOutputMode::Preedit);
-    omSurroundingSlow_.setChecked(om == SKeyOutputMode::SurroundingTextSlow);
     omUinput_.setChecked(om == SKeyOutputMode::Uinput);
 
     if (om == SKeyOutputMode::Preedit) {
         omAction_.setShortText(_("Output Mode: Preedit"));
-    } else if (om == SKeyOutputMode::SurroundingTextSlow) {
-        omAction_.setShortText(_("Output Mode: Surrounding (slow)"));
     } else if (om == SKeyOutputMode::Uinput) {
         omAction_.setShortText(_("Output Mode: Uinput"));
     } else {
@@ -338,7 +325,7 @@ SKeyOutputMode SKeyEngine::loadAppMode(const std::string &app) const {
     auto *val = cfg.valueByPath(app);
     if (val) {
         if (*val == "Preedit") return SKeyOutputMode::Preedit;
-        if (*val == "SurroundingTextSlow") return SKeyOutputMode::SurroundingTextSlow;
+        if (*val == "SurroundingTextSlow") return SKeyOutputMode::SurroundingText;  // migrate old config
         if (*val == "Uinput") return SKeyOutputMode::Uinput;
         if (*val == "SurroundingText") return SKeyOutputMode::SurroundingText;
     }
@@ -394,13 +381,9 @@ SKeyOutputMode SKeyState::effectiveMode() const {
 bool SKeyState::useSurroundingText() const {
     auto mode = effectiveMode();
     return mode == SKeyOutputMode::SurroundingText ||
-           mode == SKeyOutputMode::SurroundingTextSlow ||
            mode == SKeyOutputMode::Uinput;
 }
 
-bool SKeyState::useSlowMode() const {
-    return effectiveMode() == SKeyOutputMode::SurroundingTextSlow;
-}
 
 bool SKeyState::useUinputMode() const {
     return effectiveMode() == SKeyOutputMode::Uinput;
@@ -449,7 +432,7 @@ void SKeyState::activate() {
         if (val) {
             SKeyOutputMode savedMode = engine_->config().outputMode.value();
             if (*val == "Preedit") savedMode = SKeyOutputMode::Preedit;
-            else if (*val == "SurroundingTextSlow") savedMode = SKeyOutputMode::SurroundingTextSlow;
+            else if (*val == "SurroundingTextSlow") savedMode = SKeyOutputMode::SurroundingText;  // migrate
             else if (*val == "Uinput") savedMode = SKeyOutputMode::Uinput;
             else if (*val == "SurroundingText") savedMode = SKeyOutputMode::SurroundingText;
             appModeOverride_ = savedMode;
@@ -748,8 +731,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             switch (choice) {
             case 1: newMode = SKeyOutputMode::SurroundingText; break;
             case 2: newMode = SKeyOutputMode::Preedit; break;
-            case 3: newMode = SKeyOutputMode::SurroundingTextSlow; break;
-            case 4: newMode = SKeyOutputMode::Uinput; break;
+            case 3: newMode = SKeyOutputMode::Uinput; break;
             default: dismissModeMenu(); keyEvent.filterAndAccept(); return;
             }
             appModeOverride_ = newMode;
@@ -1249,10 +1231,11 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             // so we can commit immediately. D-Bus apps need a deferred commit
             // because the key goes through multiple async IPC hops.
             auto deleteViaBackspace = [&]() {
-                bool needDelay = useSlowMode();
+                bool needDelay = !useUinputMode() &&
+                                 ic_->frontendName() == "dbus";
                 SKEY_DEBUG() << "Surr: BS x" << deleteLen
                              << (useUinputMode() ? " (uinput)"
-                                                 : (needDelay ? " (slow mode, deferred)"
+                                                 : (needDelay ? " (dbus, deferred)"
                                                               : " (direct)"));
                 deferredBsSentAt_ = now(CLOCK_MONOTONIC);
                 if (useUinputMode()) {
@@ -1404,7 +1387,7 @@ void SKeyState::showModeMenu() {
 
     // Build candidate list for dropdown menu
     auto candList = std::make_unique<CommonCandidateList>();
-    candList->setPageSize(4);
+    candList->setPageSize(3);
     candList->setLayoutHint(CandidateLayoutHint::Vertical);
 
     candList->append(std::make_unique<ModeCandidateWord>(
@@ -1413,17 +1396,13 @@ void SKeyState::showModeMenu() {
     candList->append(std::make_unique<ModeCandidateWord>(
         engine_, this, "2. Preedit", SKeyOutputMode::Preedit));
     candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, "3. Surrounding Text (slow)",
-        SKeyOutputMode::SurroundingTextSlow));
-    candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, "4. Uinput", SKeyOutputMode::Uinput));
+        engine_, this, "3. Uinput", SKeyOutputMode::Uinput));
 
     // Highlight the currently active mode via cursor index
-    int cursorIdx = (mode == SKeyOutputMode::SurroundingText)       ? 0
-                    : (mode == SKeyOutputMode::Preedit)             ? 1
-                    : (mode == SKeyOutputMode::SurroundingTextSlow) ? 2
-                    : (mode == SKeyOutputMode::Uinput)              ? 3
-                                                                     : 0;
+    int cursorIdx = (mode == SKeyOutputMode::SurroundingText) ? 0
+                    : (mode == SKeyOutputMode::Preedit)       ? 1
+                    : (mode == SKeyOutputMode::Uinput)        ? 2
+                                                               : 0;
     candList->setGlobalCursorIndex(cursorIdx);
 
     ic_->inputPanel().setCandidateList(std::move(candList));

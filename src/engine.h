@@ -41,7 +41,6 @@ private:
     bool canEditWithSurroundingText() const;
     bool useNativeSurroundingApi() const;
     bool useHiddenComposition() const;
-    bool useSlowMode() const;
     bool useUinputMode() const;
     bool connectUinputServer();
     void sendBackspaceUinput(int count);
@@ -136,7 +135,6 @@ private:
     Menu omMenu_;
     SimpleAction omSurrounding_;
     SimpleAction omPreedit_;
-    SimpleAction omSurroundingSlow_;
     SimpleAction omUinput_;
 };
 
