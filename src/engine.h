@@ -1,6 +1,8 @@
 #ifndef FCITX5_SKEY_ENGINE_H
 #define FCITX5_SKEY_ENGINE_H
 
+#include <vector>
+
 #include <fcitx-utils/event.h>
 #include <fcitx-utils/i18n.h>
 #include <fcitx/action.h>
@@ -40,6 +42,11 @@ private:
     bool useNativeSurroundingApi() const;
     bool useHiddenComposition() const;
     bool useSlowMode() const;
+    bool useUinputMode() const;
+    bool connectUinputServer();
+    void sendBackspaceUinput(int count);
+    bool handlePendingUinputBackspace(KeyEvent &keyEvent);
+    void replayBufferedUinputKeys();
     void commitBuffer();
     void surroundingCommit(const std::string &oldComposed,
                            const std::string &newComposed);
@@ -67,6 +74,16 @@ private:
     std::string deferredPrefix_;
     uint64_t deferredBsSentAt_ = 0;
     std::string pendingFlushSuffix_;
+    int uinputClientFd_ = -1;
+    // Uinput replacement state (Lotus-style simple flow)
+    bool uinputDeleting_ = false;
+    std::unique_ptr<EventSourceTime> uinputCommitTimer_;
+    int expectedUinputBackspaces_ = 0;
+    int seenUinputBackspaces_ = 0;
+    std::string pendingUinputCommit_;
+    std::vector<KeySym> bufferedUinputKeys_;
+    uint64_t bsSentAt_ = 0;        // timestamp when BS was sent
+    uint64_t lastBsRoundTrip_ = 0; // last measured round-trip (usec)
 };
 
 /// Main fcitx5 engine class.
@@ -120,6 +137,7 @@ private:
     SimpleAction omSurrounding_;
     SimpleAction omPreedit_;
     SimpleAction omSurroundingSlow_;
+    SimpleAction omUinput_;
 };
 
 class SKeyEngineFactory : public AddonFactory {

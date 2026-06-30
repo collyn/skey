@@ -18,7 +18,11 @@ target_include_directories(skey PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../bamboo"
 )
 
+add_executable(fcitx5-skey-uinput-server uinput_server.cpp)
+target_compile_features(fcitx5-skey-uinput-server PRIVATE cxx_std_17)
+
 install(TARGETS skey DESTINATION "${FCITX_INSTALL_ADDONDIR}")
+install(TARGETS fcitx5-skey-uinput-server DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
 # Install addon config - use configure_file since we have no translations yet
 configure_file(

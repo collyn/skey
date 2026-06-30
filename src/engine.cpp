@@ -13,6 +13,15 @@
 #include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <cstddef>
+#include <cerrno>
+#include <cstring>
+#include <cstdint>
+#include <vector>
+#include <pwd.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 
 class SKeyLogger {
 public:
@@ -52,6 +61,48 @@ static size_t commonUtf8PrefixBytes(const std::string &a,
     return prefix;
 }
 
+static std::string outputModeName(SKeyOutputMode mode) {
+    switch (mode) {
+    case SKeyOutputMode::SurroundingText:
+        return "SurroundingText";
+    case SKeyOutputMode::Preedit:
+        return "Preedit";
+    case SKeyOutputMode::SurroundingTextSlow:
+        return "SurroundingTextSlow";
+    case SKeyOutputMode::Uinput:
+        return "Uinput";
+    }
+    return "SurroundingText";
+}
+
+static constexpr size_t maxBufferedUinputKeys = 32;
+static constexpr uint64_t uinputCommitMinDelayUsec = 10000;  // 10ms floor
+static constexpr uint64_t uinputCommitDefaultDelayUsec = 10000; // 10ms fallback
+
+
+static std::string skeySocketPath(const char *suffix) {
+    struct passwd pwd {};
+    struct passwd *result = nullptr;
+    long bufSize = sysconf(_SC_GETPW_R_SIZE_MAX);
+    if (bufSize < 0) {
+        bufSize = 16384;
+    }
+    std::vector<char> buf(static_cast<size_t>(bufSize));
+    std::string username = "unknown";
+    if (getpwuid_r(getuid(), &pwd, buf.data(), buf.size(), &result) == 0 &&
+        result) {
+        username = result->pw_name;
+    }
+
+    std::string path = std::string("skeysocket-") + username + "-" + suffix;
+    constexpr size_t maxAbstractSocketName =
+        sizeof(((sockaddr_un *)0)->sun_path) - 1;
+    if (path.size() > maxAbstractSocketName) {
+        path.resize(maxAbstractSocketName);
+    }
+    return path;
+}
+
 
 FCITX_DEFINE_LOG_CATEGORY(skey_log, "skey");
 #define SKEY_DEBUG() SKeyLogger()
@@ -71,12 +122,7 @@ public:
         state_->appModeOverride_ = mode_;
         state_->hasAppModeOverride_ = true;
         engine_->saveAppMode(state_->ic_->program(), mode_);
-        SKEY_INFO() << "Mode switched to "
-                    << (mode_ == SKeyOutputMode::SurroundingText
-                            ? "SurroundingText"
-                            : (mode_ == SKeyOutputMode::Preedit
-                                   ? "Preedit"
-                                   : "SurroundingTextSlow"));
+        SKEY_INFO() << "Mode switched to " << outputModeName(mode_);
         state_->dismissModeMenu();
     }
 
@@ -146,10 +192,14 @@ void SKeyEngine::setupTrayMenu() {
     omSurroundingSlow_.setShortText(_("Surrounding Text (slow)"));
     omSurroundingSlow_.setCheckable(true);
     omSurroundingSlow_.registerAction("skey-om-surrounding-slow", &uiManager);
+    omUinput_.setShortText(_("Uinput"));
+    omUinput_.setCheckable(true);
+    omUinput_.registerAction("skey-om-uinput", &uiManager);
 
     omMenu_.addAction(&omSurrounding_);
     omMenu_.addAction(&omPreedit_);
     omMenu_.addAction(&omSurroundingSlow_);
+    omMenu_.addAction(&omUinput_);
 
     omAction_.setShortText(_("Output Mode"));
     omAction_.setMenu(&omMenu_);
@@ -166,6 +216,10 @@ void SKeyEngine::setupTrayMenu() {
     omSurroundingSlow_.connect<SimpleAction::Activated>([this](InputContext *ic) {
         FCITX_UNUSED(ic);
         setOutputMode(SKeyOutputMode::SurroundingTextSlow);
+    });
+    omUinput_.connect<SimpleAction::Activated>([this](InputContext *ic) {
+        FCITX_UNUSED(ic);
+        setOutputMode(SKeyOutputMode::Uinput);
     });
 
     updateMenuActions();
@@ -256,11 +310,14 @@ void SKeyEngine::updateMenuActions() {
     omSurrounding_.setChecked(om == SKeyOutputMode::SurroundingText);
     omPreedit_.setChecked(om == SKeyOutputMode::Preedit);
     omSurroundingSlow_.setChecked(om == SKeyOutputMode::SurroundingTextSlow);
+    omUinput_.setChecked(om == SKeyOutputMode::Uinput);
 
     if (om == SKeyOutputMode::Preedit) {
         omAction_.setShortText(_("Output Mode: Preedit"));
     } else if (om == SKeyOutputMode::SurroundingTextSlow) {
         omAction_.setShortText(_("Output Mode: Surrounding (slow)"));
+    } else if (om == SKeyOutputMode::Uinput) {
+        omAction_.setShortText(_("Output Mode: Uinput"));
     } else {
         omAction_.setShortText(_("Output Mode: Surrounding Text"));
     }
@@ -269,9 +326,7 @@ void SKeyEngine::updateMenuActions() {
 void SKeyEngine::saveAppMode(const std::string &app, SKeyOutputMode mode) {
     RawConfig cfg;
     readAsIni(cfg, "conf/skey-app-modes.conf");
-    const char *val = (mode == SKeyOutputMode::SurroundingText)   ? "SurroundingText"
-                      : (mode == SKeyOutputMode::Preedit)         ? "Preedit"
-                                                               : "SurroundingTextSlow";
+    std::string val = outputModeName(mode);
     cfg.setValueByPath(app, val);
     safeSaveAsIni(cfg, "conf/skey-app-modes.conf");
     SKEY_INFO() << "Saved app mode: " << app << " -> " << val;
@@ -284,6 +339,7 @@ SKeyOutputMode SKeyEngine::loadAppMode(const std::string &app) const {
     if (val) {
         if (*val == "Preedit") return SKeyOutputMode::Preedit;
         if (*val == "SurroundingTextSlow") return SKeyOutputMode::SurroundingTextSlow;
+        if (*val == "Uinput") return SKeyOutputMode::Uinput;
         if (*val == "SurroundingText") return SKeyOutputMode::SurroundingText;
     }
     // Not found — return the configured default
@@ -292,11 +348,7 @@ SKeyOutputMode SKeyEngine::loadAppMode(const std::string &app) const {
 
 void SKeyEngine::reloadConfig() {
     readAsIni(config_, "conf/skey.conf");
-    const char *modeStr = "Preedit";
-    if (config_.outputMode.value() == SKeyOutputMode::SurroundingText)
-        modeStr = "SurroundingText";
-    else if (config_.outputMode.value() == SKeyOutputMode::SurroundingTextSlow)
-        modeStr = "SurroundingTextSlow";
+    std::string modeStr = outputModeName(config_.outputMode.value());
     SKEY_INFO() << "Config: outputMode=" << modeStr;
 }
 
@@ -342,11 +394,16 @@ SKeyOutputMode SKeyState::effectiveMode() const {
 bool SKeyState::useSurroundingText() const {
     auto mode = effectiveMode();
     return mode == SKeyOutputMode::SurroundingText ||
-           mode == SKeyOutputMode::SurroundingTextSlow;
+           mode == SKeyOutputMode::SurroundingTextSlow ||
+           mode == SKeyOutputMode::Uinput;
 }
 
 bool SKeyState::useSlowMode() const {
     return effectiveMode() == SKeyOutputMode::SurroundingTextSlow;
+}
+
+bool SKeyState::useUinputMode() const {
+    return effectiveMode() == SKeyOutputMode::Uinput;
 }
 
 bool SKeyState::canEditWithSurroundingText() const {
@@ -355,7 +412,7 @@ bool SKeyState::canEditWithSurroundingText() const {
 }
 
 bool SKeyState::useNativeSurroundingApi() const {
-    return canEditWithSurroundingText();
+    return !useUinputMode() && canEditWithSurroundingText();
 }
 
 bool SKeyState::useHiddenComposition() const {
@@ -393,6 +450,7 @@ void SKeyState::activate() {
             SKeyOutputMode savedMode = engine_->config().outputMode.value();
             if (*val == "Preedit") savedMode = SKeyOutputMode::Preedit;
             else if (*val == "SurroundingTextSlow") savedMode = SKeyOutputMode::SurroundingTextSlow;
+            else if (*val == "Uinput") savedMode = SKeyOutputMode::Uinput;
             else if (*val == "SurroundingText") savedMode = SKeyOutputMode::SurroundingText;
             appModeOverride_ = savedMode;
             hasAppModeOverride_ = true;
@@ -403,17 +461,9 @@ void SKeyState::activate() {
     auto mode = effectiveMode();
     auto configuredMode = engine_->config().outputMode.value();
     SKEY_DEBUG() << "Activated: mode="
-                 << (mode == SKeyOutputMode::SurroundingText
-                         ? "surrounding"
-                         : (mode == SKeyOutputMode::Preedit
-                                ? "preedit"
-                                : "surrounding-slow"))
+                 << outputModeName(mode)
                  << " configured="
-                 << (configuredMode == SKeyOutputMode::SurroundingText
-                         ? "surrounding"
-                         : (configuredMode == SKeyOutputMode::Preedit
-                                ? "preedit"
-                                : "surrounding-slow"))
+                 << outputModeName(configuredMode)
                  << " surroundingCap="
                  << caps.test(CapabilityFlag::SurroundingText)
                  << " password=" << caps.test(CapabilityFlag::Password)
@@ -424,8 +474,211 @@ void SKeyState::activate() {
                  << " app=" << ic_->program();
 }
 
+bool SKeyState::connectUinputServer() {
+    if (uinputClientFd_ >= 0) {
+        return true;
+    }
+
+    int fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0);
+    if (fd < 0) {
+        SKEY_DEBUG() << "Uinput: socket failed: " << strerror(errno);
+        return false;
+    }
+
+    std::string path = skeySocketPath("kb_socket");
+    sockaddr_un addr {};
+    addr.sun_family = AF_UNIX;
+    addr.sun_path[0] = '\0';
+    memcpy(&addr.sun_path[1], path.c_str(), path.size());
+    socklen_t len = offsetof(sockaddr_un, sun_path) + path.size() + 1;
+    if (connect(fd, reinterpret_cast<sockaddr *>(&addr), len) == 0) {
+        uinputClientFd_ = fd;
+        SKEY_DEBUG() << "Uinput: connected";
+        return true;
+    }
+
+    SKEY_DEBUG() << "Uinput: connect failed: " << strerror(errno);
+    close(fd);
+    return false;
+}
+
+void SKeyState::sendBackspaceUinput(int count) {
+    if (count <= 0) {
+        return;
+    }
+    if (!connectUinputServer()) {
+        SKEY_DEBUG() << "Uinput: cannot send BS, server unavailable";
+        return;
+    }
+
+    // Send BS-only to the server.  The server injects N backspace key
+    // events through the kernel.  Text is committed separately via
+    // D-Bus commitString after the BS events have been processed.
+    int32_t count32 = count;
+    uint32_t textLen = 0;
+    std::vector<char> msg(sizeof(int32_t) + sizeof(uint32_t));
+    memcpy(msg.data(), &count32, sizeof(count32));
+    memcpy(msg.data() + sizeof(count32), &textLen, sizeof(textLen));
+
+    bsSentAt_ = now(CLOCK_MONOTONIC);
+    ssize_t n = send(uinputClientFd_, msg.data(), msg.size(), MSG_NOSIGNAL);
+    if (n < 0) {
+        SKEY_DEBUG() << "Uinput: send failed: " << strerror(errno);
+        close(uinputClientFd_);
+        uinputClientFd_ = -1;
+        if (connectUinputServer()) {
+            send(uinputClientFd_, msg.data(), msg.size(), MSG_NOSIGNAL);
+        }
+    }
+    SKEY_DEBUG() << "Uinput: sent BS=" << count;
+}
+
+bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
+    if (!uinputDeleting_) {
+        return false;
+    }
+
+    // While waiting for BS, buffer ANY non-BS keys (including user-typed
+    // space, letters, etc.) so they don't reach the app prematurely.
+    if (!keyEvent.key().check(FcitxKey_BackSpace) ||
+        expectedUinputBackspaces_ == 0) {
+        auto sym = keyEvent.key().sym();
+        std::string keyUtf8 = Key::keySymToUTF8(sym);
+        if (!keyUtf8.empty() &&
+            bufferedUinputKeys_.size() < maxBufferedUinputKeys) {
+            SKEY_DEBUG() << "Uinput: buffer key '" << keyUtf8
+                         << "' while deleting";
+            bufferedUinputKeys_.push_back(sym);
+        }
+        keyEvent.filterAndAccept();
+        return true;
+    }
+
+    // Count BS events.  ALL of them pass through to the app (no sentinel).
+    ++seenUinputBackspaces_;
+    SKEY_DEBUG() << "Uinput: pass BS " << seenUinputBackspaces_ << "/"
+                 << expectedUinputBackspaces_;
+
+    if (seenUinputBackspaces_ >= expectedUinputBackspaces_) {
+        // All BS events have passed through.  Schedule commitString
+        // via a timer to let the app finish processing the deletions.
+        expectedUinputBackspaces_ = 0;
+        seenUinputBackspaces_ = 0;
+
+        std::string commitText = pendingUinputCommit_;
+        pendingUinputCommit_.clear();
+
+        // Adaptive delay: 3× round-trip.
+        uint64_t elapsed = now(CLOCK_MONOTONIC) - bsSentAt_;
+        uint64_t delay = std::max(elapsed * 3, uinputCommitMinDelayUsec);
+        lastBsRoundTrip_ = elapsed;
+        SKEY_DEBUG() << "Uinput: all BS passed, round-trip " << (elapsed / 1000)
+                     << "ms, commit delay " << (delay / 1000) << "ms";
+
+        uinputCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+            CLOCK_MONOTONIC,
+            now(CLOCK_MONOTONIC) + delay,
+            0,
+            [this, commitText](EventSourceTime *, uint64_t) {
+                uinputCommitTimer_.reset();
+                uinputDeleting_ = false;
+                if (!commitText.empty()) {
+                    SKEY_DEBUG() << "Uinput: timer commit '" << commitText << "'";
+                    ic_->commitString(commitText);
+                }
+                if (!bufferedUinputKeys_.empty()) {
+                    replayBufferedUinputKeys();
+                }
+                return true;
+            });
+    }
+    return true;  // let BS reach the app (not consumed)
+}
+
+void SKeyState::replayBufferedUinputKeys() {
+    if (bufferedUinputKeys_.empty()) {
+        return;
+    }
+
+    auto keys = std::move(bufferedUinputKeys_);
+    bufferedUinputKeys_.clear();
+    SKEY_DEBUG() << "Uinput: replay " << keys.size() << " buffered key(s)";
+
+    for (size_t i = 0; i < keys.size(); ++i) {
+        auto sym = keys[i];
+        std::string keyUtf8 = Key::keySymToUTF8(sym);
+        if (keyUtf8.empty()) {
+            continue;
+        }
+        if (sym < FcitxKey_exclam || sym > FcitxKey_asciitilde) {
+            ic_->commitString(keyUtf8);
+            continue;
+        }
+
+        char ch = static_cast<char>(sym);
+        bool isLetter = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+        bool isDigit = (ch >= '0' && ch <= '9');
+        bool isVNIModifier =
+            (engine_->config().inputMethod.value() == SKeyInputMethod::VNI) &&
+            isDigit && !viet_.getRawInput().empty();
+
+        if (!(isLetter || isVNIModifier)) {
+            ic_->commitString(keyUtf8);
+            continue;
+        }
+
+        std::string oldComposed = viet_.getComposed();
+        auto result = viet_.processKey(ch);
+
+        if (result == skey::ProcessResult::Committed) {
+            std::string committed = viet_.getCommitted();
+            viet_.clearCommitted();
+            std::string newComposed = viet_.getComposed();
+            std::string fullNew = committed + newComposed;
+            if (!fullNew.empty()) {
+                surroundingCommit(oldComposed, fullNew);
+                committedLen_ = static_cast<int>(utf8::length(fullNew));
+            } else {
+                surroundingCommit(oldComposed, "");
+                committedLen_ = 0;
+            }
+        } else {
+            std::string newComposed = viet_.getComposed();
+            if (!newComposed.empty()) {
+                surroundingCommit(oldComposed, newComposed);
+            } else {
+                committedLen_ = 0;
+            }
+        }
+
+        // If surroundingCommit triggered a new uinput replacement,
+        // re-buffer remaining keys and return — they'll be replayed
+        // after this new replacement completes.
+        if (uinputDeleting_) {
+            for (size_t j = i + 1;
+                 j < keys.size() && bufferedUinputKeys_.size() < maxBufferedUinputKeys;
+                 ++j) {
+                bufferedUinputKeys_.push_back(keys[j]);
+            }
+            return;
+        }
+    }
+}
+
 void SKeyState::deactivate() {
     forceFlushDeferredCommit();
+    if (uinputClientFd_ >= 0) {
+        close(uinputClientFd_);
+        uinputClientFd_ = -1;
+    }
+    expectedUinputBackspaces_ = 0;
+    seenUinputBackspaces_ = 0;
+    pendingUinputCommit_.clear();
+    bufferedUinputKeys_.clear();
+    bsSentAt_ = 0;
+    lastBsRoundTrip_ = 0;
+    uinputCommitTimer_.reset();
+    uinputDeleting_ = false;
     if (!viet_.getComposed().empty() && !useSurroundingText()) {
         commitBuffer();
     }
@@ -439,6 +692,9 @@ void SKeyState::reset() {
         SKEY_DEBUG() << "Reset: keeping deferred commit";
     }
     viet_.reset();
+    bufferedUinputKeys_.clear();
+    uinputCommitTimer_.reset();
+    uinputDeleting_ = false;
     if (!hasDeferredCommitPending()) {
         committedLen_ = 0;
     }
@@ -447,6 +703,26 @@ void SKeyState::reset() {
 
 void SKeyState::keyEvent(KeyEvent &keyEvent) {
     if (keyEvent.isRelease()) {
+        return;
+    }
+
+    if (handlePendingUinputBackspace(keyEvent)) {
+        return;
+    }
+
+    // Buffer keys while a no-BS uinput timer commit is pending.
+    // (e.g. after filterAndAccept of 'w' for 'b' → 'bư', waiting
+    // for timer to commitString("ư")).
+    if (uinputCommitTimer_) {
+        auto sym = keyEvent.key().sym();
+        std::string keyUtf8 = Key::keySymToUTF8(sym);
+        if (!keyUtf8.empty() &&
+            bufferedUinputKeys_.size() < maxBufferedUinputKeys) {
+            SKEY_DEBUG() << "Uinput: buffer key '" << keyUtf8
+                         << "' while timer pending";
+            bufferedUinputKeys_.push_back(sym);
+        }
+        keyEvent.filterAndAccept();
         return;
     }
 
@@ -465,6 +741,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         if (sym == FcitxKey_1 || sym == FcitxKey_KP_1) choice = 1;
         else if (sym == FcitxKey_2 || sym == FcitxKey_KP_2) choice = 2;
         else if (sym == FcitxKey_3 || sym == FcitxKey_KP_3) choice = 3;
+        else if (sym == FcitxKey_4 || sym == FcitxKey_KP_4) choice = 4;
 
         if (choice > 0) {
             SKeyOutputMode newMode;
@@ -472,17 +749,13 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             case 1: newMode = SKeyOutputMode::SurroundingText; break;
             case 2: newMode = SKeyOutputMode::Preedit; break;
             case 3: newMode = SKeyOutputMode::SurroundingTextSlow; break;
+            case 4: newMode = SKeyOutputMode::Uinput; break;
             default: dismissModeMenu(); keyEvent.filterAndAccept(); return;
             }
             appModeOverride_ = newMode;
             hasAppModeOverride_ = true;
             engine_->saveAppMode(ic_->program(), newMode);
-            SKEY_INFO() << "Mode switched to "
-                        << (newMode == SKeyOutputMode::SurroundingText
-                                ? "SurroundingText"
-                                : (newMode == SKeyOutputMode::Preedit
-                                       ? "Preedit"
-                                       : "SurroundingTextSlow"));
+            SKEY_INFO() << "Mode switched to " << outputModeName(newMode);
             dismissModeMenu();
             keyEvent.filterAndAccept();
             return;
@@ -675,6 +948,85 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
             if (!newComposed.empty()) {
                 if (useSurroundingText()) {
+                    std::string keyUtf8 = Key::keySymToUTF8(sym);
+                    if (useUinputMode() && !keyUtf8.empty()) {
+                        // Uinput mode: compute diff between oldComposed and
+                        // newComposed.  Only forward the key if the result
+                        // matches (matching append).  For everything else,
+                        // consume the key via filterAndAccept to prevent
+                        // Electron from processing it + the NEXT key (space)
+                        // before the replacement completes.
+                        committedLen_ = static_cast<int>(
+                            utf8::length(newComposed));
+
+                        // Check matching append: old + key == new
+                        if (oldComposed + keyUtf8 == newComposed) {
+                            SKEY_DEBUG() << "Uinput: forward append '"
+                                         << keyUtf8 << "'";
+                            return;  // forward raw key
+                        }
+
+                        // Non-matching: consume key, diff based on oldComposed
+                        keyEvent.filterAndAccept();
+                        size_t pfx = commonUtf8PrefixBytes(
+                            oldComposed, newComposed);
+                        std::string delPart = oldComposed.substr(pfx);
+                        std::string addPart = newComposed.substr(pfx);
+                        int deleteLen =
+                            static_cast<int>(utf8::length(delPart));
+
+                        if (deleteLen > 0) {
+                            // BS via uinput, text via timer commitString
+                            SKEY_DEBUG() << "Uinput: consume '" << keyUtf8
+                                         << "' replace (del=" << deleteLen
+                                         << " add='" << addPart << "')";
+                            sendBackspaceUinput(deleteLen);
+                            expectedUinputBackspaces_ = deleteLen;
+                            seenUinputBackspaces_ = 0;
+                            pendingUinputCommit_ = addPart;
+                            uinputDeleting_ = true;
+                        } else if (!addPart.empty()) {
+                            if (oldComposed.empty()) {
+                                // First char (e.g. 'w' → 'ư'):  synchronous
+                                // commitString is safe — no pending D-Bus
+                                // messages to race with.  Avoids buffering
+                                // the next key and the cross-channel race
+                                // that causes when its replay commitString
+                                // interleaves with later uinput BS events.
+                                SKEY_DEBUG() << "Uinput: consume '" << keyUtf8
+                                             << "' sync commit '" << addPart
+                                             << "'";
+                                ic_->commitString(addPart);
+                            } else {
+                                // Non-first (e.g. 'b'+'w' → 'bư'): timer
+                                // commit to let the prior forward reach the
+                                // app before the commit string.
+                                SKEY_DEBUG() << "Uinput: consume '" << keyUtf8
+                                             << "' timer commit '" << addPart
+                                             << "'";
+                                uinputCommitTimer_ =
+                                    engine_->instance()->eventLoop().addTimeEvent(
+                                        CLOCK_MONOTONIC,
+                                        now(CLOCK_MONOTONIC) +
+                                            (lastBsRoundTrip_ > 0
+                                                ? std::max(lastBsRoundTrip_ * 3, uinputCommitMinDelayUsec)
+                                                : uinputCommitDefaultDelayUsec),
+                                        0,
+                                        [this, addPart](EventSourceTime *,
+                                                        uint64_t) {
+                                            uinputCommitTimer_.reset();
+                                            SKEY_DEBUG() << "Uinput: timer commit '"
+                                                         << addPart << "'";
+                                            ic_->commitString(addPart);
+                                            if (!bufferedUinputKeys_.empty()) {
+                                                replayBufferedUinputKeys();
+                                            }
+                                            return true;
+                                        });
+                            }
+                        }
+                        return;
+                    }
                     surroundingCommit(oldComposed, newComposed);
                 } else {
                     updatePreedit();
@@ -899,8 +1251,19 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             auto deleteViaBackspace = [&]() {
                 bool needDelay = useSlowMode();
                 SKEY_DEBUG() << "Surr: BS x" << deleteLen
-                             << (needDelay ? " (slow mode, deferred)" : " (direct)");
+                             << (useUinputMode() ? " (uinput)"
+                                                 : (needDelay ? " (slow mode, deferred)"
+                                                              : " (direct)"));
                 deferredBsSentAt_ = now(CLOCK_MONOTONIC);
+                if (useUinputMode()) {
+                    sendBackspaceUinput(deleteLen);
+                    expectedUinputBackspaces_ = deleteLen;
+                    seenUinputBackspaces_ = 0;
+                    pendingUinputCommit_ = addedPart;
+                    uinputDeleting_ = true;
+                    committedLen_ = newLen;
+                    return;
+                }
                 for (int i = 0; i < deleteLen; ++i) {
                     ic_->forwardKey(Key(FcitxKey_BackSpace));
                 }
@@ -1041,7 +1404,7 @@ void SKeyState::showModeMenu() {
 
     // Build candidate list for dropdown menu
     auto candList = std::make_unique<CommonCandidateList>();
-    candList->setPageSize(3);
+    candList->setPageSize(4);
     candList->setLayoutHint(CandidateLayoutHint::Vertical);
 
     candList->append(std::make_unique<ModeCandidateWord>(
@@ -1052,11 +1415,14 @@ void SKeyState::showModeMenu() {
     candList->append(std::make_unique<ModeCandidateWord>(
         engine_, this, "3. Surrounding Text (slow)",
         SKeyOutputMode::SurroundingTextSlow));
+    candList->append(std::make_unique<ModeCandidateWord>(
+        engine_, this, "4. Uinput", SKeyOutputMode::Uinput));
 
     // Highlight the currently active mode via cursor index
     int cursorIdx = (mode == SKeyOutputMode::SurroundingText)       ? 0
                     : (mode == SKeyOutputMode::Preedit)             ? 1
                     : (mode == SKeyOutputMode::SurroundingTextSlow) ? 2
+                    : (mode == SKeyOutputMode::Uinput)              ? 3
                                                                      : 0;
     candList->setGlobalCursorIndex(cursorIdx);
 

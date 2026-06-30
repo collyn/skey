@@ -1,0 +1,13 @@
+[Unit]
+Description=SKey uinput server for %i
+Documentation=https://github.com/collyn/skey
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/fcitx5-skey-uinput-server %i
+Restart=on-failure
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target

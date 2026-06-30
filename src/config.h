@@ -13,10 +13,11 @@ FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyInputMethod, N_("Telex"), N_("VNI"),
                                  N_("Telex W"));
 
 // Output mode
-enum class SKeyOutputMode { SurroundingText, Preedit, SurroundingTextSlow };
+enum class SKeyOutputMode { SurroundingText, Preedit, SurroundingTextSlow, Uinput };
 FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyOutputMode, N_("Surrounding Text"),
                                  N_("Preedit"),
-                                 N_("Surrounding Text (slow)"));
+                                 N_("Surrounding Text (slow)"),
+                                 N_("Uinput"));
 
 // Tone mark position style
 enum class TonePosition { Modern, Traditional };

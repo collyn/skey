@@ -49,7 +49,7 @@ Version: $PKG_VERSION
 Section: utils
 Priority: optional
 Architecture: $PKG_ARCH
-Depends: fcitx5
+Depends: fcitx5, systemd
 Maintainer: Huy
 Description: Vietnamese SKey input method addon for Fcitx5
  This package provides the skey input method engine for fcitx5,
@@ -59,9 +59,15 @@ EOF
 # Create postinst script to run skey-setup after installation
 cat <<'POSTINST' > "$PKG_DIR/DEBIAN/postinst"
 #!/bin/bash
-# Run skey-setup for the user who invoked sudo (if available)
+# Run skey-setup and start the optional uinput server for the user who invoked sudo.
 if [ -n "$SUDO_USER" ]; then
     su - "$SUDO_USER" -c "skey-setup" 2>/dev/null || true
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl enable --now "fcitx5-skey-uinput-server@${SUDO_USER}.service" 2>/dev/null || true
+    fi
+elif command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload 2>/dev/null || true
 fi
 POSTINST
 chmod 755 "$PKG_DIR/DEBIAN/postinst"
