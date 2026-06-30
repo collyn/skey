@@ -36,6 +36,7 @@ public:
 
 private:
     friend class ModeCandidateWord;
+    friend class ExcludeCandidateWord;
     SKeyOutputMode effectiveMode() const;
     bool useSurroundingText() const;
     bool canEditWithSurroundingText() const;
@@ -67,6 +68,7 @@ private:
     int committedLen_ = 0;
     bool modeMenuActive_ = false;
     bool hasAppModeOverride_ = false;
+    bool appExcluded_ = false;
     SKeyOutputMode appModeOverride_ = SKeyOutputMode::SurroundingText;
     std::unique_ptr<EventSourceTime> deferredCommitTimer_;
     std::string deferredCommitText_;
@@ -114,6 +116,8 @@ public:
     void setInputMethod(SKeyInputMethod method);
     void saveAppMode(const std::string &app, SKeyOutputMode mode);
     SKeyOutputMode loadAppMode(const std::string &app) const;
+    void saveAppExcluded(const std::string &app, bool excluded);
+    bool isAppExcluded(const std::string &app) const;
     void updateMenuActions();
 
 private:

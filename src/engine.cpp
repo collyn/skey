@@ -130,6 +130,26 @@ private:
     SKeyOutputMode mode_;
 };
 
+class ExcludeCandidateWord : public CandidateWord {
+public:
+    ExcludeCandidateWord(SKeyEngine *engine, SKeyState *state,
+                         const std::string &text)
+        : CandidateWord(Text(text)), engine_(engine), state_(state) {}
+
+    void select(InputContext *) const override {
+        bool newExcluded = !state_->appExcluded_;
+        state_->appExcluded_ = newExcluded;
+        engine_->saveAppExcluded(state_->ic_->program(), newExcluded);
+        SKEY_INFO() << "App '" << state_->ic_->program()
+                    << (newExcluded ? "' excluded" : "' included");
+        state_->dismissModeMenu();
+    }
+
+private:
+    SKeyEngine *engine_;
+    SKeyState *state_;
+};
+
 // ---------------------------------------------------------------------------
 // SKeyEngine
 // ---------------------------------------------------------------------------
@@ -333,6 +353,25 @@ SKeyOutputMode SKeyEngine::loadAppMode(const std::string &app) const {
     return config_.outputMode.value();
 }
 
+void SKeyEngine::saveAppExcluded(const std::string &app, bool excluded) {
+    RawConfig cfg;
+    readAsIni(cfg, "conf/skey-app-modes.conf");
+    if (excluded) {
+        cfg.setValueByPath(app, "Excluded");
+    } else {
+        cfg.setValueByPath(app, "");  // clear = use default
+    }
+    safeSaveAsIni(cfg, "conf/skey-app-modes.conf");
+    SKEY_INFO() << "App '" << app << "' " << (excluded ? "excluded" : "included");
+}
+
+bool SKeyEngine::isAppExcluded(const std::string &app) const {
+    RawConfig cfg;
+    readAsIni(cfg, "conf/skey-app-modes.conf");
+    auto *val = cfg.valueByPath(app);
+    return val && *val == "Excluded";
+}
+
 void SKeyEngine::reloadConfig() {
     readAsIni(config_, "conf/skey.conf");
     std::string modeStr = outputModeName(config_.outputMode.value());
@@ -423,20 +462,25 @@ void SKeyState::activate() {
     deferredCommitTimer_.reset();
     deferredCommitText_.clear();
     deferredPrefix_.clear();
-    // Load per-app mode preference
+    // Load per-app mode preference / exclusion
     hasAppModeOverride_ = false;
+    appExcluded_ = false;
     if (!ic_->program().empty()) {
         RawConfig cfg;
         readAsIni(cfg, "conf/skey-app-modes.conf");
         auto *val = cfg.valueByPath(ic_->program());
         if (val) {
-            SKeyOutputMode savedMode = engine_->config().outputMode.value();
-            if (*val == "Preedit") savedMode = SKeyOutputMode::Preedit;
-            else if (*val == "SurroundingTextSlow") savedMode = SKeyOutputMode::SurroundingText;  // migrate
-            else if (*val == "Uinput") savedMode = SKeyOutputMode::Uinput;
-            else if (*val == "SurroundingText") savedMode = SKeyOutputMode::SurroundingText;
-            appModeOverride_ = savedMode;
-            hasAppModeOverride_ = true;
+            if (*val == "Excluded") {
+                appExcluded_ = true;
+            } else {
+                SKeyOutputMode savedMode = engine_->config().outputMode.value();
+                if (*val == "Preedit") savedMode = SKeyOutputMode::Preedit;
+                else if (*val == "SurroundingTextSlow") savedMode = SKeyOutputMode::SurroundingText;  // migrate
+                else if (*val == "Uinput") savedMode = SKeyOutputMode::Uinput;
+                else if (*val == "SurroundingText") savedMode = SKeyOutputMode::SurroundingText;
+                appModeOverride_ = savedMode;
+                hasAppModeOverride_ = true;
+            }
         }
     }
 
@@ -689,6 +733,16 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         return;
     }
 
+    // App excluded — pass all keys through, except backtick for menu
+    if (appExcluded_ && !modeMenuActive_) {
+        if (keyEvent.key().check(FcitxKey_grave) &&
+            viet_.getRawInput().empty()) {
+            showModeMenu();
+            keyEvent.filterAndAccept();
+        }
+        return;
+    }
+
     if (handlePendingUinputBackspace(keyEvent)) {
         return;
     }
@@ -726,18 +780,29 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         else if (sym == FcitxKey_3 || sym == FcitxKey_KP_3) choice = 3;
         else if (sym == FcitxKey_4 || sym == FcitxKey_KP_4) choice = 4;
 
-        if (choice > 0) {
+        if (choice > 0 && choice <= 3) {
             SKeyOutputMode newMode;
             switch (choice) {
-            case 1: newMode = SKeyOutputMode::SurroundingText; break;
-            case 2: newMode = SKeyOutputMode::Preedit; break;
-            case 3: newMode = SKeyOutputMode::Uinput; break;
-            default: dismissModeMenu(); keyEvent.filterAndAccept(); return;
+            case 1: newMode = SKeyOutputMode::Uinput; break;
+            case 2: newMode = SKeyOutputMode::SurroundingText; break;
+            case 3: newMode = SKeyOutputMode::Preedit; break;
+            default: break;  // unreachable
             }
+            appExcluded_ = false;
+            engine_->saveAppExcluded(ic_->program(), false);
             appModeOverride_ = newMode;
             hasAppModeOverride_ = true;
             engine_->saveAppMode(ic_->program(), newMode);
             SKEY_INFO() << "Mode switched to " << outputModeName(newMode);
+            dismissModeMenu();
+            keyEvent.filterAndAccept();
+            return;
+        } else if (choice == 4) {
+            bool newExcluded = !appExcluded_;
+            appExcluded_ = newExcluded;
+            engine_->saveAppExcluded(ic_->program(), newExcluded);
+            SKEY_INFO() << "App '" << ic_->program()
+                        << (newExcluded ? "' excluded" : "' included");
             dismissModeMenu();
             keyEvent.filterAndAccept();
             return;
@@ -1079,17 +1144,26 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
     pendingFlushSuffix_.clear();
 
     // Delay after BackSpace to ensure the app has processed the BS key
-    // events before we commit new text via commitString (different D-Bus
-    // channel). No preedit is used (no underline).
+    // events before we commit new text via commitString.
     //
-    // 80ms is required for Electron apps (Tabby, Antigravity) where BS
-    // processing takes ~60-70ms through D-Bus → main process → IPC →
-    // renderer → DOM pipeline.
+    // forwardKey(BS) and commitString both go through the same D-Bus
+    // connection (fcitx5 → app), so FIFO ordering is guaranteed.
+    // This delay covers the app's internal processing time (event
+    // dispatch → DOM update) between receiving BS and being ready
+    // for the commit.
+    //
+    // Adaptive: reuse uinput round-trip measurement as a proxy for
+    // the app's event loop speed.  D-Bus forwardKey has ~2× overhead
+    // vs kernel uinput, so we scale accordingly.
     //
     // During fast typing this delay is invisible: each keystroke resets
     // the timer via the deferred update path in surroundingCommit(), so
     // the commit only happens when the user pauses (natural word boundary).
-    uint64_t delayUsec = 80000;  // 80ms
+    static constexpr uint64_t dbusDeferredDefaultUsec = 20000;  // 20ms
+    static constexpr uint64_t dbusDeferredMinUsec     = 10000;  // 10ms floor
+    uint64_t delayUsec = (lastBsRoundTrip_ > 0)
+        ? std::max(lastBsRoundTrip_ * 2 + 8000, dbusDeferredMinUsec)
+        : dbusDeferredDefaultUsec;
 
     SKEY_DEBUG() << "Surr deferred: schedule '" << text << "' in "
                  << (delayUsec / 1000) << "ms";
@@ -1117,9 +1191,12 @@ void SKeyState::flushDeferredCommit() {
         return;
     }
 
-    // Enforce minimum delay between BackSpace and commit.
-    // If BS was sent recently, the app might not have processed it yet.
-    uint64_t minGapUsec = 80000;  // 80ms — match scheduleDeferredCommit
+    // Enforce adaptive minimum delay between BackSpace and commit.
+    static constexpr uint64_t dbusDeferredDefaultUsec = 20000;
+    static constexpr uint64_t dbusDeferredMinUsec     = 10000;
+    uint64_t minGapUsec = (lastBsRoundTrip_ > 0)
+        ? std::max(lastBsRoundTrip_ * 2 + 8000, dbusDeferredMinUsec)
+        : dbusDeferredDefaultUsec;
     if (deferredBsSentAt_ > 0) {
         uint64_t nowUs = now(CLOCK_MONOTONIC);
         uint64_t elapsed = nowUs - deferredBsSentAt_;
@@ -1387,22 +1464,30 @@ void SKeyState::showModeMenu() {
 
     // Build candidate list for dropdown menu
     auto candList = std::make_unique<CommonCandidateList>();
-    candList->setPageSize(3);
+    candList->setPageSize(4);
     candList->setLayoutHint(CandidateLayoutHint::Vertical);
 
     candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, "1. Surrounding Text",
+        engine_, this, "1. Uinput", SKeyOutputMode::Uinput));
+    candList->append(std::make_unique<ModeCandidateWord>(
+        engine_, this, "2. Surrounding Text",
         SKeyOutputMode::SurroundingText));
     candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, "2. Preedit", SKeyOutputMode::Preedit));
-    candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, "3. Uinput", SKeyOutputMode::Uinput));
+        engine_, this, "3. Preedit", SKeyOutputMode::Preedit));
+
+    // Exclude/Include toggle
+    std::string excludeLabel = appExcluded_
+        ? "4. ✓ Loại trừ ứng dụng"
+        : "4. Loại trừ ứng dụng";
+    candList->append(std::make_unique<ExcludeCandidateWord>(
+        engine_, this, excludeLabel));
 
     // Highlight the currently active mode via cursor index
-    int cursorIdx = (mode == SKeyOutputMode::SurroundingText) ? 0
-                    : (mode == SKeyOutputMode::Preedit)       ? 1
-                    : (mode == SKeyOutputMode::Uinput)        ? 2
-                                                               : 0;
+    int cursorIdx = appExcluded_                                ? 3
+                    : (mode == SKeyOutputMode::Uinput)          ? 0
+                    : (mode == SKeyOutputMode::SurroundingText) ? 1
+                    : (mode == SKeyOutputMode::Preedit)         ? 2
+                                                                 : 0;
     candList->setGlobalCursorIndex(cursorIdx);
 
     ic_->inputPanel().setCandidateList(std::move(candList));
