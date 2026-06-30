@@ -46,3 +46,6 @@ add_dependencies(bamboo_core bamboo_build)
 
 add_subdirectory(src)
 add_subdirectory(data)
+
+# ── Install setup script ──
+install(PROGRAMS scripts/skey-setup DESTINATION ${CMAKE_INSTALL_BINDIR})

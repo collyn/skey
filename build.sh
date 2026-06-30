@@ -3,7 +3,7 @@ set -e
 
 # Define project variables
 PKG_NAME="fcitx5-skey"
-PKG_VERSION="0.1.0"
+PKG_VERSION="0.1.1"
 PKG_ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
 PKG_DIR="${PKG_NAME}_${PKG_VERSION}_${PKG_ARCH}"
 
@@ -55,6 +55,16 @@ Description: Vietnamese SKey input method addon for Fcitx5
  This package provides the skey input method engine for fcitx5,
  supporting Telex, Telex W, and VNI with advanced surrounding text editing capabilities.
 EOF
+
+# Create postinst script to run skey-setup after installation
+cat <<'POSTINST' > "$PKG_DIR/DEBIAN/postinst"
+#!/bin/bash
+# Run skey-setup for the user who invoked sudo (if available)
+if [ -n "$SUDO_USER" ]; then
+    su - "$SUDO_USER" -c "skey-setup" 2>/dev/null || true
+fi
+POSTINST
+chmod 755 "$PKG_DIR/DEBIAN/postinst"
 
 # Build the .deb package
 echo "--> Packaging as .deb..."

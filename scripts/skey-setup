@@ -1,0 +1,80 @@
+#!/bin/bash
+# skey-setup: Configure fcitx5 to use skey as the default Vietnamese input method.
+# Run this after installing skey: sudo make install && skey-setup
+
+set -e
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/fcitx5"
+PROFILE="$CONFIG_DIR/profile"
+CONFIG="$CONFIG_DIR/config"
+
+mkdir -p "$CONFIG_DIR"
+
+# ── Write profile: skey-im as default ──
+cat > "$PROFILE" << 'EOF'
+[Groups/0]
+# Group Name
+Name=Default
+# Layout
+Default Layout=us
+# Default Input Method
+DefaultIM=skey-im
+
+[Groups/0/Items/0]
+# Name
+Name=keyboard-us
+# Layout
+Layout=
+
+[Groups/0/Items/1]
+# Name
+Name=skey-im
+# Layout
+Layout=
+
+[GroupOrder]
+0=Default
+EOF
+
+echo "✓ Profile written: skey-im set as default IM"
+
+# ── Patch config: ActiveByDefault + ShareInputState ──
+if [ -f "$CONFIG" ]; then
+    # Update existing config
+    sed -i 's/^ActiveByDefault=.*/ActiveByDefault=True/' "$CONFIG"
+    sed -i 's/^ShareInputState=.*/ShareInputState=All/' "$CONFIG"
+    echo "✓ Config updated: ActiveByDefault=True, ShareInputState=All"
+else
+    # Create minimal config
+    cat > "$CONFIG" << 'EOF'
+[Hotkey]
+EnumerateWithTriggerKeys=True
+EnumerateSkipFirst=False
+
+[Hotkey/TriggerKeys]
+0=Control+space
+
+[Hotkey/AltTriggerKeys]
+0=Shift_L
+
+[Behavior]
+ActiveByDefault=True
+ShareInputState=All
+PreeditEnabledByDefault=True
+ShowInputMethodInformation=True
+PreloadInputMethod=True
+EOF
+    echo "✓ Config created with skey defaults"
+fi
+
+# ── Restart fcitx5 if running ──
+if pidof fcitx5 > /dev/null 2>&1; then
+    fcitx5 -r -d 2>/dev/null &
+    echo "✓ fcitx5 restarted"
+else
+    echo "ℹ fcitx5 is not running. Start it with: fcitx5 -d"
+fi
+
+echo ""
+echo "Done! skey is now the default Vietnamese input method."
+echo "Toggle with Ctrl+Space. Settings: fcitx5-configtool"

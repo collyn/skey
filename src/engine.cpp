@@ -585,11 +585,12 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     if (key.check(FcitxKey_space)) {
         if (!viet_.getRawInput().empty()) {
             if (useSurroundingText()) {
-                if (hasDeferredCommitPending()) {
+                bool hadDeferred = hasDeferredCommitPending();
+                if (hadDeferred) {
                     pendingFlushSuffix_ += " ";
                 }
                 forceFlushDeferredCommit();
-                if (!hasDeferredCommitPending()) {
+                if (!hadDeferred) {
                     ic_->commitString(" ");
                 }
                 keyEvent.filterAndAccept();
@@ -691,11 +692,12 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         // Non-letter: finalize
         if (!viet_.getRawInput().empty()) {
             if (useSurroundingText()) {
-                if (hasDeferredCommitPending()) {
+                bool hadDeferred = hasDeferredCommitPending();
+                if (hadDeferred) {
                     pendingFlushSuffix_ += std::string(1, ch);
                 }
                 forceFlushDeferredCommit();
-                if (!hasDeferredCommitPending()) {
+                if (!hadDeferred) {
                     ic_->commitString(std::string(1, ch));
                 }
                 keyEvent.filterAndAccept();
