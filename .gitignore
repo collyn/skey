@@ -26,10 +26,11 @@
 *.a
 *.lib
 
-# Executables
+# Executables and Packages
 *.exe
 *.out
 *.app
+*.deb
 
 # CMake files
 CMakeCache.txt

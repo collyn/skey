@@ -104,26 +104,27 @@ ProcessResult VietnameseEngine::processKey(char ch) {
     // After adding this key, the transformation is gone
     // (composed_ is pure ASCII — no Vietnamese chars remain).
     //
-    // When undo is detected, the last key was the undo trigger.
-    // Commit the composed text minus the undo trigger, and clear
-    // composition entirely. The undo key is consumed.
-    //   ww  → bamboo "ww"  → commit "w",  clear
-    //   ddd → bamboo "dd"  → commit "d",  clear
-    //   ass → bamboo "as"  → commit "a",  clear
+    // When undo is detected, whether the undo trigger key was consumed
+    // depends on the transformation:
+    //   - Multi-char transforms (oo→ô, dd→đ): trigger consumed.
+    //     composed_ is shorter than rawInput_. Commit all.
+    //     ooo → "oo" (2<3) → commit "oo"
+    //     ddd → "dd" (2<3) → commit "dd"
+    //   - Single-char transforms (w→ư in TelexW): trigger NOT consumed.
+    //     composed_ equals rawInput_. Strip last char (the trigger).
+    //     ww  → "ww" (2=2) → commit "w"
     if (rawInput_.size() > 1 && oldComposed != oldRawInput) {
         bool newIsAllAscii = true;
         for (unsigned char c : composed_) {
             if (c > 127) { newIsAllAscii = false; break; }
         }
         if (newIsAllAscii) {
-            // Commit composed text minus the undo trigger (last char)
-            if (composed_.size() > 1) {
-                committed_ += composed_.substr(0, composed_.size() - 1);
-            } else {
-                // Single char left after undo — that IS the undo trigger,
-                // nothing to commit (e.g. ww → "ww" with size 2, substr gives "w")
-                // This branch handles edge cases where composed_.size() == 1
+            if (composed_.size() < rawInput_.size()) {
+                // Trigger consumed by bamboo — commit all
                 committed_ += composed_;
+            } else if (composed_.size() > 0) {
+                // Trigger still present at end — strip it
+                committed_ += composed_.substr(0, composed_.size() - 1);
             }
 
             // Clear composition entirely — undo key consumed

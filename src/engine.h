@@ -3,11 +3,13 @@
 
 #include <fcitx-utils/event.h>
 #include <fcitx-utils/i18n.h>
+#include <fcitx/action.h>
 #include <fcitx/addonfactory.h>
 #include <fcitx/addonmanager.h>
 #include <fcitx/inputcontextproperty.h>
 #include <fcitx/inputmethodengine.h>
 #include <fcitx/instance.h>
+#include <fcitx/menu.h>
 
 #include "config.h"
 #include "vietnamese.h"
@@ -92,13 +94,31 @@ public:
     const SKeyConfig &config() const { return config_; }
     Instance *instance() { return instance_; }
     void setOutputMode(SKeyOutputMode mode);
+    void setInputMethod(SKeyInputMethod method);
     void saveAppMode(const std::string &app, SKeyOutputMode mode);
     SKeyOutputMode loadAppMode(const std::string &app) const;
+    void updateMenuActions();
 
 private:
+    void setupTrayMenu();
+
     Instance *instance_;
     SKeyConfig config_;
     FactoryFor<SKeyState> factory_;
+
+    // Tray menu: Input Method selector
+    SimpleAction imAction_;
+    Menu imMenu_;
+    SimpleAction imTelex_;
+    SimpleAction imVni_;
+    SimpleAction imTelexW_;
+
+    // Tray menu: Output Mode selector
+    SimpleAction omAction_;
+    Menu omMenu_;
+    SimpleAction omSurrounding_;
+    SimpleAction omPreedit_;
+    SimpleAction omSurroundingSlow_;
 };
 
 class SKeyEngineFactory : public AddonFactory {

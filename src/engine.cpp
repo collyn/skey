@@ -6,6 +6,7 @@
 #include <fcitx/inputcontext.h>
 #include <fcitx/candidatelist.h>
 #include <fcitx/inputpanel.h>
+#include <fcitx/statusarea.h>
 
 #include <fstream>
 #include <sstream>
@@ -96,7 +97,78 @@ SKeyEngine::SKeyEngine(Instance *instance)
       }) {
     reloadConfig();
     instance_->inputContextManager().registerProperty("skeyState", &factory_);
+    setupTrayMenu();
     SKEY_INFO() << "SKey Vietnamese Input Method loaded";
+}
+
+void SKeyEngine::setupTrayMenu() {
+    auto &uiManager = instance_->userInterfaceManager();
+
+    // ── Input Method menu ──
+    imTelex_.setShortText("Telex");
+    imTelex_.setCheckable(true);
+    imTelex_.registerAction("skey-im-telex", &uiManager);
+    imVni_.setShortText("VNI");
+    imVni_.setCheckable(true);
+    imVni_.registerAction("skey-im-vni", &uiManager);
+    imTelexW_.setShortText("Telex W");
+    imTelexW_.setCheckable(true);
+    imTelexW_.registerAction("skey-im-telexw", &uiManager);
+
+    imMenu_.addAction(&imTelex_);
+    imMenu_.addAction(&imVni_);
+    imMenu_.addAction(&imTelexW_);
+
+    imAction_.setShortText(_("Input Method"));
+    imAction_.setMenu(&imMenu_);
+    imAction_.registerAction("skey-input-method", &uiManager);
+
+    imTelex_.connect<SimpleAction::Activated>([this](InputContext *ic) {
+        FCITX_UNUSED(ic);
+        setInputMethod(SKeyInputMethod::Telex);
+    });
+    imVni_.connect<SimpleAction::Activated>([this](InputContext *ic) {
+        FCITX_UNUSED(ic);
+        setInputMethod(SKeyInputMethod::VNI);
+    });
+    imTelexW_.connect<SimpleAction::Activated>([this](InputContext *ic) {
+        FCITX_UNUSED(ic);
+        setInputMethod(SKeyInputMethod::TelexW);
+    });
+
+    // ── Output Mode menu ──
+    omSurrounding_.setShortText(_("Surrounding Text"));
+    omSurrounding_.setCheckable(true);
+    omSurrounding_.registerAction("skey-om-surrounding", &uiManager);
+    omPreedit_.setShortText(_("Preedit"));
+    omPreedit_.setCheckable(true);
+    omPreedit_.registerAction("skey-om-preedit", &uiManager);
+    omSurroundingSlow_.setShortText(_("Surrounding Text (slow)"));
+    omSurroundingSlow_.setCheckable(true);
+    omSurroundingSlow_.registerAction("skey-om-surrounding-slow", &uiManager);
+
+    omMenu_.addAction(&omSurrounding_);
+    omMenu_.addAction(&omPreedit_);
+    omMenu_.addAction(&omSurroundingSlow_);
+
+    omAction_.setShortText(_("Output Mode"));
+    omAction_.setMenu(&omMenu_);
+    omAction_.registerAction("skey-output-mode", &uiManager);
+
+    omSurrounding_.connect<SimpleAction::Activated>([this](InputContext *ic) {
+        FCITX_UNUSED(ic);
+        setOutputMode(SKeyOutputMode::SurroundingText);
+    });
+    omPreedit_.connect<SimpleAction::Activated>([this](InputContext *ic) {
+        FCITX_UNUSED(ic);
+        setOutputMode(SKeyOutputMode::Preedit);
+    });
+    omSurroundingSlow_.connect<SimpleAction::Activated>([this](InputContext *ic) {
+        FCITX_UNUSED(ic);
+        setOutputMode(SKeyOutputMode::SurroundingTextSlow);
+    });
+
+    updateMenuActions();
 }
 
 void SKeyEngine::keyEvent(const InputMethodEntry &entry,
@@ -111,7 +183,14 @@ void SKeyEngine::keyEvent(const InputMethodEntry &entry,
 void SKeyEngine::activate(const InputMethodEntry &entry,
                           InputContextEvent &event) {
     FCITX_UNUSED(entry);
-    auto *state = event.inputContext()->propertyFor(&factory_);
+    auto *ic = event.inputContext();
+
+    // Add tray menu actions (InputMethod group is cleared before activate)
+    ic->statusArea().addAction(StatusGroup::InputMethod, &imAction_);
+    ic->statusArea().addAction(StatusGroup::InputMethod, &omAction_);
+    updateMenuActions();
+
+    auto *state = ic->propertyFor(&factory_);
     if (state) {
         state->activate();
     }
@@ -143,11 +222,48 @@ void SKeyEngine::setConfig(const RawConfig &config) {
     config_.load(config, true);
     safeSaveAsIni(config_, "conf/skey.conf");
     reloadConfig();
+    updateMenuActions();
 }
 
 void SKeyEngine::setOutputMode(SKeyOutputMode mode) {
     config_.outputMode.setValue(mode);
     safeSaveAsIni(config_, "conf/skey.conf");
+    updateMenuActions();
+}
+
+void SKeyEngine::setInputMethod(SKeyInputMethod method) {
+    config_.inputMethod.setValue(method);
+    safeSaveAsIni(config_, "conf/skey.conf");
+    updateMenuActions();
+}
+
+void SKeyEngine::updateMenuActions() {
+    auto im = config_.inputMethod.value();
+    imTelex_.setChecked(im == SKeyInputMethod::Telex);
+    imVni_.setChecked(im == SKeyInputMethod::VNI);
+    imTelexW_.setChecked(im == SKeyInputMethod::TelexW);
+
+    // Update parent label to show current selection
+    if (im == SKeyInputMethod::VNI) {
+        imAction_.setShortText(_("Input Method: VNI"));
+    } else if (im == SKeyInputMethod::TelexW) {
+        imAction_.setShortText(_("Input Method: Telex W"));
+    } else {
+        imAction_.setShortText(_("Input Method: Telex"));
+    }
+
+    auto om = config_.outputMode.value();
+    omSurrounding_.setChecked(om == SKeyOutputMode::SurroundingText);
+    omPreedit_.setChecked(om == SKeyOutputMode::Preedit);
+    omSurroundingSlow_.setChecked(om == SKeyOutputMode::SurroundingTextSlow);
+
+    if (om == SKeyOutputMode::Preedit) {
+        omAction_.setShortText(_("Output Mode: Preedit"));
+    } else if (om == SKeyOutputMode::SurroundingTextSlow) {
+        omAction_.setShortText(_("Output Mode: Surrounding (slow)"));
+    } else {
+        omAction_.setShortText(_("Output Mode: Surrounding Text"));
+    }
 }
 
 void SKeyEngine::saveAppMode(const std::string &app, SKeyOutputMode mode) {
