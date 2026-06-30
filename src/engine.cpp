@@ -191,6 +191,9 @@ std::string SKeyEngine::subMode(const InputMethodEntry &entry,
     if (*config_.inputMethod == SKeyInputMethod::VNI) {
         return "VNI";
     }
+    if (*config_.inputMethod == SKeyInputMethod::TelexW) {
+        return "Telex W";
+    }
     return "Telex";
 }
 
@@ -201,9 +204,13 @@ std::string SKeyEngine::subMode(const InputMethodEntry &entry,
 SKeyState::SKeyState(SKeyEngine *engine, InputContext *ic)
     : engine_(engine), ic_(ic) {
     auto &cfg = engine_->config();
-    viet_.setMethod(*cfg.inputMethod == SKeyInputMethod::Telex
-                        ? skey::InputMethod::Telex
-                        : skey::InputMethod::VNI);
+    skey::InputMethod im = skey::InputMethod::Telex;
+    if (*cfg.inputMethod == SKeyInputMethod::VNI) {
+        im = skey::InputMethod::VNI;
+    } else if (*cfg.inputMethod == SKeyInputMethod::TelexW) {
+        im = skey::InputMethod::TelexW;
+    }
+    viet_.setMethod(im);
     viet_.setToneStyle(*cfg.tonePosition == TonePosition::Modern
                            ? skey::ToneStyle::Modern
                            : skey::ToneStyle::Traditional);
@@ -240,6 +247,20 @@ bool SKeyState::useHiddenComposition() const {
 }
 
 void SKeyState::activate() {
+    // Re-sync input method from config (handles config changes at runtime)
+    auto &cfg = engine_->config();
+    skey::InputMethod im = skey::InputMethod::Telex;
+    if (*cfg.inputMethod == SKeyInputMethod::VNI) {
+        im = skey::InputMethod::VNI;
+    } else if (*cfg.inputMethod == SKeyInputMethod::TelexW) {
+        im = skey::InputMethod::TelexW;
+    }
+    viet_.setMethod(im);
+    viet_.setToneStyle(*cfg.tonePosition == TonePosition::Modern
+                           ? skey::ToneStyle::Modern
+                           : skey::ToneStyle::Traditional);
+    viet_.setFreeMarking(*cfg.freeMarking);
+
     viet_.reset();
     committedLen_ = 0;
     modeMenuActive_ = false;
@@ -499,10 +520,36 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
             if (result == skey::ProcessResult::Committed) {
                 std::string committed = viet_.getCommitted();
-                ic_->commitString(committed);
                 viet_.clearCommitted();
-                committedLen_ = 0;
-                oldComposed.clear();
+                std::string newComposed = viet_.getComposed();
+
+                if (useSurroundingText()) {
+                    // In surrounding text mode, oldComposed is already on screen.
+                    // Replace it with committed + newComposed.
+                    std::string fullNew = committed + newComposed;
+                    if (!fullNew.empty()) {
+                        surroundingCommit(oldComposed, fullNew);
+                        committedLen_ = static_cast<int>(
+                            utf8::length(fullNew));
+                    } else {
+                        // Both committed and newComposed are empty — just
+                        // delete old text from screen
+                        surroundingCommit(oldComposed, "");
+                        committedLen_ = 0;
+                    }
+                } else {
+                    if (!committed.empty()) {
+                        ic_->commitString(committed);
+                    }
+                    committedLen_ = 0;
+                    if (!newComposed.empty()) {
+                        updatePreedit();
+                    } else {
+                        clearUI();
+                    }
+                }
+                keyEvent.filterAndAccept();
+                return;
             }
 
             std::string newComposed = viet_.getComposed();

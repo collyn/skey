@@ -11,7 +11,7 @@ extern "C" {
 namespace skey {
 
 /// Input method type
-enum class InputMethod { Telex, VNI };
+enum class InputMethod { Telex, VNI, TelexW };
 
 /// Tone mark position style
 enum class ToneStyle { Modern, Traditional };

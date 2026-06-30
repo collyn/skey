@@ -57,8 +57,14 @@ VietnameseEngine &VietnameseEngine::operator=(VietnameseEngine &&other) noexcept
 
 void VietnameseEngine::setMethod(InputMethod method) {
     method_ = method;
-    int32_t m = (method == InputMethod::VNI) ? BAMBOO_METHOD_VNI
-                                              : BAMBOO_METHOD_TELEX;
+    int32_t m;
+    if (method == InputMethod::VNI) {
+        m = BAMBOO_METHOD_VNI;
+    } else if (method == InputMethod::TelexW) {
+        m = BAMBOO_METHOD_TELEXW;
+    } else {
+        m = BAMBOO_METHOD_TELEX;
+    }
     skey_engine_set_method(handle_, m);
 }
 
@@ -87,20 +93,48 @@ ProcessResult VietnameseEngine::processKey(char ch) {
         return ProcessResult::Ignored;
     }
 
-    // If rawInput_ already has content and we're starting what looks like
-    // a new word, commit the old one first.
-    // bamboo-core handles multi-syllable internally but skey expects
-    // single-syllable composition, so we detect word boundaries.
-    // A new word starts when adding a consonant after the previous syllable
-    // ended. We let bamboo-core handle this by checking if the output changes.
-
     std::string oldComposed = composed_;
+    std::string oldRawInput = rawInput_;
     rawInput_ += ch;
     recompose();
 
-    if (composed_ != oldComposed) {
-        return ProcessResult::Consumed;
+    // Detect undo: bamboo-core cancelled the transformation.
+    // Before adding this key, there was an active transformation
+    // (oldComposed != oldRawInput, e.g. "ư" != "w", or "đ" != "dd").
+    // After adding this key, the transformation is gone
+    // (composed_ is pure ASCII — no Vietnamese chars remain).
+    //
+    // When undo is detected, the last key was the undo trigger.
+    // Commit the composed text minus the undo trigger, and clear
+    // composition entirely. The undo key is consumed.
+    //   ww  → bamboo "ww"  → commit "w",  clear
+    //   ddd → bamboo "dd"  → commit "d",  clear
+    //   ass → bamboo "as"  → commit "a",  clear
+    if (rawInput_.size() > 1 && oldComposed != oldRawInput) {
+        bool newIsAllAscii = true;
+        for (unsigned char c : composed_) {
+            if (c > 127) { newIsAllAscii = false; break; }
+        }
+        if (newIsAllAscii) {
+            // Commit composed text minus the undo trigger (last char)
+            if (composed_.size() > 1) {
+                committed_ += composed_.substr(0, composed_.size() - 1);
+            } else {
+                // Single char left after undo — that IS the undo trigger,
+                // nothing to commit (e.g. ww → "ww" with size 2, substr gives "w")
+                // This branch handles edge cases where composed_.size() == 1
+                committed_ += composed_;
+            }
+
+            // Clear composition entirely — undo key consumed
+            rawInput_.clear();
+            composed_.clear();
+            skey_engine_reset(handle_);
+
+            return ProcessResult::Committed;
+        }
     }
+
     return ProcessResult::Consumed;
 }
 

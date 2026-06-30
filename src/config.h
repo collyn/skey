@@ -8,8 +8,9 @@
 namespace fcitx {
 
 // Input method type
-enum class SKeyInputMethod { Telex, VNI };
-FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyInputMethod, N_("Telex"), N_("VNI"));
+enum class SKeyInputMethod { Telex, VNI, TelexW };
+FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyInputMethod, N_("Telex"), N_("VNI"),
+                                 N_("Telex W"));
 
 // Output mode
 enum class SKeyOutputMode { SurroundingText, Preedit, SurroundingTextSlow };
