@@ -67,7 +67,9 @@ public:
           mode_(mode) {}
 
     void select(InputContext *) const override {
-        engine_->setOutputMode(mode_);
+        state_->appModeOverride_ = mode_;
+        state_->hasAppModeOverride_ = true;
+        engine_->saveAppMode(state_->ic_->program(), mode_);
         SKEY_INFO() << "Mode switched to "
                     << (mode_ == SKeyOutputMode::SurroundingText
                             ? "SurroundingText"
@@ -245,17 +247,24 @@ void SKeyState::activate() {
     deferredCommitText_.clear();
     deferredPrefix_.clear();
     // Load per-app mode preference
-    auto savedMode = engine_->loadAppMode(ic_->program());
-    auto defaultMode = engine_->config().outputMode.value();
-    if (savedMode != defaultMode) {
-        appModeOverride_ = savedMode;
-        hasAppModeOverride_ = true;
-    } else {
-        hasAppModeOverride_ = false;
+    hasAppModeOverride_ = false;
+    if (!ic_->program().empty()) {
+        RawConfig cfg;
+        readAsIni(cfg, "conf/skey-app-modes.conf");
+        auto *val = cfg.valueByPath(ic_->program());
+        if (val) {
+            SKeyOutputMode savedMode = engine_->config().outputMode.value();
+            if (*val == "Preedit") savedMode = SKeyOutputMode::Preedit;
+            else if (*val == "SurroundingTextSlow") savedMode = SKeyOutputMode::SurroundingTextSlow;
+            else if (*val == "SurroundingText") savedMode = SKeyOutputMode::SurroundingText;
+            appModeOverride_ = savedMode;
+            hasAppModeOverride_ = true;
+        }
     }
 
     auto caps = ic_->capabilityFlags();
     auto mode = effectiveMode();
+    auto configuredMode = engine_->config().outputMode.value();
     SKEY_DEBUG() << "Activated: mode="
                  << (mode == SKeyOutputMode::SurroundingText
                          ? "surrounding"
@@ -263,9 +272,9 @@ void SKeyState::activate() {
                                 ? "preedit"
                                 : "surrounding-slow"))
                  << " configured="
-                 << (defaultMode == SKeyOutputMode::SurroundingText
+                 << (configuredMode == SKeyOutputMode::SurroundingText
                          ? "surrounding"
-                         : (defaultMode == SKeyOutputMode::Preedit
+                         : (configuredMode == SKeyOutputMode::Preedit
                                 ? "preedit"
                                 : "surrounding-slow"))
                  << " surroundingCap="
@@ -328,15 +337,15 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             case 3: newMode = SKeyOutputMode::SurroundingTextSlow; break;
             default: dismissModeMenu(); keyEvent.filterAndAccept(); return;
             }
-            engine_->setOutputMode(newMode);
+            appModeOverride_ = newMode;
+            hasAppModeOverride_ = true;
+            engine_->saveAppMode(ic_->program(), newMode);
             SKEY_INFO() << "Mode switched to "
                         << (newMode == SKeyOutputMode::SurroundingText
                                 ? "SurroundingText"
                                 : (newMode == SKeyOutputMode::Preedit
                                        ? "Preedit"
                                        : "SurroundingTextSlow"));
-            // Save per-app mode preference
-            engine_->saveAppMode(ic_->program(), newMode);
             dismissModeMenu();
             keyEvent.filterAndAccept();
             return;
@@ -372,6 +381,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         }
         if (!pendingCanMerge) {
             flushDeferredCommit();
+            // If flush was deferred (BS not processed yet), we still
+            // need to let the timer handle it. Pass key through.
         }
     }
 
@@ -437,8 +448,14 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     if (key.check(FcitxKey_space)) {
         if (!viet_.getRawInput().empty()) {
             if (useSurroundingText()) {
+                if (hasDeferredCommitPending()) {
+                    pendingFlushSuffix_ += " ";
+                }
                 flushDeferredCommit();
-                ic_->commitString(" ");
+                if (!hasDeferredCommitPending()) {
+                    // Flush was immediate or no deferred — commit space now
+                    ic_->commitString(" ");
+                }
                 keyEvent.filterAndAccept();
             } else {
                 commitBuffer();
@@ -512,8 +529,13 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         // Non-letter: finalize
         if (!viet_.getRawInput().empty()) {
             if (useSurroundingText()) {
+                if (hasDeferredCommitPending()) {
+                    pendingFlushSuffix_ += std::string(1, ch);
+                }
                 flushDeferredCommit();
-                ic_->commitString(std::string(1, ch));
+                if (!hasDeferredCommitPending()) {
+                    ic_->commitString(std::string(1, ch));
+                }
                 keyEvent.filterAndAccept();
             } else {
                 commitBuffer();
@@ -548,7 +570,7 @@ void SKeyState::commitBuffer() {
 }
 
 bool SKeyState::hasDeferredCommitPending() const {
-    return deferredCommitTimer_ && !deferredCommitText_.empty();
+    return !deferredCommitText_.empty();
 }
 
 void SKeyState::scheduleDeferredCommit(const std::string &text,
@@ -556,31 +578,88 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
     deferredCommitTimer_.reset();
     deferredCommitText_ = text;
     deferredPrefix_ = stablePrefix;
-    uint64_t delayUsec = 80000;
-    SKEY_DEBUG() << "Surr deferred: schedule commit '" << text << "' in "
+    pendingFlushSuffix_.clear();
+
+    // Delay after BackSpace to ensure the app has processed the BS key
+    // events before we commit new text via commitString (different D-Bus
+    // channel). No preedit is used (no underline).
+    //
+    // 80ms is required for Electron apps (Tabby, Antigravity) where BS
+    // processing takes ~60-70ms through D-Bus → main process → IPC →
+    // renderer → DOM pipeline.
+    //
+    // During fast typing this delay is invisible: each keystroke resets
+    // the timer via the deferred update path in surroundingCommit(), so
+    // the commit only happens when the user pauses (natural word boundary).
+    uint64_t delayUsec = 80000;  // 80ms
+
+    SKEY_DEBUG() << "Surr deferred: schedule '" << text << "' in "
                  << (delayUsec / 1000) << "ms";
     deferredCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC,
         now(CLOCK_MONOTONIC) + delayUsec,
         0,
         [this](EventSourceTime *, uint64_t) {
-            SKEY_DEBUG() << "Surr deferred: timer commit '" << deferredCommitText_ << "'";
-            ic_->commitString(deferredCommitText_);
+            SKEY_DEBUG() << "Surr deferred: timer commit '"
+                         << deferredCommitText_ << "'";
+            std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
             deferredCommitText_.clear();
             deferredPrefix_.clear();
+            deferredBsSentAt_ = 0;
+            pendingFlushSuffix_.clear();
             deferredCommitTimer_.reset();
+            ic_->commitString(toCommit);
             return true;
         });
 }
 
 void SKeyState::flushDeferredCommit() {
-    if (hasDeferredCommitPending()) {
-        SKEY_DEBUG() << "Surr deferred: flush commit '" << deferredCommitText_ << "'";
-        ic_->commitString(deferredCommitText_);
+    if (!hasDeferredCommitPending()) {
+        deferredCommitTimer_.reset();
+        return;
     }
+
+    // Enforce minimum delay between BackSpace and commit.
+    // If BS was sent recently, the app might not have processed it yet.
+    uint64_t minGapUsec = 80000;  // 80ms — match scheduleDeferredCommit
+    if (deferredBsSentAt_ > 0) {
+        uint64_t nowUs = now(CLOCK_MONOTONIC);
+        uint64_t elapsed = nowUs - deferredBsSentAt_;
+        if (elapsed < minGapUsec) {
+            // Not safe to commit yet — reschedule for the remaining time.
+            uint64_t remaining = minGapUsec - elapsed;
+            SKEY_DEBUG() << "Surr deferred: flush delayed "
+                         << (remaining / 1000) << "ms (BS not processed)";
+            deferredCommitTimer_.reset();
+            deferredCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+                CLOCK_MONOTONIC,
+                nowUs + remaining,
+                0,
+                [this](EventSourceTime *, uint64_t) {
+                    SKEY_DEBUG() << "Surr deferred: delayed flush commit '"
+                                 << deferredCommitText_ << "'";
+                    std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
+                    deferredCommitText_.clear();
+                    deferredPrefix_.clear();
+                    deferredBsSentAt_ = 0;
+                    pendingFlushSuffix_.clear();
+                    deferredCommitTimer_.reset();
+                    ic_->commitString(toCommit);
+                    return true;
+                });
+            return;
+        }
+    }
+
+    // Safe to commit now — BS has been processed.
+    SKEY_DEBUG() << "Surr deferred: flush commit '" << deferredCommitText_ << "'";
+    std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
     deferredCommitText_.clear();
     deferredPrefix_.clear();
+    deferredBsSentAt_ = 0;
+    pendingFlushSuffix_.clear();
     deferredCommitTimer_.reset();
+    ic_->commitString(toCommit);
 }
 
 void SKeyState::surroundingCommit(const std::string &oldComposed,
@@ -593,6 +672,9 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         SKEY_DEBUG() << "Surr deferred: update pending '" << deferredCommitText_
                      << "' -> '" << newComposed << "'";
         committedLen_ = newLen;
+        // Preserve the original BS timestamp — the BackSpace from the initial
+        // replace still hasn't been processed by the app.
+        uint64_t savedBsTime = deferredBsSentAt_;
         if (!deferredPrefix_.empty() &&
             newComposed.compare(0, deferredPrefix_.size(), deferredPrefix_) == 0) {
             scheduleDeferredCommit(newComposed.substr(deferredPrefix_.size()),
@@ -600,6 +682,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         } else {
             scheduleDeferredCommit(newComposed);
         }
+        deferredBsSentAt_ = savedBsTime;
         return;
     }
 
@@ -635,6 +718,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
                 bool needDelay = useSlowMode();
                 SKEY_DEBUG() << "Surr: BS x" << deleteLen
                              << (needDelay ? " (slow mode, deferred)" : " (direct)");
+                deferredBsSentAt_ = now(CLOCK_MONOTONIC);
                 for (int i = 0; i < deleteLen; ++i) {
                     ic_->forwardKey(Key(FcitxKey_BackSpace));
                 }
@@ -697,6 +781,49 @@ void SKeyState::surroundingBackspace() {
     // Reset engine so next keystroke starts fresh composition.
     // The old committed chars (before cursor) stay in the app untouched.
     viet_.reset();
+}
+
+void SKeyState::updateDeferredPreedit() {
+    // During deferred commit (slow surrounding text mode), show the pending
+    // text as preedit so the user gets immediate visual feedback while we
+    // wait for BackSpace to be processed before the actual commit.
+    Text preedit;
+    if (!deferredCommitText_.empty()) {
+        preedit.append(deferredCommitText_, TextFormatFlag::Underline);
+        preedit.setCursor(deferredCommitText_.size());
+    }
+    if (ic_->capabilityFlags().test(CapabilityFlag::Preedit)) {
+        ic_->inputPanel().setClientPreedit(preedit);
+    } else {
+        ic_->inputPanel().setPreedit(preedit);
+    }
+    ic_->updatePreedit();
+    ic_->updateUserInterface(UserInterfaceComponent::InputPanel);
+}
+
+void SKeyState::forwardUtf8AsKeys(const std::string &text) {
+    // Forward each UTF-8 character as a key event using Unicode keysyms.
+    // This ensures BS + replacement chars all go through the same
+    // key event handler in the app, preserving ordering.
+    size_t i = 0;
+    while (i < text.size()) {
+        uint32_t cp = 0;
+        uint8_t lead = static_cast<uint8_t>(text[i]);
+        int seqLen;
+        if (lead < 0x80)       { cp = lead;          seqLen = 1; }
+        else if (lead < 0xC0)  { i++; continue; /* continuation byte, skip */ }
+        else if (lead < 0xE0)  { cp = lead & 0x1F;   seqLen = 2; }
+        else if (lead < 0xF0)  { cp = lead & 0x0F;   seqLen = 3; }
+        else                   { cp = lead & 0x07;   seqLen = 4; }
+        for (int j = 1; j < seqLen && i + j < text.size(); j++) {
+            cp = (cp << 6) | (static_cast<uint8_t>(text[i + j]) & 0x3F);
+        }
+        i += seqLen;
+        // Unicode keysym range: 0x01000000 + codepoint
+        ic_->forwardKey(Key(static_cast<KeySym>(0x01000000 | cp)));
+    }
+    SKEY_DEBUG() << "Surr: forwarded '" << text << "' as "
+                 << utf8::length(text) << " key events";
 }
 
 void SKeyState::updatePreedit() {

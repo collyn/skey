@@ -46,6 +46,8 @@ private:
     void scheduleDeferredCommit(const std::string &text,
                                 const std::string &stablePrefix = "");
     void flushDeferredCommit();
+    void updateDeferredPreedit();
+    void forwardUtf8AsKeys(const std::string &text);
     void updatePreedit();
     void clearUI();
     void showModeMenu();
@@ -60,6 +62,8 @@ private:
     std::unique_ptr<EventSourceTime> deferredCommitTimer_;
     std::string deferredCommitText_;
     std::string deferredPrefix_;
+    uint64_t deferredBsSentAt_ = 0;
+    std::string pendingFlushSuffix_;
 };
 
 /// Main fcitx5 engine class.
