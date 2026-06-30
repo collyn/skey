@@ -22,6 +22,9 @@ use bamboo_core::{Engine, InputMethod, Mode};
 // Below we add instance-level functions that skey needs.
 
 /// Reset an engine instance, clearing all composition state.
+/// NOTE: bamboo-core's reset() has a bug where it doesn't fully clear
+/// internal buffers (active_buffer array data persists). We work around
+/// this by replacing the engine with a fresh instance of the same method.
 ///
 /// # Safety
 /// `engine` must be a valid pointer from `bamboo_engine_new`.
@@ -29,7 +32,9 @@ use bamboo_core::{Engine, InputMethod, Mode};
 pub unsafe extern "C" fn skey_engine_reset(engine: *mut Engine) {
     if !engine.is_null() {
         let e = unsafe { &mut *engine };
-        e.reset();
+        let im = e.input_method().clone();
+        let cfg = e.config();
+        *e = Engine::with_config(im, cfg);
     }
 }
 
@@ -105,6 +110,10 @@ pub unsafe extern "C" fn skey_engine_is_active(engine: *mut Engine) -> i32 {
 /// Returns a pointer to a null-terminated UTF-8 string with the composed output.
 /// The caller must free the string with `bamboo_free_string`.
 ///
+/// Note: auto-restore for non-Vietnamese words is NOT done here.
+/// The C++ layer handles it at commit time using `skey_engine_is_valid`
+/// and `skey_engine_restore_last_word`.
+///
 /// # Safety
 /// `engine` must be a valid pointer from `bamboo_engine_new`.
 /// `raw_input` must be a valid null-terminated UTF-8 C string.
@@ -122,7 +131,41 @@ pub unsafe extern "C" fn skey_engine_process_string(
         Err(_) => return std::ptr::null_mut(),
     };
 
-    e.reset();
+    // Work around bamboo-core's incomplete reset() — replace with fresh engine
+    let im = e.input_method().clone();
+    let cfg = e.config();
+    *e = Engine::with_config(im, cfg);
     let output = e.process(input, Mode::Vietnamese);
     CString::new(output).unwrap_or_default().into_raw()
 }
+
+/// Check if the current composition forms a valid Vietnamese syllable.
+/// Returns 1 if valid, 0 if invalid.
+///
+/// # Safety
+/// `engine` must be a valid pointer from `bamboo_engine_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn skey_engine_is_valid(engine: *mut Engine) -> i32 {
+    if engine.is_null() {
+        return 0;
+    }
+    let e = unsafe { &*engine };
+    if e.is_valid(false) { 1 } else { 0 }
+}
+
+/// Restore the last word to its un-transformed (raw) state.
+/// If `to_vietnamese` is non-zero, attempts to re-apply Vietnamese transformations.
+///
+/// # Safety
+/// `engine` must be a valid pointer from `bamboo_engine_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn skey_engine_restore_last_word(
+    engine: *mut Engine,
+    to_vietnamese: i32,
+) {
+    if !engine.is_null() {
+        let e = unsafe { &mut *engine };
+        e.restore_last_word(to_vietnamese != 0);
+    }
+}
+

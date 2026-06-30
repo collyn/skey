@@ -425,7 +425,7 @@ void SKeyState::activate() {
 }
 
 void SKeyState::deactivate() {
-    flushDeferredCommit();
+    forceFlushDeferredCommit();
     if (!viet_.getComposed().empty() && !useSurroundingText()) {
         commitBuffer();
     }
@@ -528,7 +528,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         ~KeyStates({KeyState::Shift, KeyState::CapsLock})) {
         if (!viet_.getRawInput().empty()) {
             if (useSurroundingText()) {
-                flushDeferredCommit();
+                forceFlushDeferredCommit();
             } else {
                 commitBuffer();
                 clearUI();
@@ -570,7 +570,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     if (key.check(FcitxKey_Return) || key.check(FcitxKey_KP_Enter)) {
         if (!viet_.getRawInput().empty()) {
             if (useSurroundingText()) {
-                flushDeferredCommit();
+                forceFlushDeferredCommit();
             } else {
                 commitBuffer();
                 clearUI();
@@ -588,9 +588,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 if (hasDeferredCommitPending()) {
                     pendingFlushSuffix_ += " ";
                 }
-                flushDeferredCommit();
+                forceFlushDeferredCommit();
                 if (!hasDeferredCommitPending()) {
-                    // Flush was immediate or no deferred — commit space now
                     ic_->commitString(" ");
                 }
                 keyEvent.filterAndAccept();
@@ -608,7 +607,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     if (key.check(FcitxKey_Tab)) {
         if (!viet_.getRawInput().empty()) {
             if (useSurroundingText()) {
-                flushDeferredCommit();
+                forceFlushDeferredCommit();
             } else {
                 commitBuffer();
                 clearUI();
@@ -695,7 +694,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 if (hasDeferredCommitPending()) {
                     pendingFlushSuffix_ += std::string(1, ch);
                 }
-                flushDeferredCommit();
+                forceFlushDeferredCommit();
                 if (!hasDeferredCommitPending()) {
                     ic_->commitString(std::string(1, ch));
                 }
@@ -713,7 +712,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     // Any other key: finalize
     if (!viet_.getRawInput().empty()) {
         if (useSurroundingText()) {
-            flushDeferredCommit();
+            forceFlushDeferredCommit();
         } else {
             commitBuffer();
             clearUI();
@@ -825,6 +824,24 @@ void SKeyState::flushDeferredCommit() {
     ic_->commitString(toCommit);
 }
 
+void SKeyState::forceFlushDeferredCommit() {
+    if (!hasDeferredCommitPending()) {
+        deferredCommitTimer_.reset();
+        return;
+    }
+    // Force-commit immediately — don't wait for BS timing.
+    // Used at word boundaries (space/enter/punctuation) to prevent
+    // stale deferred commits from corrupting new word composition.
+    SKEY_DEBUG() << "Surr deferred: force flush commit '" << deferredCommitText_ << "'";
+    std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
+    deferredCommitText_.clear();
+    deferredPrefix_.clear();
+    deferredBsSentAt_ = 0;
+    pendingFlushSuffix_.clear();
+    deferredCommitTimer_.reset();
+    ic_->commitString(toCommit);
+}
+
 void SKeyState::surroundingCommit(const std::string &oldComposed,
                                   const std::string &newComposed) {
     if (newComposed.empty()) return;
@@ -918,7 +935,10 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
                 deleteViaBackspace();
             }
         } else {
-            ic_->commitString(newComposed);
+            // deleteLen == 0: no deletion needed, only add new suffix if any
+            if (!addedPart.empty()) {
+                ic_->commitString(addedPart);
+            }
             committedLen_ = newLen;
         }
     }

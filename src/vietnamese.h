@@ -67,6 +67,10 @@ public:
     /// Clear the committed buffer.
     void clearCommitted() { committed_.clear(); }
 
+    /// Auto-restore: if current composition is not valid Vietnamese,
+    /// replace composed text with raw input. Call before committing.
+    void autoRestore();
+
 private:
     /// Recompose from raw input using bamboo-core.
     void recompose();

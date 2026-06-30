@@ -48,6 +48,7 @@ private:
     void scheduleDeferredCommit(const std::string &text,
                                 const std::string &stablePrefix = "");
     void flushDeferredCommit();
+    void forceFlushDeferredCommit();
     void updateDeferredPreedit();
     void forwardUtf8AsKeys(const std::string &text);
     void updatePreedit();

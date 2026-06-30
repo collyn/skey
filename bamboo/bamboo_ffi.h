@@ -112,6 +112,18 @@ int32_t skey_engine_is_active(BambooEngine *engine);
  */
 char *skey_engine_process_string(BambooEngine *engine, const char *raw_input);
 
+/**
+ * Check if the current composition forms a valid Vietnamese syllable.
+ * @return 1 if valid, 0 if invalid.
+ */
+int32_t skey_engine_is_valid(BambooEngine *engine);
+
+/**
+ * Restore the last word to its un-transformed (raw) state.
+ * @param to_vietnamese  Non-zero to re-apply Vietnamese transformations.
+ */
+void skey_engine_restore_last_word(BambooEngine *engine, int32_t to_vietnamese);
+
 /* ── Memory management ──────────────────────────────────────────────── */
 
 /**

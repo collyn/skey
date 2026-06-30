@@ -174,6 +174,54 @@ void VietnameseEngine::recompose() {
     } else {
         composed_ = rawInput_;
     }
+
+    // Real-time auto-restore (à la Lotus autoNonVnRestore + ddFreeStyle).
+    // If composed differs from raw AND is not valid Vietnamese:
+    //   - If it contains Vietnamese vowels/tone marks → restore to raw
+    //   - If it only contains đ/Đ (no vowels) → keep (abbreviations like đc)
+    if (composed_ != rawInput_ && !rawInput_.empty() &&
+        skey_engine_is_valid(handle_) == 0) {
+
+        // Check if composed has any non-ASCII char that isn't đ (U+0111) / Đ (U+0110).
+        // đ = UTF-8 C4 91, Đ = UTF-8 C4 90.
+        // Any other non-ASCII = Vietnamese vowel/tone mark → should restore.
+        bool hasVietnameseVowel = false;
+        for (size_t i = 0; i < composed_.size(); ) {
+            unsigned char c = composed_[i];
+            if (c <= 127) { i++; continue; }
+
+            // Determine UTF-8 sequence length
+            int len = 1;
+            if ((c & 0xE0) == 0xC0) len = 2;
+            else if ((c & 0xF0) == 0xE0) len = 3;
+            else if ((c & 0xF8) == 0xF0) len = 4;
+
+            // Check for đ (C4 91) or Đ (C4 90)
+            if (len == 2 && i + 1 < composed_.size() &&
+                composed_[i] == '\xC4' &&
+                (composed_[i + 1] == '\x91' || composed_[i + 1] == '\x90')) {
+                i += len;
+                continue;  // It's đ/Đ — skip
+            }
+
+            // Any other non-ASCII char = Vietnamese vowel/tone
+            hasVietnameseVowel = true;
+            break;
+        }
+
+        if (hasVietnameseVowel) {
+            composed_ = rawInput_;
+        }
+        // else: only đ/Đ present (ddFreeStyle) → keep composed_
+    }
+}
+
+void VietnameseEngine::autoRestore() {
+    if (rawInput_.empty() || composed_ == rawInput_) return;
+
+    if (skey_engine_is_valid(handle_) == 0) {
+        composed_ = rawInput_;
+    }
 }
 
 } // namespace skey
