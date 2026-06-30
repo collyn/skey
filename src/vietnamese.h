@@ -2,7 +2,11 @@
 #define FCITX5_SKEY_VIETNAMESE_H
 
 #include <string>
-#include <vector>
+
+// Forward declare opaque handle from bamboo FFI
+extern "C" {
+    typedef void BambooEngine;
+}
 
 namespace skey {
 
@@ -19,54 +23,28 @@ enum class ProcessResult {
     Ignored,    // Key was not relevant
 };
 
-/// Tone types in Vietnamese
-enum class Tone {
-    None = 0, // Thanh ngang (no mark)
-    Sac,      // Dấu sắc (´)
-    Huyen,    // Dấu huyền (`)
-    Hoi,      // Dấu hỏi (hook above)
-    Nga,      // Dấu ngã (~)
-    Nang,     // Dấu nặng (dot below)
-};
-
-/// Diacritical mark types (vowel modifications)
-enum class Mark {
-    None = 0,
-    Hat,    // Circumflex: a→â, e→ê, o→ô
-    Breve,  // Breve: a→ă
-    Horn,   // Horn: o→ơ, u→ư
-    Stroke, // Stroke: d→đ
-};
-
-/// Represents a Vietnamese character with its base, mark, and tone
-struct VChar {
-    char base = 0;         // Base letter (a,e,i,o,u,y,d)
-    Mark mark = Mark::None;
-    Tone tone = Tone::None;
-    bool upper = false;    // Uppercase?
-
-    /// Convert to UTF-8 string
-    std::string toUtf8() const;
-
-    /// Check if this is a vowel
-    bool isVowel() const;
-
-    /// Check if this character can accept the given mark
-    bool canAcceptMark(Mark m) const;
-};
-
 /// Core Vietnamese input processing engine.
 ///
+/// Thin wrapper around bamboo-core (Rust) via C FFI.
 /// Maintains composition state for a single syllable and handles
-/// Telex/VNI input rules, tone placement, and mark application.
+/// Telex/VNI input rules via bamboo-core's optimized engine.
 class VietnameseEngine {
 public:
     VietnameseEngine();
+    ~VietnameseEngine();
+
+    // Non-copyable (owns opaque Rust handle)
+    VietnameseEngine(const VietnameseEngine &) = delete;
+    VietnameseEngine &operator=(const VietnameseEngine &) = delete;
+
+    // Movable
+    VietnameseEngine(VietnameseEngine &&other) noexcept;
+    VietnameseEngine &operator=(VietnameseEngine &&other) noexcept;
 
     // Configuration
-    void setMethod(InputMethod method) { method_ = method; }
-    void setToneStyle(ToneStyle style) { toneStyle_ = style; }
-    void setFreeMarking(bool free) { freeMarking_ = free; }
+    void setMethod(InputMethod method);
+    void setToneStyle(ToneStyle style);
+    void setFreeMarking(bool free);
 
     /// Process a single key press. Returns the result type.
     ProcessResult processKey(char ch);
@@ -90,58 +68,19 @@ public:
     void clearCommitted() { committed_.clear(); }
 
 private:
-    /// Recompose from raw input.
+    /// Recompose from raw input using bamboo-core.
     void recompose();
 
-    /// Try to apply a Telex modifier key.
-    bool applyTelexModifier(char ch);
+    BambooEngine *handle_ = nullptr;
 
-    /// Try to apply a VNI modifier key.
-    bool applyVNIModifier(char ch);
-
-    /// Apply a tone to the current syllable.
-    bool applyTone(Tone tone);
-
-    /// Apply a diacritical mark.
-    bool applyMark(Mark mark, char target = 0);
-
-    /// Remove the current tone.
-    bool removeTone();
-
-    /// Remove diacritical marks.
-    bool removeMark();
-
-    /// Find the vowel index where the tone should be placed.
-    int findToneTarget() const;
-
-    /// Parse syllable structure from the chars_ vector.
-    void parseSyllable();
-
-    // State
     InputMethod method_ = InputMethod::Telex;
     ToneStyle toneStyle_ = ToneStyle::Modern;
     bool freeMarking_ = true;
 
     std::string rawInput_;       // What the user actually typed
-    std::vector<VChar> chars_;   // Parsed character array
+    std::string composed_;       // Cached composed output from bamboo-core
     std::string committed_;      // Auto-committed text
-
-    // Syllable structure indices (into chars_)
-    int vowelStart_ = -1;  // First vowel index
-    int vowelEnd_ = -1;    // Last vowel index (inclusive)
-    int consonantEnd_ = -1; // End of final consonant
 };
-
-// Utility functions
-
-/// Convert a Vietnamese character (base + mark + tone) to its UTF-8 representation.
-std::string vietnameseCharToUtf8(char base, Mark mark, Tone tone, bool upper);
-
-/// Check if a character is a Vietnamese vowel letter.
-bool isVietnameseVowel(char ch);
-
-/// Check if a character is a Vietnamese consonant letter.
-bool isVietnameseConsonant(char ch);
 
 } // namespace skey
 

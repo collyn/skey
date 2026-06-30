@@ -6,8 +6,17 @@ set(SKEY_SOURCES
 add_library(skey MODULE ${SKEY_SOURCES})
 target_link_libraries(skey
     Fcitx5::Core
+    bamboo_core
+    pthread
+    dl
+    m
 )
 target_compile_features(skey PRIVATE cxx_std_17)
+
+# Include path for bamboo_ffi.h
+target_include_directories(skey PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../bamboo"
+)
 
 install(TARGETS skey DESTINATION "${FCITX_INSTALL_ADDONDIR}")
 

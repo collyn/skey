@@ -58,6 +58,9 @@ out/
 *.ipch
 .clangd/
 
+# Rust/Cargo
+bamboo/target/
+
 # OS-specific files
 .DS_Store
 Thumbs.db
