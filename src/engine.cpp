@@ -76,7 +76,7 @@ static std::string outputModeName(SKeyOutputMode mode) {
 }
 
 static constexpr size_t maxBufferedUinputKeys = 32;
-static constexpr uint64_t uinputCommitMinDelayUsec = 10000;  // 10ms floor
+static constexpr uint64_t uinputCommitMinDelayUsec = 8000;   // 8ms floor
 static constexpr uint64_t uinputCommitDefaultDelayUsec = 10000; // 10ms fallback
 
 
@@ -568,9 +568,9 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
         std::string commitText = pendingUinputCommit_;
         pendingUinputCommit_.clear();
 
-        // Adaptive delay: 3× round-trip.
+        // Adaptive delay: round-trip + 2ms margin.
         uint64_t elapsed = now(CLOCK_MONOTONIC) - bsSentAt_;
-        uint64_t delay = std::max(elapsed * 3, uinputCommitMinDelayUsec);
+        uint64_t delay = std::max(elapsed + 8000, uinputCommitMinDelayUsec);
         lastBsRoundTrip_ = elapsed;
         SKEY_DEBUG() << "Uinput: all BS passed, round-trip " << (elapsed / 1000)
                      << "ms, commit delay " << (delay / 1000) << "ms";
@@ -1009,7 +1009,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                                         CLOCK_MONOTONIC,
                                         now(CLOCK_MONOTONIC) +
                                             (lastBsRoundTrip_ > 0
-                                                ? std::max(lastBsRoundTrip_ * 3, uinputCommitMinDelayUsec)
+                                                ? std::max(lastBsRoundTrip_ + 2000, uinputCommitMinDelayUsec)
                                                 : uinputCommitDefaultDelayUsec),
                                         0,
                                         [this, addPart](EventSourceTime *,
