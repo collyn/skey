@@ -23,9 +23,14 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+static bool g_skeyDebugEnabled = false;
+
 class SKeyLogger {
 public:
     ~SKeyLogger() {
+        if (!g_skeyDebugEnabled) {
+            return;
+        }
         std::ofstream f("/tmp/skey.log", std::ios::app);
         auto now = std::chrono::system_clock::now();
         auto t = std::chrono::system_clock::to_time_t(now);
@@ -374,8 +379,9 @@ bool SKeyEngine::isAppExcluded(const std::string &app) const {
 
 void SKeyEngine::reloadConfig() {
     readAsIni(config_, "conf/skey.conf");
+    g_skeyDebugEnabled = config_.debug.value();
     std::string modeStr = outputModeName(config_.outputMode.value());
-    SKEY_INFO() << "Config: outputMode=" << modeStr;
+    SKEY_INFO() << "Config: outputMode=" << modeStr << " debug=" << g_skeyDebugEnabled;
 }
 
 std::string SKeyEngine::subMode(const InputMethodEntry &entry,

@@ -42,7 +42,9 @@ FCITX_CONFIGURATION(
     Option<bool> autoRestore{this, "AutoRestore",
                              _("Auto restore non-Vietnamese"), true};
     // Show preedit text
-    Option<bool> showPreedit{this, "ShowPreedit", _("Show preedit"), true};);
+    Option<bool> showPreedit{this, "ShowPreedit", _("Show preedit"), true};
+    // Enable debug logging
+    Option<bool> debug{this, "Debug", _("Enable debug logging"), false};);
 
 } // namespace fcitx
 
