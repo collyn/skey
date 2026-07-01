@@ -417,7 +417,37 @@ SKeyState::SKeyState(SKeyEngine *engine, InputContext *ic)
     viet_.setFreeMarking(*cfg.freeMarking);
 }
 
+void SKeyState::refreshAppMode() {
+    std::string prog = ic_->program();
+    if (prog == cachedProgram_)
+        return;
+    cachedProgram_ = prog;
+
+    hasAppModeOverride_ = false;
+    appExcluded_ = false;
+    if (prog.empty())
+        return;
+
+    RawConfig cfg;
+    readAsIni(cfg, "conf/skey-app-modes.conf");
+    auto *val = cfg.valueByPath(prog);
+    if (val) {
+        if (*val == "Excluded") {
+            appExcluded_ = true;
+        } else {
+            SKeyOutputMode savedMode = engine_->config().outputMode.value();
+            if (*val == "Preedit") savedMode = SKeyOutputMode::Preedit;
+            else if (*val == "SurroundingTextSlow") savedMode = SKeyOutputMode::SurroundingText;  // migrate
+            else if (*val == "Uinput") savedMode = SKeyOutputMode::Uinput;
+            else if (*val == "SurroundingText") savedMode = SKeyOutputMode::SurroundingText;
+            appModeOverride_ = savedMode;
+            hasAppModeOverride_ = true;
+        }
+    }
+}
+
 SKeyOutputMode SKeyState::effectiveMode() const {
+    const_cast<SKeyState *>(this)->refreshAppMode();
     if (hasAppModeOverride_)
         return appModeOverride_;
     return engine_->config().outputMode.value();
@@ -738,6 +768,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     if (keyEvent.isRelease()) {
         return;
     }
+
+    // Refresh per-app mode in case IC is shared across apps
+    refreshAppMode();
 
     // App excluded — pass all keys through, except backtick for menu
     if (appExcluded_ && !modeMenuActive_) {

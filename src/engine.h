@@ -61,6 +61,7 @@ private:
     void updatePreedit();
     void clearUI();
     void showModeMenu();
+    void refreshAppMode();
 
     SKeyEngine *engine_;
     InputContext *ic_;
@@ -70,6 +71,7 @@ private:
     bool hasAppModeOverride_ = false;
     bool appExcluded_ = false;
     SKeyOutputMode appModeOverride_ = SKeyOutputMode::SurroundingText;
+    std::string cachedProgram_;
     std::unique_ptr<EventSourceTime> deferredCommitTimer_;
     std::string deferredCommitText_;
     std::string deferredPrefix_;

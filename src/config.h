@@ -29,9 +29,9 @@ FCITX_CONFIGURATION(
     Option<SKeyInputMethod> inputMethod{this, "InputMethod",
                                         _("Input Method"),
                                         SKeyInputMethod::Telex};
-    // Output mode: surrounding text or preedit
+    // Output mode: uinput (default), surrounding text, or preedit
     Option<SKeyOutputMode> outputMode{this, "OutputMode", _("Output Mode"),
-                                      SKeyOutputMode::SurroundingText};
+                                      SKeyOutputMode::Uinput};
     // Tone position style
     Option<TonePosition> tonePosition{this, "TonePosition",
                                       _("Tone Mark Position"),
