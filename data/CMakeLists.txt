@@ -9,9 +9,10 @@ if(RSVG_CONVERT)
     set(ICON_SIZES 16 22 24 32 48 128)
     set(SVG_ICON "${CMAKE_CURRENT_SOURCE_DIR}/icons/fcitx-skey.svg")
     foreach(SIZE ${ICON_SIZES})
-        set(PNG_ICON "${CMAKE_CURRENT_BINARY_DIR}/fcitx-skey-${SIZE}.png")
+        set(PNG_ICON "${CMAKE_CURRENT_BINARY_DIR}/icons/hicolor/${SIZE}x${SIZE}/apps/fcitx-skey.png")
         add_custom_command(
             OUTPUT ${PNG_ICON}
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/icons/hicolor/${SIZE}x${SIZE}/apps"
             COMMAND ${RSVG_CONVERT} -w ${SIZE} -h ${SIZE} ${SVG_ICON} -o ${PNG_ICON}
             DEPENDS ${SVG_ICON}
             COMMENT "Generating ${SIZE}x${SIZE} PNG icon"
