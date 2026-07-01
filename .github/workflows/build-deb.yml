@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write  # needed for GitHub Release + pushing to gh-pages
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -17,7 +20,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake extra-cmake-modules libfcitx5core-dev fcitx5 pkg-config gettext
+          sudo apt-get install -y cmake extra-cmake-modules libfcitx5core-dev fcitx5 pkg-config gettext dpkg-dev apt-utils
 
       - name: Install Rust toolchain
         run: |
@@ -40,3 +43,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: '*.deb'
+
+      - name: Publish to APT repository
+        if: github.ref_type == 'tag'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APT_GPG_KEY_EMAIL: ${{ secrets.APT_GPG_KEY_EMAIL }}
+        run: |
+          # Import GPG private key from secret
+          echo "${{ secrets.APT_GPG_PRIVATE_KEY }}" | gpg --import --batch
+          # Publish to gh-pages APT repo
+          scripts/apt-repo/update-repo.sh ./*.deb

@@ -65,3 +65,7 @@ bamboo/target/
 # OS-specific files
 .DS_Store
 Thumbs.db
+
+# GPG private keys (DO NOT COMMIT)
+private-key.asc
+*.gpg.key

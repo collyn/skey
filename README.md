@@ -23,7 +23,18 @@ SKey (Simple Key) là bộ gõ Tiếng Việt cho Linux trên nền tảng [fcit
 
 ## Cài đặt
 
-### Từ file .deb (Ubuntu/Debian)
+### APT Repository (khuyến nghị)
+
+Thêm APT repository để tự động nhận cập nhật qua `apt update`:
+
+```bash
+curl -fsSL https://collyn.github.io/skey/install.sh | sudo bash
+sudo apt install fcitx5-skey
+```
+
+Package tự động chạy `skey-setup` để cấu hình fcitx5 — bộ gõ SKey sẵn sàng sử dụng ngay.
+
+### Từ file .deb
 
 Tải file `.deb` mới nhất từ [GitHub Releases](https://github.com/collyn/skey/releases):
 
@@ -31,8 +42,6 @@ Tải file `.deb` mới nhất từ [GitHub Releases](https://github.com/collyn/
 sudo dpkg -i fcitx5-skey_*.deb
 sudo apt install -f  # cài dependencies nếu cần
 ```
-
-Package tự động chạy `skey-setup` để cấu hình fcitx5 — bộ gõ SKey sẵn sàng sử dụng ngay.
 
 ### Build từ source
 
