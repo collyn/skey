@@ -1,6 +1,7 @@
 [Addon]
 Name=SKey Vietnamese Input
 Name[vi]=SKey - Bộ gõ Tiếng Việt
+Icon=fcitx-skey
 Category=InputMethod
 Version=0.1.0
 Library=skey

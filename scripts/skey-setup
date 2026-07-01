@@ -98,6 +98,24 @@ export XMODIFIERS=@im=fcitx5
 export SDL_IM_MODULE=fcitx5
 export GLFW_IM_MODULE=ibus
 
+# ── Wayland: disable classicui (XEmbed tray broken on Wayland) ──
+if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+    ADDON_DIR="$CONFIG_DIR/addon"
+    mkdir -p "$ADDON_DIR"
+    cat > "$ADDON_DIR/classicui.conf" << 'CLASSICUIOFF'
+[Addon]
+Enabled=False
+CLASSICUIOFF
+    echo "✓ Disabled classicui (XEmbed tray doesn't work on Wayland)"
+
+    # Ensure notificationitem is enabled for native SNI tray
+    cat > "$ADDON_DIR/notificationitem.conf" << 'SNION'
+[Addon]
+Enabled=True
+SNION
+    echo "✓ Ensured notificationitem (native SNI tray) is enabled"
+fi
+
 # ── Restart fcitx5 if running ──
 if pidof fcitx5 > /dev/null 2>&1; then
     fcitx5 -r -d 2>/dev/null &
