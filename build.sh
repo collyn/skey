@@ -65,6 +65,9 @@ cat <<'POSTINST' > "$PKG_DIR/DEBIAN/postinst"
 # Update icon cache so the skey icon appears in taskbar after installation
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
+    # Also update breeze caches (icons installed to breeze/status/)
+    gtk-update-icon-cache /usr/share/icons/breeze 2>/dev/null || true
+    gtk-update-icon-cache /usr/share/icons/breeze-dark 2>/dev/null || true
 fi
 
 # Run skey-setup and start the optional uinput server for the user who invoked sudo.
@@ -108,6 +111,8 @@ set -e
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     if command -v gtk-update-icon-cache >/dev/null 2>&1; then
         gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
+        gtk-update-icon-cache /usr/share/icons/breeze 2>/dev/null || true
+        gtk-update-icon-cache /usr/share/icons/breeze-dark 2>/dev/null || true
     fi
     if command -v systemctl >/dev/null 2>&1; then
         systemctl daemon-reload 2>/dev/null || true

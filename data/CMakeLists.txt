@@ -1,9 +1,30 @@
-# SVG icon (scalable)
+# SVG icons
+# apps/ — app launcher and IM list popup
 install(FILES icons/fcitx-skey.svg
     DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps")
 
-# Generate PNG icons at standard sizes for Wayland/KDE system tray
-# rsvg-convert from librsvg2-bin is required
+# status/ — KDE system tray (system tray uses 'status' icon context, not 'apps')
+# Note: Lotus installs to breeze/status/ — we follow the same pattern
+# Hicolor fallback (works for all themes)
+install(FILES icons/fcitx-skey.svg
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/status"
+    RENAME "fcitx-skey.svg")
+# KDE Breeze theme
+install(FILES icons/fcitx-skey.svg
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/breeze/status/22"
+    RENAME "fcitx-skey.svg")
+install(FILES icons/fcitx-skey.svg
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/breeze/status/24"
+    RENAME "fcitx-skey.svg")
+# KDE Breeze Dark theme
+install(FILES icons/fcitx-skey.svg
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/breeze-dark/status/22"
+    RENAME "fcitx-skey.svg")
+install(FILES icons/fcitx-skey.svg
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/breeze-dark/status/24"
+    RENAME "fcitx-skey.svg")
+
+# PNG icons for apps/ (launcher, menus)
 find_program(RSVG_CONVERT rsvg-convert)
 if(RSVG_CONVERT)
     set(ICON_SIZES 16 22 24 32 48 128)
