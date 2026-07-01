@@ -80,8 +80,6 @@ static std::string outputModeName(SKeyOutputMode mode) {
 }
 
 static constexpr size_t maxBufferedUinputKeys = 32;
-static constexpr uint64_t uinputCommitMinDelayUsec = 8000;   // 8ms floor
-static constexpr uint64_t uinputCommitDefaultDelayUsec = 10000; // 10ms fallback
 
 
 static std::string skeySocketPath(const char *suffix) {
@@ -637,30 +635,29 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
                  << expectedUinputBackspaces_;
 
     if (seenUinputBackspaces_ >= expectedUinputBackspaces_) {
-        // All BS events have passed through.  Schedule commitString
-        // via a timer to let the app finish processing the deletions.
+        // All BS events passed through the IM module — the app has
+        // received them.  But D-Bus commitString may still race with
+        // kernel event processing in the app's event loop.  Small
+        // delay (5ms) lets the app finish processing the last BS.
         expectedUinputBackspaces_ = 0;
         seenUinputBackspaces_ = 0;
 
         std::string commitText = pendingUinputCommit_;
         pendingUinputCommit_.clear();
 
-        // Adaptive delay: round-trip + 2ms margin.
         uint64_t elapsed = now(CLOCK_MONOTONIC) - bsSentAt_;
-        uint64_t delay = std::max(elapsed + 8000, uinputCommitMinDelayUsec);
         lastBsRoundTrip_ = elapsed;
         SKEY_DEBUG() << "Uinput: all BS passed, round-trip " << (elapsed / 1000)
-                     << "ms, commit delay " << (delay / 1000) << "ms";
+                     << "ms, commit '" << commitText << "' in 5ms";
 
         uinputCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
             CLOCK_MONOTONIC,
-            now(CLOCK_MONOTONIC) + delay,
+            now(CLOCK_MONOTONIC) + 5000,  // 5ms fixed
             0,
             [this, commitText](EventSourceTime *, uint64_t) {
                 uinputCommitTimer_.reset();
                 uinputDeleting_ = false;
                 if (!commitText.empty()) {
-                    SKEY_DEBUG() << "Uinput: timer commit '" << commitText << "'";
                     ic_->commitString(commitText);
                 }
                 if (!bufferedUinputKeys_.empty()) {
@@ -797,22 +794,6 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     }
 
     if (handlePendingUinputBackspace(keyEvent)) {
-        return;
-    }
-
-    // Buffer keys while a no-BS uinput timer commit is pending.
-    // (e.g. after filterAndAccept of 'w' for 'b' → 'bư', waiting
-    // for timer to commitString("ư")).
-    if (uinputCommitTimer_) {
-        auto sym = keyEvent.key().sym();
-        std::string keyUtf8 = Key::keySymToUTF8(sym);
-        if (!keyUtf8.empty() &&
-            bufferedUinputKeys_.size() < maxBufferedUinputKeys) {
-            SKEY_DEBUG() << "Uinput: buffer key '" << keyUtf8
-                         << "' while timer pending";
-            bufferedUinputKeys_.push_back(sym);
-        }
-        keyEvent.filterAndAccept();
         return;
     }
 
@@ -1097,32 +1078,18 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                                              << "' sync commit '" << addPart
                                              << "'";
                                 ic_->commitString(addPart);
+                                committedLen_ = static_cast<int>(
+                                    utf8::length(newComposed));
                             } else {
-                                // Non-first (e.g. 'b'+'w' → 'bư'): timer
-                                // commit to let the prior forward reach the
-                                // app before the commit string.
+                                // Non-first (e.g. 'b'+'w' → 'bư'): key was
+                                // consumed, app still has oldComposed.
+                                // Immediate commitString is fine — no race.
                                 SKEY_DEBUG() << "Uinput: consume '" << keyUtf8
-                                             << "' timer commit '" << addPart
+                                             << "' commit '" << addPart
                                              << "'";
-                                uinputCommitTimer_ =
-                                    engine_->instance()->eventLoop().addTimeEvent(
-                                        CLOCK_MONOTONIC,
-                                        now(CLOCK_MONOTONIC) +
-                                            (lastBsRoundTrip_ > 0
-                                                ? std::max(lastBsRoundTrip_ + 2000, uinputCommitMinDelayUsec)
-                                                : uinputCommitDefaultDelayUsec),
-                                        0,
-                                        [this, addPart](EventSourceTime *,
-                                                        uint64_t) {
-                                            uinputCommitTimer_.reset();
-                                            SKEY_DEBUG() << "Uinput: timer commit '"
-                                                         << addPart << "'";
-                                            ic_->commitString(addPart);
-                                            if (!bufferedUinputKeys_.empty()) {
-                                                replayBufferedUinputKeys();
-                                            }
-                                            return true;
-                                        });
+                                ic_->commitString(addPart);
+                                committedLen_ = static_cast<int>(
+                                    utf8::length(newComposed));
                             }
                         }
                         return;
@@ -1357,17 +1324,12 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
                      << deleteLen << ")";
         if (deleteLen > 0) {
             // Helper: delete via BackSpace forwarding, then commit.
-            // XIM apps process forwarded keys synchronously (same X11 connection),
-            // so we can commit immediately. D-Bus apps need a deferred commit
-            // because the key goes through multiple async IPC hops.
+            // D-Bus guarantees message ordering within a connection, so
+            // commitString always arrives after the forwarded BackSpace
+            // keys — no timer needed.
             auto deleteViaBackspace = [&]() {
-                bool needDelay = !useUinputMode() &&
-                                 ic_->frontendName() == "dbus";
                 SKEY_DEBUG() << "Surr: BS x" << deleteLen
-                             << (useUinputMode() ? " (uinput)"
-                                                 : (needDelay ? " (dbus, deferred)"
-                                                              : " (direct)"));
-                deferredBsSentAt_ = now(CLOCK_MONOTONIC);
+                             << (useUinputMode() ? " (uinput)" : " (forward)");
                 if (useUinputMode()) {
                     sendBackspaceUinput(deleteLen);
                     expectedUinputBackspaces_ = deleteLen;
@@ -1382,12 +1344,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
                 }
                 committedLen_ = newLen;
                 if (!addedPart.empty()) {
-                    if (needDelay) {
-                        scheduleDeferredCommit(addedPart, stablePrefix);
-                    } else {
-                        SKEY_DEBUG() << "Surr: direct commit after BS '" << addedPart << "'";
-                        ic_->commitString(addedPart);
-                    }
+                    ic_->commitString(addedPart);
                 }
             };
 
