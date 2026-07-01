@@ -21,7 +21,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake extra-cmake-modules libfcitx5core-dev fcitx5 pkg-config gettext dpkg-dev apt-utils
+          sudo apt-get install -y cmake extra-cmake-modules libfcitx5core-dev fcitx5 pkg-config gettext dpkg-dev apt-utils librsvg2-bin
 
       - name: Install Rust toolchain
         run: |
