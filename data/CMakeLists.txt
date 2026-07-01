@@ -33,3 +33,7 @@ configure_file(
 )
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/fcitx5-skey-uinput-server@.service"
     DESTINATION "/lib/systemd/system")
+
+# Environment variables for X11/Wayland (sourced by login shells and display managers)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/fcitx5-skey.sh"
+    DESTINATION "/etc/profile.d")
