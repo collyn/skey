@@ -52,7 +52,7 @@ Version: $PKG_VERSION
 Section: utils
 Priority: optional
 Architecture: $PKG_ARCH
-Depends: fcitx5, systemd
+Depends: fcitx5, systemd, hicolor-icon-theme
 Maintainer: Huy
 Description: Vietnamese SKey input method addon for Fcitx5
  This package provides the skey input method engine for fcitx5,
@@ -62,6 +62,11 @@ EOF
 # Create postinst script to run skey-setup after installation
 cat <<'POSTINST' > "$PKG_DIR/DEBIAN/postinst"
 #!/bin/bash
+# Update icon cache so the skey icon appears in taskbar after installation
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
+fi
+
 # Run skey-setup and start the optional uinput server for the user who invoked sudo.
 if [ -n "$SUDO_USER" ]; then
     su - "$SUDO_USER" -c "skey-setup" 2>/dev/null || true
@@ -101,6 +106,9 @@ cat <<'POSTRM' > "$PKG_DIR/DEBIAN/postrm"
 #!/bin/bash
 set -e
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
+    fi
     if command -v systemctl >/dev/null 2>&1; then
         systemctl daemon-reload 2>/dev/null || true
     fi
