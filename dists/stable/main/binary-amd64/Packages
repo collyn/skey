@@ -1,13 +1,13 @@
 Package: fcitx5-skey
-Version: 0.1.7
+Version: 0.1.8
 Architecture: amd64
 Maintainer: Huy
 Depends: fcitx5, systemd, hicolor-icon-theme
-Filename: pool/main/f/fcitx5-skey/fcitx5-skey_0.1.7_amd64.deb
-Size: 1275610
-MD5sum: c81a551cc3d0006586c45dd47468b7bf
-SHA1: 6016eca9621cf271c38371995a1268b663217e0f
-SHA256: 074c3f70f55db31f0eb5928b59992f7d57be16170a6ceac8b66f1b16e043378c
+Filename: pool/main/f/fcitx5-skey/fcitx5-skey_0.1.8_amd64.deb
+Size: 1275810
+MD5sum: 9479e432f57c5f17b9f482a4a42137e4
+SHA1: 565880ffc206fa0378eb11291e64afc387370b43
+SHA256: bf64bcc216dcff0af7ad4a08ac160cdfea61d64acc9437d0c4f4d01f7e75b765
 Section: utils
 Priority: optional
 Description: Vietnamese SKey input method addon for Fcitx5
