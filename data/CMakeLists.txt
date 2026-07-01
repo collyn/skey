@@ -7,4 +7,4 @@ configure_file(
     @ONLY
 )
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/fcitx5-skey-uinput-server@.service"
-    DESTINATION "lib/systemd/system")
+    DESTINATION "/lib/systemd/system")

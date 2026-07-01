@@ -3,7 +3,10 @@ set -e
 
 # Define project variables
 PKG_NAME="fcitx5-skey"
-PKG_VERSION="0.1.1"
+PKG_VERSION=$(grep -oP 'project\(fcitx5-skey VERSION \K[0-9.]+' CMakeLists.txt)
+if [ -z "$PKG_VERSION" ]; then
+    PKG_VERSION="0.1.0"
+fi
 PKG_ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
 PKG_DIR="${PKG_NAME}_${PKG_VERSION}_${PKG_ARCH}"
 
@@ -71,6 +74,39 @@ elif command -v systemctl >/dev/null 2>&1; then
 fi
 POSTINST
 chmod 755 "$PKG_DIR/DEBIAN/postinst"
+
+# Create prerm script to stop and disable systemd service instances on remove
+cat <<'PRERM' > "$PKG_DIR/DEBIAN/prerm"
+#!/bin/bash
+set -e
+if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
+    if command -v systemctl >/dev/null 2>&1; then
+        # Stop all running instances of the service
+        systemctl stop "fcitx5-skey-uinput-server@*.service" 2>/dev/null || true
+        
+        # Disable all enabled instances
+        for link in /etc/systemd/system/multi-user.target.wants/fcitx5-skey-uinput-server@*; do
+            if [ -L "$link" ]; then
+                instance=$(basename "$link")
+                systemctl disable "$instance" 2>/dev/null || true
+            fi
+        done
+    fi
+fi
+PRERM
+chmod 755 "$PKG_DIR/DEBIAN/prerm"
+
+# Create postrm script to daemon-reload systemd after package removal
+cat <<'POSTRM' > "$PKG_DIR/DEBIAN/postrm"
+#!/bin/bash
+set -e
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload 2>/dev/null || true
+    fi
+fi
+POSTRM
+chmod 755 "$PKG_DIR/DEBIAN/postrm"
 
 # Build the .deb package
 echo "--> Packaging as .deb..."
