@@ -5,6 +5,7 @@
 
 class QComboBox;
 class QCheckBox;
+class HotkeyEdit;
 
 struct SKeyConfig;
 
@@ -17,12 +18,16 @@ public:
     SKeyConfig collectConfig() const;
     void setDefaults();
 
+    std::string triggerKey() const;
+    void setTriggerKey(const std::string &fcitx5Key);
+
 private:
     void setupUI();
 
     QComboBox *inputMethodCombo_;
     QComboBox *outputModeCombo_;
     QComboBox *tonePositionCombo_;
+    HotkeyEdit *triggerKeyEdit_;
     QCheckBox *freeMarkingCheck_;
     QCheckBox *autoRestoreCheck_;
     QCheckBox *showPreeditCheck_;

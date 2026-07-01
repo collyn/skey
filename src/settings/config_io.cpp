@@ -153,6 +153,128 @@ bool writeAppModesConfig(const AppModesConfig &cfg) {
     return out.good();
 }
 
+// ── fcitx5 global config (trigger key) ─────────────────────────────────
+
+static std::string fcitx5ConfigPath() {
+    return configDir().substr(0, configDir().rfind("/conf")) + "/config";
+}
+
+std::string readTriggerKey() {
+    std::ifstream in(fcitx5ConfigPath());
+    if (!in.is_open()) return "Control+space";
+
+    std::string line;
+    bool inTriggerSection = false;
+    while (std::getline(in, line)) {
+        rtrim(line);
+        if (line == "[Hotkey/TriggerKeys]") {
+            inTriggerSection = true;
+            continue;
+        }
+        if (inTriggerSection) {
+            if (line.empty()) continue;
+            if (line[0] == '[') break;  // next section
+            auto eq = line.find('=');
+            if (eq != std::string::npos) {
+                std::string key = line.substr(0, eq);
+                std::string val = line.substr(eq + 1);
+                rtrim(key);
+                rtrim(val);
+                if (key == "0") return val;
+            }
+        }
+    }
+    return "Control+space";
+}
+
+bool writeTriggerKey(const std::string &fcitx5Key) {
+    std::string path = fcitx5ConfigPath();
+    std::ifstream in(path);
+    if (!in.is_open()) return false;
+
+    std::vector<std::string> lines;
+    std::string line;
+    bool inTriggerSection = false;
+    bool wrote = false;
+
+    while (std::getline(in, line)) {
+        std::string trimmed = line;
+        rtrim(trimmed);
+
+        if (trimmed == "[Hotkey/TriggerKeys]") {
+            inTriggerSection = true;
+            lines.push_back(line);
+            continue;
+        }
+        if (inTriggerSection) {
+            if (!trimmed.empty() && trimmed[0] == '[') {
+                // Next section — insert 0= if not yet written
+                if (!wrote) {
+                    lines.push_back("0=" + fcitx5Key);
+                    wrote = true;
+                }
+                inTriggerSection = false;
+                lines.push_back(line);
+                continue;
+            }
+            auto eq = trimmed.find('=');
+            if (eq != std::string::npos) {
+                std::string key = trimmed.substr(0, eq);
+                rtrim(key);
+                if (key == "0") {
+                    lines.push_back("0=" + fcitx5Key);
+                    wrote = true;
+                    continue;
+                }
+            }
+            lines.push_back(line);
+            continue;
+        }
+        lines.push_back(line);
+    }
+
+    // If still in trigger section at EOF and not written
+    if (inTriggerSection && !wrote) {
+        lines.push_back("0=" + fcitx5Key);
+    }
+
+    in.close();
+
+    std::ofstream out(path);
+    if (!out.is_open()) return false;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        out << lines[i];
+        if (i + 1 < lines.size()) out << "\n";
+    }
+    return out.good();
+}
+
+// ── Key format conversion ──────────────────────────────────────────────
+
+std::string fcitx5KeyToQKeySeq(const std::string &fcitx5Key) {
+    std::string result = fcitx5Key;
+    // "Control+" → "Ctrl+"
+    for (size_t p = 0; (p = result.find("Control+", p)) != std::string::npos; p += 5)
+        result.replace(p, 8, "Ctrl+");
+    // "Super+" → "Meta+"
+    for (size_t p = 0; (p = result.find("Super+", p)) != std::string::npos; p += 5)
+        result.replace(p, 6, "Meta+");
+    // Lowercase modifier names
+    // (already done by the replaces above — "Ctrl", "Meta" are correct for QKeySequence)
+    return result;
+}
+
+std::string qKeySeqToFcitx5(const std::string &qKeySeq) {
+    std::string result = qKeySeq;
+    // "Ctrl+" → "Control+"
+    for (size_t p = 0; (p = result.find("Ctrl+", p)) != std::string::npos; p += 8)
+        result.replace(p, 5, "Control+");
+    // "Meta+" → "Super+"
+    for (size_t p = 0; (p = result.find("Meta+", p)) != std::string::npos; p += 6)
+        result.replace(p, 5, "Super+");
+    return result;
+}
+
 // ── Defaults ────────────────────────────────────────────────────────────
 
 SKeyConfig defaultConfig() {

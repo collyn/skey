@@ -1,12 +1,13 @@
 #include "general_tab.h"
+#include "hotkey_edit.h"
 #include "config_io.h"
 
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
+#include <QFrame>
 #include <QLabel>
 #include <QVBoxLayout>
-#include <QFrame>
 
 GeneralTab::GeneralTab(QWidget *parent) : QWidget(parent) {
     setupUI();
@@ -43,6 +44,11 @@ void GeneralTab::setupUI() {
     tonePositionCombo_->addItem(QString::fromUtf8("Traditional (hòa)"),
                                 QString::fromUtf8("Traditional (hòa)"));
     enumLayout->addRow(QString::fromUtf8("Dấu thanh:"), tonePositionCombo_);
+
+    triggerKeyEdit_ = new HotkeyEdit(enumFrame);
+    triggerKeyEdit_->setToolTip(
+        QString::fromUtf8("Nhấn tổ hợp phím để thay đổi"));
+    enumLayout->addRow(QString::fromUtf8("Phím chuyển bộ gõ:"), triggerKeyEdit_);
 
     mainLayout->addWidget(enumFrame);
 
@@ -99,4 +105,13 @@ SKeyConfig GeneralTab::collectConfig() const {
 
 void GeneralTab::setDefaults() {
     loadFromConfig(defaultConfig());
+    triggerKeyEdit_->setFcitx5Value("Control+space");
+}
+
+std::string GeneralTab::triggerKey() const {
+    return triggerKeyEdit_->fcitx5Value();
+}
+
+void GeneralTab::setTriggerKey(const std::string &fcitx5Key) {
+    triggerKeyEdit_->setFcitx5Value(fcitx5Key);
 }

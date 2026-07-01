@@ -28,10 +28,18 @@ struct AppModesConfig {
 // ── Read helpers ────────────────────────────────────────────────────────
 SKeyConfig      readSkeyConfig();
 AppModesConfig  readAppModesConfig();
+std::string     readTriggerKey();     // from [Hotkey/TriggerKeys] in fcitx5 config
 
 // ── Write helpers ───────────────────────────────────────────────────────
 bool writeSkeyConfig(const SKeyConfig &cfg);
 bool writeAppModesConfig(const AppModesConfig &cfg);
+bool writeTriggerKey(const std::string &fcitx5Key);  // write to [Hotkey/TriggerKeys]/0
+
+// ── Conversion helpers ──────────────────────────────────────────────────
+/// Convert fcitx5 key format ("Control+space") → QKeySequence format ("Ctrl+Space")
+std::string fcitx5KeyToQKeySeq(const std::string &fcitx5Key);
+/// Convert QKeySequence format ("Ctrl+Space") → fcitx5 key format ("Control+space")
+std::string qKeySeqToFcitx5(const std::string &qKeySeq);
 
 // ── Defaults ────────────────────────────────────────────────────────────
 SKeyConfig defaultConfig();

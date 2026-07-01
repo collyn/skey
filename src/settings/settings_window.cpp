@@ -1,6 +1,7 @@
 #include "settings_window.h"
 #include "general_tab.h"
 #include "app_modes_tab.h"
+#include "info_tab.h"
 #include "config_io.h"
 
 #include <QApplication>
@@ -26,7 +27,7 @@ SkeySettingsWindow::SkeySettingsWindow(QWidget *parent)
 
 void SkeySettingsWindow::setupUI() {
     setWindowTitle(QString::fromUtf8("Skey - Tùy chỉnh"));
-    setFixedSize(440, 400);
+    setFixedSize(440, 510);
 
     auto *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(12, 12, 12, 12);
@@ -36,8 +37,10 @@ void SkeySettingsWindow::setupUI() {
     tabWidget_ = new QTabWidget(this);
     generalTab_  = new GeneralTab(this);
     appModesTab_ = new AppModesTab(this);
+    infoTab_     = new InfoTab(this);
     tabWidget_->addTab(generalTab_,  QString::fromUtf8("Chung"));
     tabWidget_->addTab(appModesTab_, QString::fromUtf8("Ứng dụng"));
+    tabWidget_->addTab(infoTab_,     QString::fromUtf8("Info"));
     mainLayout->addWidget(tabWidget_);
 
     // ── Hint label ──
@@ -74,19 +77,23 @@ void SkeySettingsWindow::setupUI() {
 void SkeySettingsWindow::loadSettings() {
     auto cfg      = readSkeyConfig();
     auto appModes = readAppModesConfig();
+    std::string trigger = readTriggerKey();
 
     generalTab_->loadFromConfig(cfg);
+    generalTab_->setTriggerKey(trigger);
     appModesTab_->loadFromConfig(appModes);
 }
 
 void SkeySettingsWindow::onApply() {
     SKeyConfig cfg = generalTab_->collectConfig();
     AppModesConfig appModes = appModesTab_->collectConfig();
+    std::string trigger = generalTab_->triggerKey();
 
     bool ok1 = writeSkeyConfig(cfg);
     bool ok2 = writeAppModesConfig(appModes);
+    bool ok3 = writeTriggerKey(trigger);
 
-    if (ok1 && ok2) {
+    if (ok1 && ok2 && ok3) {
         reloadFcitx5();
         QMessageBox::information(this,
             QString::fromUtf8("Đã áp dụng"),
