@@ -55,6 +55,15 @@ configure_file(
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/fcitx5-skey-uinput-server@.service"
     DESTINATION "/lib/systemd/system")
 
+# ── Settings GUI .desktop file ──
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/fcitx5-skey-settings.desktop.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/fcitx5-skey-settings.desktop"
+    @ONLY
+)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/fcitx5-skey-settings.desktop"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/applications")
+
 # Environment variables for X11/Wayland (sourced by login shells and display managers)
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/fcitx5-skey.sh"
     DESTINATION "/etc/profile.d")

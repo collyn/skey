@@ -12,6 +12,7 @@
 #include <sstream>
 #include <algorithm>
 #include <chrono>
+#include <unistd.h>
 #include <ctime>
 #include <cstddef>
 #include <cerrno>
@@ -206,19 +207,19 @@ void SKeyEngine::setupTrayMenu() {
     });
 
     // ── Output Mode menu ──
+    omUinput_.setShortText(_("Uinput"));
+    omUinput_.setCheckable(true);
+    omUinput_.registerAction("skey-om-uinput", &uiManager);
     omSurrounding_.setShortText(_("Surrounding Text"));
     omSurrounding_.setCheckable(true);
     omSurrounding_.registerAction("skey-om-surrounding", &uiManager);
     omPreedit_.setShortText(_("Preedit"));
     omPreedit_.setCheckable(true);
     omPreedit_.registerAction("skey-om-preedit", &uiManager);
-    omUinput_.setShortText(_("Uinput"));
-    omUinput_.setCheckable(true);
-    omUinput_.registerAction("skey-om-uinput", &uiManager);
 
+    omMenu_.addAction(&omUinput_);
     omMenu_.addAction(&omSurrounding_);
     omMenu_.addAction(&omPreedit_);
-    omMenu_.addAction(&omUinput_);
 
     omAction_.setShortText(_("Output Mode"));
     omAction_.setMenu(&omMenu_);
@@ -235,6 +236,18 @@ void SKeyEngine::setupTrayMenu() {
     omUinput_.connect<SimpleAction::Activated>([this](InputContext *ic) {
         FCITX_UNUSED(ic);
         setOutputMode(SKeyOutputMode::Uinput);
+    });
+
+    // ── Settings action ──
+    settingsAction_.setShortText(_("Settings..."));
+    settingsAction_.registerAction("skey-settings", &uiManager);
+    settingsAction_.connect<SimpleAction::Activated>([this](InputContext *ic) {
+        FCITX_UNUSED(ic);
+        pid_t pid = fork();
+        if (pid == 0) {
+            execlp("fcitx5-skey-settings", "fcitx5-skey-settings", nullptr);
+            _exit(1);
+        }
     });
 
     updateMenuActions();
@@ -257,6 +270,7 @@ void SKeyEngine::activate(const InputMethodEntry &entry,
     // Add tray menu actions (InputMethod group is cleared before activate)
     ic->statusArea().addAction(StatusGroup::InputMethod, &imAction_);
     ic->statusArea().addAction(StatusGroup::InputMethod, &omAction_);
+    ic->statusArea().addAction(StatusGroup::InputMethod, &settingsAction_);
     updateMenuActions();
 
     auto *state = ic->propertyFor(&factory_);

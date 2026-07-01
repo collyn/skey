@@ -142,6 +142,9 @@ private:
     SimpleAction omSurrounding_;
     SimpleAction omPreedit_;
     SimpleAction omUinput_;
+
+    // Tray menu: Launch settings app
+    SimpleAction settingsAction_;
 };
 
 class SKeyEngineFactory : public AddonFactory {

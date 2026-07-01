@@ -52,7 +52,7 @@ Version: $PKG_VERSION
 Section: utils
 Priority: optional
 Architecture: $PKG_ARCH
-Depends: fcitx5, systemd, hicolor-icon-theme
+Depends: fcitx5, systemd, hicolor-icon-theme, libqt6widgets6
 Maintainer: Huy
 Description: Vietnamese SKey input method addon for Fcitx5
  This package provides the skey input method engine for fcitx5,

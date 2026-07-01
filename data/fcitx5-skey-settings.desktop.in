@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Skey Settings
+Name[vi]=Tùy chỉnh Skey
+Comment=Configure Skey Vietnamese input method
+Comment[vi]=Cấu hình phương thức gõ tiếng Việt Skey
+Exec=@CMAKE_INSTALL_BINDIR@/fcitx5-skey-settings
+Icon=fcitx-skey
+Terminal=false
+Type=Application
+Categories=Settings;DesktopSettings;Qt;
+Keywords=Vietnamese;input method;fcitx5;skey;Unikey;
+Keywords[vi]=tiếng Việt;gõ;fcitx5;skey;Unikey;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(fcitx5-skey VERSION 0.1.9)
+project(fcitx5-skey VERSION 0.1.10)
 
 find_package(ECM 1.0.0 REQUIRED)
 set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
@@ -46,6 +46,15 @@ add_dependencies(bamboo_core bamboo_build)
 
 add_subdirectory(src)
 add_subdirectory(data)
+
+# ── Qt6 settings application (optional) ─────────────────────────────────
+find_package(Qt6 QUIET COMPONENTS Widgets Core)
+if(Qt6_FOUND)
+    message(STATUS "Qt6 found — building skey settings GUI")
+    add_subdirectory(src/settings)
+else()
+    message(STATUS "Qt6 not found — skey settings GUI will not be built")
+endif()
 
 # ── Install setup script ──
 install(PROGRAMS scripts/skey-setup DESTINATION ${CMAKE_INSTALL_BINDIR})
