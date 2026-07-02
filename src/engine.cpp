@@ -24,7 +24,55 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-static bool g_skeyDebugEnabled = false;
+/// Read the debug flag directly from the user config file.
+/// Bypasses fcitx5's config system which doesn't reliably call setConfig() for this addon.
+/// Handles both formats:
+///   1. With section: [SKeyConfig] / [skey] then key=value
+///   2. Without section: just key=value pairs (fcitx5 GUI output)
+static bool readDebugFromFile() {
+    const char *home = getenv("HOME");
+    if (!home) return true;  // default on
+    std::string path = std::string(home) + "/.config/fcitx5/conf/skey.conf";
+    std::ifstream f(path);
+    if (!f.is_open()) return true;  // default on
+
+    std::string line;
+    bool inSection = false;
+    bool fileHasSections = false;
+    while (std::getline(f, line)) {
+        // Trim
+        size_t start = line.find_first_not_of(" \t\r\n");
+        if (start == std::string::npos) continue;
+        size_t end = line.find_last_not_of(" \t\r\n");
+        line = line.substr(start, end - start + 1);
+
+        // Skip comments
+        if (line[0] == '#') continue;
+
+        // Track sections
+        if (line[0] == '[') {
+            fileHasSections = true;
+            inSection = (line == "[SKeyConfig]" || line == "[skey]");
+            continue;
+        }
+
+        // If file has sections, only look inside the right one.
+        // If file has NO sections, all keys are at the top level.
+        if (fileHasSections && !inSection) continue;
+
+        auto eq = line.find('=');
+        if (eq != std::string::npos) {
+            std::string key = line.substr(0, eq);
+            std::string val = line.substr(eq + 1);
+            if (key == "Debug") {
+                return val == "True" || val == "true" || val == "1";
+            }
+        }
+    }
+    return true;  // default on if key not found
+}
+
+static bool g_skeyDebugEnabled = true;
 
 class SKeyLogger {
 public:
@@ -265,6 +313,9 @@ void SKeyEngine::activate(const InputMethodEntry &entry,
     FCITX_UNUSED(entry);
     auto *ic = event.inputContext();
 
+    // Re-read config to pick up runtime changes (e.g. Debug toggle)
+    reloadConfig();
+
     // Add tray menu actions (InputMethod group is cleared before activate)
     ic->statusArea().addAction(StatusGroup::InputMethod, &imAction_);
     ic->statusArea().addAction(StatusGroup::InputMethod, &omAction_);
@@ -301,6 +352,8 @@ const Configuration *SKeyEngine::getConfig() const { return &config_; }
 
 void SKeyEngine::setConfig(const RawConfig &config) {
     config_.load(config, true);
+    // Preserve Debug from file — fcitx5's config system may not include it
+    config_.debug.setValue(readDebugFromFile());
     safeSaveAsIni(config_, "conf/skey.conf");
     reloadConfig();
     updateMenuActions();
@@ -391,9 +444,10 @@ bool SKeyEngine::isAppExcluded(const std::string &app) const {
 
 void SKeyEngine::reloadConfig() {
     readAsIni(config_, "conf/skey.conf");
-    g_skeyDebugEnabled = config_.debug.value();
+    g_skeyDebugEnabled = readDebugFromFile();
     std::string modeStr = outputModeName(config_.outputMode.value());
-    SKEY_INFO() << "Config: outputMode=" << modeStr << " debug=" << g_skeyDebugEnabled;
+    SKEY_INFO() << "Config: outputMode=" << modeStr
+                << " debug(from file)=" << g_skeyDebugEnabled;
 }
 
 std::string SKeyEngine::subMode(const InputMethodEntry &entry,

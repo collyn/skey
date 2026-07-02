@@ -69,3 +69,14 @@ Thumbs.db
 # GPG private keys (DO NOT COMMIT)
 private-key.asc
 *.gpg.key
+
+# Python
+.venv/
+venv/
+ENV/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+

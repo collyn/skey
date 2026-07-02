@@ -21,6 +21,17 @@ target_include_directories(skey PRIVATE
 add_executable(fcitx5-skey-uinput-server uinput_server.cpp)
 target_compile_features(fcitx5-skey-uinput-server PRIVATE cxx_std_17)
 
+# ── Test executable: Vietnamese typing tests ─────────────────────────────
+add_executable(test_vietnamese test_vietnamese.cpp vietnamese.cpp)
+target_link_libraries(test_vietnamese bamboo_core pthread dl)
+target_compile_features(test_vietnamese PRIVATE cxx_std_17)
+target_include_directories(test_vietnamese PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../bamboo"
+)
+# Enable CTest integration
+add_test(NAME VietnameseTyping COMMAND test_vietnamese)
+enable_testing()
+
 install(TARGETS skey DESTINATION "${FCITX_INSTALL_ADDONDIR}")
 install(TARGETS fcitx5-skey-uinput-server DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
