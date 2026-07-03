@@ -8,6 +8,7 @@
 #include <fcitx/inputpanel.h>
 #include <fcitx/statusarea.h>
 
+
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -631,8 +632,11 @@ bool SKeyState::connectUinputServer() {
     return false;
 }
 
-void SKeyState::sendBackspaceUinput(int count) {
-    if (count <= 0) {
+void SKeyState::sendBackspaceUinput(int count, const std::string &text) {
+    if (count < 0) {
+        return;
+    }
+    if (count == 0 && text.empty()) {
         return;
     }
     if (!connectUinputServer()) {
@@ -640,14 +644,17 @@ void SKeyState::sendBackspaceUinput(int count) {
         return;
     }
 
-    // Send BS-only to the server.  The server injects N backspace key
-    // events through the kernel.  Text is committed separately via
-    // D-Bus commitString after the BS events have been processed.
+    // Protocol: int32_t count, uint32_t textLen, then text bytes.
+    // The server sends `count` BS events, then types `text` via Ctrl+Shift+U.
     int32_t count32 = count;
-    uint32_t textLen = 0;
-    std::vector<char> msg(sizeof(int32_t) + sizeof(uint32_t));
+    uint32_t textLen = static_cast<uint32_t>(text.size());
+    std::vector<char> msg(sizeof(int32_t) + sizeof(uint32_t) + textLen);
     memcpy(msg.data(), &count32, sizeof(count32));
     memcpy(msg.data() + sizeof(count32), &textLen, sizeof(textLen));
+    if (textLen > 0) {
+        memcpy(msg.data() + sizeof(count32) + sizeof(textLen),
+               text.data(), textLen);
+    }
 
     bsSentAt_ = now(CLOCK_MONOTONIC);
     ssize_t n = send(uinputClientFd_, msg.data(), msg.size(), MSG_NOSIGNAL);
@@ -659,7 +666,17 @@ void SKeyState::sendBackspaceUinput(int count) {
             send(uinputClientFd_, msg.data(), msg.size(), MSG_NOSIGNAL);
         }
     }
-    SKEY_DEBUG() << "Uinput: sent BS=" << count;
+    SKEY_DEBUG() << "Uinput: sent BS=" << count
+                 << (textLen > 0 ? " +text='" + text + "'" : "");
+    // When text is included, the server types it via Ctrl+Shift+U hex.
+    // Those keystrokes loop back through fcitx5; enable passthrough so
+    // they reach the app unmodified.  Window is sized per character
+    // (roughly 15ms per char for Ctrl+Shift+U typing + latency).
+    if (textLen > 0) {
+        uinputPassthroughUntil_ = now(CLOCK_MONOTONIC) +
+            std::max(kUinputPassthroughMinUsec,
+                     20000 + static_cast<uint64_t>(textLen) * 15000);
+    }
 }
 
 bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
@@ -701,12 +718,19 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
 
         uint64_t elapsed = now(CLOCK_MONOTONIC) - bsSentAt_;
         lastBsRoundTrip_ = elapsed;
+
+        // BS (uinput) and commit (D-Bus) go through different channels.
+        // Wait at least until the BS round-trip has elapsed + 8ms pad,
+        // to give the app time to process the uinput BS before commitString.
+        static constexpr uint64_t kMinDelayUsec = 8000;  // 8ms floor
+        uint64_t delayUsec = std::max(elapsed + kMinDelayUsec, kMinDelayUsec);
         SKEY_DEBUG() << "Uinput: all BS passed, round-trip " << (elapsed / 1000)
-                     << "ms, commit '" << commitText << "' in 5ms";
+                     << "ms, commit '" << commitText << "' in "
+                     << (delayUsec / 1000) << "ms";
 
         uinputCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
             CLOCK_MONOTONIC,
-            now(CLOCK_MONOTONIC) + 5000,  // 5ms fixed
+            now(CLOCK_MONOTONIC) + delayUsec,
             0,
             [this, commitText](EventSourceTime *, uint64_t) {
                 uinputCommitTimer_.reset();
@@ -794,7 +818,29 @@ void SKeyState::replayBufferedUinputKeys() {
 }
 
 void SKeyState::deactivate() {
+    SKEY_DEBUG() << "Deactivate: deleting=" << uinputDeleting_
+                 << " pendingBs=" << expectedUinputBackspaces_
+                 << " seenBs=" << seenUinputBackspaces_
+                 << " pendingCommit='" << pendingUinputCommit_ << "'";
     forceFlushDeferredCommit();
+
+    // Chrome address bar (and other apps) can trigger focus changes during
+    // BS round-trips.  If all BS events have passed but the 5ms commit
+    // timer hasn't fired yet, flush synchronously so the replacement text
+    // isn't lost.  Otherwise the app ends up with only the deleted chars.
+    if (uinputDeleting_ && !pendingUinputCommit_.empty() &&
+        expectedUinputBackspaces_ == 0) {
+        uinputCommitTimer_.reset();
+        uinputDeleting_ = false;
+        SKEY_DEBUG() << "Deactivate: flush pending uinput commit '"
+                     << pendingUinputCommit_ << "'";
+        ic_->commitString(pendingUinputCommit_);
+        pendingUinputCommit_.clear();
+        if (!bufferedUinputKeys_.empty()) {
+            replayBufferedUinputKeys();
+        }
+    }
+
     if (uinputClientFd_ >= 0) {
         close(uinputClientFd_);
         uinputClientFd_ = -1;
@@ -849,6 +895,17 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
     if (handlePendingUinputBackspace(keyEvent)) {
         return;
+    }
+
+    // Passthrough window: after uinput types text via Ctrl+Shift+U hex,
+    // the injected key events loop back through fcitx5.  Suppress engine
+    // processing so those keys (Ctrl, Shift, U, hex digits, Enter) reach
+    // the app unmodified instead of being interpreted as Vietnamese input.
+    if (uinputPassthroughUntil_ > 0) {
+        if (now(CLOCK_MONOTONIC) < uinputPassthroughUntil_) {
+            return;  // pass through, no engine processing
+        }
+        uinputPassthroughUntil_ = 0;
     }
 
     auto key = keyEvent.key();
@@ -1101,7 +1158,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                             return;  // forward raw key
                         }
 
-                        // Non-matching: consume key, diff based on oldComposed
+                        // Non-matching: consume key, send BS via uinput,
+                        // replacement text via commitString with adaptive
+                        // delay to let the app process uinput BS first.
                         keyEvent.filterAndAccept();
                         size_t pfx = commonUtf8PrefixBytes(
                             oldComposed, newComposed);
@@ -1111,7 +1170,6 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                             static_cast<int>(utf8::length(delPart));
 
                         if (deleteLen > 0) {
-                            // BS via uinput, text via timer commitString
                             SKEY_DEBUG() << "Uinput: consume '" << keyUtf8
                                          << "' replace (del=" << deleteLen
                                          << " add='" << addPart << "')";
@@ -1121,31 +1179,12 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                             pendingUinputCommit_ = addPart;
                             uinputDeleting_ = true;
                         } else if (!addPart.empty()) {
-                            if (oldComposed.empty()) {
-                                // First char (e.g. 'w' → 'ư'):  synchronous
-                                // commitString is safe — no pending D-Bus
-                                // messages to race with.  Avoids buffering
-                                // the next key and the cross-channel race
-                                // that causes when its replay commitString
-                                // interleaves with later uinput BS events.
-                                SKEY_DEBUG() << "Uinput: consume '" << keyUtf8
-                                             << "' sync commit '" << addPart
-                                             << "'";
-                                ic_->commitString(addPart);
-                                committedLen_ = static_cast<int>(
-                                    utf8::length(newComposed));
-                            } else {
-                                // Non-first (e.g. 'b'+'w' → 'bư'): key was
-                                // consumed, app still has oldComposed.
-                                // Immediate commitString is fine — no race.
-                                SKEY_DEBUG() << "Uinput: consume '" << keyUtf8
-                                             << "' commit '" << addPart
-                                             << "'";
-                                ic_->commitString(addPart);
-                                committedLen_ = static_cast<int>(
-                                    utf8::length(newComposed));
-                            }
+                            SKEY_DEBUG() << "Uinput: consume '" << keyUtf8
+                                         << "' commit '" << addPart << "'";
+                            ic_->commitString(addPart);
                         }
+                        committedLen_ = static_cast<int>(
+                            utf8::length(newComposed));
                         return;
                     }
                     surroundingCommit(oldComposed, newComposed);

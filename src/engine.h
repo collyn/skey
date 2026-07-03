@@ -44,7 +44,7 @@ private:
     bool useHiddenComposition() const;
     bool useUinputMode() const;
     bool connectUinputServer();
-    void sendBackspaceUinput(int count);
+    void sendBackspaceUinput(int count, const std::string &text = "");
     bool handlePendingUinputBackspace(KeyEvent &keyEvent);
     void replayBufferedUinputKeys();
     void commitBuffer();
@@ -87,6 +87,11 @@ private:
     std::vector<KeySym> bufferedUinputKeys_;
     uint64_t bsSentAt_ = 0;        // timestamp when BS was sent
     uint64_t lastBsRoundTrip_ = 0; // last measured round-trip (usec)
+    // Passthrough window: after uinput sends text via Ctrl+Shift+U, the
+    // injected key events pass back through fcitx5.  Suppress engine
+    // processing during this window so those keys reach the app unmodified.
+    uint64_t uinputPassthroughUntil_ = 0;
+    static constexpr uint64_t kUinputPassthroughMinUsec = 35000;  // 35ms min
 };
 
 /// Main fcitx5 engine class.
