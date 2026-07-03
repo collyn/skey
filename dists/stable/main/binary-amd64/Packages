@@ -4,10 +4,10 @@ Architecture: amd64
 Maintainer: Huy
 Depends: fcitx5, systemd, hicolor-icon-theme, libqt6widgets6
 Filename: pool/main/f/fcitx5-skey/fcitx5-skey_0.1.11_amd64.deb
-Size: 1320862
-MD5sum: 5f141ebda2ad418eb8d8544483baadbd
-SHA1: 32796a2f0e76459b25f167f12e9bfc86504706e0
-SHA256: b65ac1ab6f3dadacc35a21c790258dd11ee6093828bf22dbdb1d35afd324c636
+Size: 1321442
+MD5sum: 9a35385bd5a8f2c9c14366b34bf5868a
+SHA1: 77514c1260d56ab6097282295df6411b3b552e2b
+SHA256: 4901a67fb3ebdc1d230fe3b74000e9f8e379740571fb1ac46a748cca6945bccb
 Section: utils
 Priority: optional
 Description: Vietnamese SKey input method addon for Fcitx5
