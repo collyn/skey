@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: write  # needed for GitHub Release + pushing to gh-pages
+  pages: write     # needed for GitHub Pages deployment
+  id-token: write  # needed for OIDC token in Pages deployment
 
 jobs:
   build:
