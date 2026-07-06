@@ -464,6 +464,31 @@ std::string SKeyEngine::subMode(const InputMethodEntry &entry,
     return "Telex";
 }
 
+std::string SKeyEngine::subModeIconImpl(const InputMethodEntry &entry,
+                                        InputContext &ic) {
+    FCITX_UNUSED(entry);
+    FCITX_UNUSED(ic);
+    // Return absolute path to bypass XDG icon theme lookup, which fails on
+    // many non-Breeze KDE icon themes despite the icon being installed in
+    // hicolor and breeze fallback directories.
+    static const std::vector<std::string> candidates = {
+        FCITX_SKEY_ICON_PATH,                                        // compile-time
+        "/usr/share/icons/hicolor/scalable/status/fcitx-skey.svg",
+        "/usr/share/icons/hicolor/scalable/apps/fcitx-skey.svg",
+        "/usr/share/icons/hicolor/48x48/apps/fcitx-skey.png",
+    };
+    static std::string cachedPath;
+    if (cachedPath.empty()) {
+        for (const auto &p : candidates) {
+            if (access(p.c_str(), R_OK) == 0) {
+                cachedPath = p;
+                break;
+            }
+        }
+    }
+    return cachedPath;
+}
+
 // ---------------------------------------------------------------------------
 // SKeyState
 // ---------------------------------------------------------------------------

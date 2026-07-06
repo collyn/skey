@@ -116,6 +116,8 @@ public:
 
     std::string subMode(const InputMethodEntry &entry,
                         InputContext &ic) override;
+    std::string subModeIconImpl(const InputMethodEntry &entry,
+                                InputContext &ic) override;
 
     const SKeyConfig &config() const { return config_; }
     Instance *instance() { return instance_; }

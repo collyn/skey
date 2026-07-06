@@ -24,23 +24,38 @@ install(FILES icons/fcitx-skey.svg
     DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/breeze-dark/status/24"
     RENAME "fcitx-skey.svg")
 
-# PNG icons for apps/ (launcher, menus)
+# PNG icons for apps/ (launcher, menus) and status/ (system tray)
 find_program(RSVG_CONVERT rsvg-convert)
 if(RSVG_CONVERT)
     set(ICON_SIZES 16 22 24 32 48 128)
     set(SVG_ICON "${CMAKE_CURRENT_SOURCE_DIR}/icons/fcitx-skey.svg")
     foreach(SIZE ${ICON_SIZES})
-        set(PNG_ICON "${CMAKE_CURRENT_BINARY_DIR}/icons/hicolor/${SIZE}x${SIZE}/apps/fcitx-skey.png")
+        # apps/ context — launcher, menus, settings
+        set(PNG_ICON_APP "${CMAKE_CURRENT_BINARY_DIR}/icons/hicolor/${SIZE}x${SIZE}/apps/fcitx-skey.png")
         add_custom_command(
-            OUTPUT ${PNG_ICON}
+            OUTPUT ${PNG_ICON_APP}
             COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/icons/hicolor/${SIZE}x${SIZE}/apps"
-            COMMAND ${RSVG_CONVERT} -w ${SIZE} -h ${SIZE} ${SVG_ICON} -o ${PNG_ICON}
+            COMMAND ${RSVG_CONVERT} -w ${SIZE} -h ${SIZE} ${SVG_ICON} -o ${PNG_ICON_APP}
             DEPENDS ${SVG_ICON}
-            COMMENT "Generating ${SIZE}x${SIZE} PNG icon"
+            COMMENT "Generating ${SIZE}x${SIZE} PNG app icon"
         )
-        install(FILES ${PNG_ICON}
+        install(FILES ${PNG_ICON_APP}
             DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/${SIZE}x${SIZE}/apps")
-        list(APPEND PNG_ICONS ${PNG_ICON})
+        list(APPEND PNG_ICONS ${PNG_ICON_APP})
+
+        # status/ context — system tray (ensures all icon themes find the icon
+        # via hicolor fallback, not just Breeze which has explicit installs)
+        set(PNG_ICON_STATUS "${CMAKE_CURRENT_BINARY_DIR}/icons/hicolor/${SIZE}x${SIZE}/status/fcitx-skey.png")
+        add_custom_command(
+            OUTPUT ${PNG_ICON_STATUS}
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/icons/hicolor/${SIZE}x${SIZE}/status"
+            COMMAND ${RSVG_CONVERT} -w ${SIZE} -h ${SIZE} ${SVG_ICON} -o ${PNG_ICON_STATUS}
+            DEPENDS ${SVG_ICON}
+            COMMENT "Generating ${SIZE}x${SIZE} PNG status icon"
+        )
+        install(FILES ${PNG_ICON_STATUS}
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/${SIZE}x${SIZE}/status")
+        list(APPEND PNG_ICONS ${PNG_ICON_STATUS})
     endforeach()
     add_custom_target(skey_icons ALL DEPENDS ${PNG_ICONS})
 else()

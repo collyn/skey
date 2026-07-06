@@ -12,6 +12,9 @@ target_link_libraries(skey
     m
 )
 target_compile_features(skey PRIVATE cxx_std_17)
+target_compile_definitions(skey PRIVATE
+    FCITX_SKEY_ICON_PATH="${CMAKE_INSTALL_PREFIX}/share/icons/hicolor/scalable/apps/fcitx-skey.svg"
+)
 
 # Include path for bamboo_ffi.h
 target_include_directories(skey PRIVATE
