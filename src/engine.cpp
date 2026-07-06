@@ -763,6 +763,11 @@ void SKeyState::replayBufferedUinputKeys() {
             continue;
         }
         if (sym < FcitxKey_exclam || sym > FcitxKey_asciitilde) {
+            // Word boundary (space, etc.) — finalize current composition
+            if (!viet_.getRawInput().empty()) {
+                viet_.reset();
+                committedLen_ = 0;
+            }
             ic_->commitString(keyUtf8);
             continue;
         }
@@ -775,6 +780,11 @@ void SKeyState::replayBufferedUinputKeys() {
             isDigit && !viet_.getRawInput().empty();
 
         if (!(isLetter || isVNIModifier)) {
+            // Non-letter printable (punctuation, etc.) — finalize current composition
+            if (!viet_.getRawInput().empty()) {
+                viet_.reset();
+                committedLen_ = 0;
+            }
             ic_->commitString(keyUtf8);
             continue;
         }

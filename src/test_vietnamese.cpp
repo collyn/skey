@@ -451,6 +451,76 @@ int main(int argc, char **argv) {
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    // TELEX — ENGLISH BYPASS (after undo, skip Vietnamese for rest of word)
+    // ══════════════════════════════════════════════════════════════════════
+    {
+        const char *cat = "Telex / English Bypass After Undo";
+        std::cout << CYAN << "── " << cat << " ──" << RESET << std::endl;
+
+        // "restore": r+e → re, +s → ré (tone), +s → undo → "res",
+        //   bypass on → t+o+r+e pass through → "restore"
+        runTest({cat, "restore → restore (bypass after undo ré→res)",
+                 skey::InputMethod::Telex, "resstore", "restore",
+                 "After undo (ss cancels é), remaining tore is bypassed"});
+
+        // "response": similar — res → ré → undo → bypass
+        runTest({cat, "response → response (bypass after undo)",
+                 skey::InputMethod::Telex, "ressponse", "response",
+                 "After undo, ponse is bypassed — no tỏ round-trip"});
+
+        // "result": res → ré → undo → bypass → ult
+        runTest({cat, "result → result (bypass after undo)",
+                 skey::InputMethod::Telex, "ressult", "result"});
+
+        // After undo+bypass, reset() should restore Vietnamese processing.
+        // Simulate: type "restore" (with undo bypass), reset, then type "tôi"
+        {
+            skey::VietnameseEngine eng;
+            eng.setMethod(skey::InputMethod::Telex);
+            auto [c1, p1] = feedKeys(eng, "resstore");
+            std::string word1 = c1 + p1;
+            eng.reset();  // simulate space/enter — clears bypass
+            auto [c2, p2] = feedKeys(eng, "tooi");
+            std::string word2 = c2 + p2;
+            bool pass = (word1 == "restore") && (word2 == "tôi");
+            if (pass) {
+                ++gPassed;
+                std::cout << GREEN << "  PASS" << RESET
+                          << "  bypass reset: restore → reset → tôi works\n";
+            } else {
+                ++gFailed;
+                std::cout << RED << "  FAIL" << RESET
+                          << "  bypass reset: word1=\"" << word1
+                          << "\" word2=\"" << word2 << "\"\n";
+            }
+        }
+
+        // Verify bypass flag state
+        {
+            skey::VietnameseEngine eng;
+            eng.setMethod(skey::InputMethod::Telex);
+            feedKeys(eng, "resstore");
+            bool bypassOn = eng.isEnglishBypass();
+            eng.reset();
+            bool bypassOff = !eng.isEnglishBypass();
+            bool pass = bypassOn && bypassOff;
+            if (pass) {
+                ++gPassed;
+                std::cout << GREEN << "  PASS" << RESET
+                          << "  bypass flag: on after undo, off after reset\n";
+            } else {
+                ++gFailed;
+                std::cout << RED << "  FAIL" << RESET
+                          << "  bypass flag: on=" << bypassOn
+                          << " off=" << bypassOff << "\n";
+            }
+        }
+
+        std::cout << std::endl;
+    }
+
+
+    // ══════════════════════════════════════════════════════════════════════
     // TELEX — RESET / CLEAR
     // ══════════════════════════════════════════════════════════════════════
     {

@@ -30,8 +30,10 @@ VietnameseEngine::VietnameseEngine(VietnameseEngine &&other) noexcept
       freeMarking_(other.freeMarking_),
       rawInput_(std::move(other.rawInput_)),
       composed_(std::move(other.composed_)),
+      englishBypass_(other.englishBypass_),
       committed_(std::move(other.committed_)) {
     other.handle_ = nullptr;
+    other.englishBypass_ = false;
 }
 
 VietnameseEngine &VietnameseEngine::operator=(VietnameseEngine &&other) noexcept {
@@ -45,8 +47,10 @@ VietnameseEngine &VietnameseEngine::operator=(VietnameseEngine &&other) noexcept
         freeMarking_ = other.freeMarking_;
         rawInput_ = std::move(other.rawInput_);
         composed_ = std::move(other.composed_);
+        englishBypass_ = other.englishBypass_;
         committed_ = std::move(other.committed_);
         other.handle_ = nullptr;
+        other.englishBypass_ = false;
     }
     return *this;
 }
@@ -96,6 +100,15 @@ ProcessResult VietnameseEngine::processKey(char ch) {
     std::string oldComposed = composed_;
     std::string oldRawInput = rawInput_;
     rawInput_ += ch;
+
+    // English bypass: after an undo was detected, skip Vietnamese
+    // processing for the remainder of the current word.  Just append
+    // the raw character so the caller sees a simple ASCII append.
+    if (englishBypass_) {
+        composed_ = rawInput_;
+        return ProcessResult::Consumed;
+    }
+
     recompose();
 
     // Detect undo: bamboo-core cancelled the transformation.
@@ -132,6 +145,10 @@ ProcessResult VietnameseEngine::processKey(char ch) {
             composed_.clear();
             skey_engine_reset(handle_);
 
+            // Enter English bypass mode: subsequent keys in this word
+            // will be forwarded as raw ASCII without Vietnamese processing.
+            englishBypass_ = true;
+
             return ProcessResult::Committed;
         }
     }
@@ -155,6 +172,7 @@ void VietnameseEngine::reset() {
     rawInput_.clear();
     composed_.clear();
     committed_.clear();
+    englishBypass_ = false;
     skey_engine_reset(handle_);
 }
 

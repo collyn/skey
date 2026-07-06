@@ -71,6 +71,9 @@ public:
     /// replace composed text with raw input. Call before committing.
     void autoRestore();
 
+    /// Whether the engine is in English bypass mode (after undo detected).
+    bool isEnglishBypass() const { return englishBypass_; }
+
 private:
     /// Recompose from raw input using bamboo-core.
     void recompose();
@@ -83,6 +86,7 @@ private:
 
     std::string rawInput_;       // What the user actually typed
     std::string composed_;       // Cached composed output from bamboo-core
+    bool englishBypass_ = false;  // After undo, skip Vietnamese processing
     std::string committed_;      // Auto-committed text
 };
 
