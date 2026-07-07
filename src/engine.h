@@ -51,6 +51,7 @@ private:
     void surroundingCommit(const std::string &oldComposed,
                            const std::string &newComposed);
     void surroundingBackspace();
+    void reclaimLastWord();
     bool hasDeferredCommitPending() const;
     void scheduleDeferredCommit(const std::string &text,
                                 const std::string &stablePrefix = "");
@@ -62,6 +63,8 @@ private:
     void clearUI();
     void showModeMenu();
     void refreshAppMode();
+    void saveLastWord();
+    void clearLastWord();
 
     SKeyEngine *engine_;
     InputContext *ic_;
@@ -92,6 +95,11 @@ private:
     // processing during this window so those keys reach the app unmodified.
     uint64_t uinputPassthroughUntil_ = 0;
     static constexpr uint64_t kUinputPassthroughMinUsec = 35000;  // 35ms min
+    // Retroactive tone editing (Unikey-style): saved state of last committed word
+    std::string lastRawInput_;      // Raw input of last committed word
+    std::string lastComposed_;      // Composed text of last committed word
+    int lastCommittedLen_ = 0;      // UTF-8 char count of last committed word
+    bool reclaimReady_ = false;     // True after BS pressed while idle
 };
 
 /// Main fcitx5 engine class.

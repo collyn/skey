@@ -586,6 +586,7 @@ void SKeyState::activate() {
 
     viet_.reset();
     committedLen_ = 0;
+    clearLastWord();
     modeMenuActive_ = false;
     deferredCommitTimer_.reset();
     deferredCommitText_.clear();
@@ -893,6 +894,7 @@ void SKeyState::deactivate() {
     }
     viet_.reset();
     committedLen_ = 0;
+    clearLastWord();
     clearUI();
 }
 
@@ -907,6 +909,7 @@ void SKeyState::reset() {
     if (!hasDeferredCommitPending()) {
         committedLen_ = 0;
     }
+    clearLastWord();
     clearUI();
 }
 
@@ -1027,6 +1030,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     if (key.states() &
         ~KeyStates({KeyState::Shift, KeyState::CapsLock})) {
         if (!viet_.getRawInput().empty()) {
+            saveLastWord();
             if (useSurroundingText()) {
                 forceFlushDeferredCommit();
             } else {
@@ -1036,6 +1040,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             viet_.reset();
             committedLen_ = 0;
         }
+        clearLastWord();  // Arrow keys, Ctrl+X etc. invalidate retroactive editing
         return;
     }
 
@@ -1055,10 +1060,20 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         return;
     }
 
+    // BS when engine is idle: pass through to app (deletes separator like
+    // space), but KEEP lastRawInput_ and enable retroactive reclaim.
+    if (key.check(FcitxKey_BackSpace) && viet_.getRawInput().empty()) {
+        if (!lastRawInput_.empty()) {
+            reclaimReady_ = true;
+        }
+        return;  // pass through
+    }
+
     // Handle Escape
     if (key.check(FcitxKey_Escape) && !viet_.getRawInput().empty()) {
         viet_.reset();
         committedLen_ = 0;
+        clearLastWord();
         if (!useSurroundingText()) {
             clearUI();
         }
@@ -1069,6 +1084,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     // Handle Enter
     if (key.check(FcitxKey_Return) || key.check(FcitxKey_KP_Enter)) {
         if (!viet_.getRawInput().empty()) {
+            saveLastWord();
             if (useSurroundingText()) {
                 forceFlushDeferredCommit();
             } else {
@@ -1084,6 +1100,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     // Handle Space
     if (key.check(FcitxKey_space)) {
         if (!viet_.getRawInput().empty()) {
+            saveLastWord();
             if (useSurroundingText()) {
                 bool hadDeferred = hasDeferredCommitPending();
                 if (hadDeferred) {
@@ -1107,6 +1124,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     // Handle Tab
     if (key.check(FcitxKey_Tab)) {
         if (!viet_.getRawInput().empty()) {
+            saveLastWord();
             if (useSurroundingText()) {
                 forceFlushDeferredCommit();
             } else {
@@ -1130,9 +1148,52 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             isDigit && !viet_.getRawInput().empty();
 
         if (isLetter || isVNIModifier) {
+            // Retroactive tone editing (Unikey-style): if the user has
+            // backspaced into the previous word and types a tone modifier
+            // key (s/f/r/x/j for Telex, 1-5/0 for VNI), reclaim the last
+            // word so the tone can be changed.
+            bool didReclaim = false;
+            if (viet_.getRawInput().empty() && !lastRawInput_.empty()
+                && reclaimReady_ && useSurroundingText()) {
+                auto im = engine_->config().inputMethod.value();
+                bool isToneKey = false;
+                if (im == SKeyInputMethod::Telex || im == SKeyInputMethod::TelexW) {
+                    isToneKey = (ch == 's' || ch == 'f' || ch == 'r'
+                                 || ch == 'x' || ch == 'j' || ch == 'z');
+                } else if (im == SKeyInputMethod::VNI) {
+                    isToneKey = (ch >= '0' && ch <= '5');
+                }
+                if (isToneKey) {
+                    reclaimLastWord();
+                    didReclaim = true;
+                }
+                reclaimReady_ = false;
+            }
+
             std::string oldComposed = viet_.getComposed();
 
             auto result = viet_.processKey(ch);
+
+            if (didReclaim) {
+                std::string newComposed = viet_.getComposed();
+                std::string keyUtf8(1, ch);
+                bool justAppend = (newComposed == oldComposed + keyUtf8);
+                bool autoRestored = (newComposed == viet_.getRawInput());
+
+                if (justAppend || autoRestored
+                    || result == skey::ProcessResult::Committed) {
+                    // Tone key didn't produce a useful change — undo reclaim.
+                    SKEY_DEBUG() << "Reclaim: no transform for '" << ch
+                                 << "', undo reclaim";
+                    viet_.reset();
+                    viet_.clearCommitted();
+                    committedLen_ = 0;
+
+                    // Re-process the key as the start of a new word
+                    oldComposed = "";
+                    result = viet_.processKey(ch);
+                }
+            }
 
             if (result == skey::ProcessResult::Committed) {
                 std::string committed = viet_.getCommitted();
@@ -1238,6 +1299,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
         // Non-letter: finalize
         if (!viet_.getRawInput().empty()) {
+            saveLastWord();
             if (useSurroundingText()) {
                 bool hadDeferred = hasDeferredCommitPending();
                 if (hadDeferred) {
@@ -1260,6 +1322,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
     // Any other key: finalize
     if (!viet_.getRawInput().empty()) {
+        saveLastWord();
         if (useSurroundingText()) {
             forceFlushDeferredCommit();
         } else {
@@ -1268,6 +1331,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         }
         viet_.reset();
         committedLen_ = 0;
+    } else {
+        // Non-composing key (Home, End, etc.) invalidates retroactive editing
+        clearLastWord();
     }
 }
 
@@ -1527,6 +1593,56 @@ void SKeyState::surroundingBackspace() {
     // Reset engine so next keystroke starts fresh composition.
     // The old committed chars (before cursor) stay in the app untouched.
     viet_.reset();
+}
+
+void SKeyState::saveLastWord() {
+    if (viet_.getRawInput().empty()) return;
+    lastRawInput_ = viet_.getRawInput();
+    lastComposed_ = viet_.getComposed();
+    lastCommittedLen_ = committedLen_;
+    SKEY_DEBUG() << "SaveLastWord: raw='" << lastRawInput_
+                 << "' composed='" << lastComposed_
+                 << "' len=" << lastCommittedLen_;
+}
+
+void SKeyState::clearLastWord() {
+    lastRawInput_.clear();
+    lastComposed_.clear();
+    lastCommittedLen_ = 0;
+    reclaimReady_ = false;
+}
+
+void SKeyState::reclaimLastWord() {
+    SKEY_DEBUG() << "ReclaimLastWord: raw='" << lastRawInput_
+                 << "' composed='" << lastComposed_
+                 << "' len=" << lastCommittedLen_;
+
+    // Restore the VietnameseEngine state from the saved raw input.
+    // We do NOT modify the screen — the composed text already matches
+    // what's displayed.  The next key the user types will go through
+    // the normal processKey() + surroundingCommit() flow to update the
+    // screen (e.g., typing 's' after "vãi" changes it to "vái").
+    //
+    // This avoids complex screen replacement in uinput mode where:
+    //   - Ctrl+Shift+U text typing is app-dependent (fails in many apps)
+    //   - Async BS counting can stall for seconds in some apps (Telegram)
+    std::string savedRaw = lastRawInput_;
+    int savedLen = lastCommittedLen_;
+
+    // Clear last word state (now being reclaimed)
+    clearLastWord();
+
+    // Feed saved raw input back into the engine to reconstruct composition
+    for (char ch : savedRaw) {
+        viet_.processKey(ch);
+    }
+    viet_.clearCommitted();
+
+    committedLen_ = savedLen;
+
+    SKEY_DEBUG() << "ReclaimLastWord: restored raw='" << viet_.getRawInput()
+                 << "' composed='" << viet_.getComposed()
+                 << "' committedLen=" << committedLen_;
 }
 
 void SKeyState::updateDeferredPreedit() {
