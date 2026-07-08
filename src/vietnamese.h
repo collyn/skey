@@ -45,6 +45,7 @@ public:
     void setMethod(InputMethod method);
     void setToneStyle(ToneStyle style);
     void setFreeMarking(bool free);
+    void setAutoRestore(bool restore);
 
     /// Process a single key press. Returns the result type.
     ProcessResult processKey(char ch);
@@ -82,7 +83,8 @@ private:
 
     InputMethod method_ = InputMethod::Telex;
     ToneStyle toneStyle_ = ToneStyle::Modern;
-    bool freeMarking_ = true;
+    bool freeMarking_ = false;
+    bool autoRestore_ = true;
 
     std::string rawInput_;       // What the user actually typed
     std::string composed_;       // Cached composed output from bamboo-core

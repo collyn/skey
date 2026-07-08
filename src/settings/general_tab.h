@@ -26,7 +26,6 @@ private:
 
     QComboBox *inputMethodCombo_;
     QComboBox *outputModeCombo_;
-    QComboBox *tonePositionCombo_;
     HotkeyEdit *triggerKeyEdit_;
     QCheckBox *freeMarkingCheck_;
     QCheckBox *autoRestoreCheck_;

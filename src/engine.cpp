@@ -529,10 +529,8 @@ SKeyState::SKeyState(SKeyEngine *engine, InputContext *ic)
         im = skey::InputMethod::TelexW;
     }
     viet_.setMethod(im);
-    viet_.setToneStyle(*cfg.tonePosition == TonePosition::Modern
-                           ? skey::ToneStyle::Modern
-                           : skey::ToneStyle::Traditional);
     viet_.setFreeMarking(*cfg.freeMarking);
+    viet_.setAutoRestore(*cfg.autoRestore);
 }
 
 void SKeyState::refreshAppMode() {
@@ -620,10 +618,8 @@ void SKeyState::activate() {
         im = skey::InputMethod::TelexW;
     }
     viet_.setMethod(im);
-    viet_.setToneStyle(*cfg.tonePosition == TonePosition::Modern
-                           ? skey::ToneStyle::Modern
-                           : skey::ToneStyle::Traditional);
     viet_.setFreeMarking(*cfg.freeMarking);
+    viet_.setAutoRestore(*cfg.autoRestore);
 
     viet_.reset();
     committedLen_ = 0;

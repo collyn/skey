@@ -87,7 +87,7 @@ feedKeys(skey::VietnameseEngine &eng, const std::string &keys) {
 static void runTest(const TestCase &tc) {
     skey::VietnameseEngine eng;
     eng.setMethod(tc.method);
-    eng.setFreeMarking(true);
+    eng.setFreeMarking(false);
 
     auto [committed, composed] = feedKeys(eng, tc.keys);
     std::string actual = committed + composed;
@@ -118,7 +118,7 @@ static void runTest(const TestCase &tc) {
 static void runBackspaceTest(const BackspaceTest &bt) {
     skey::VietnameseEngine eng;
     eng.setMethod(bt.method);
-    eng.setFreeMarking(true);
+    eng.setFreeMarking(false);
 
     auto [committed, composed] = feedKeys(eng, bt.keys);
 
@@ -1023,7 +1023,7 @@ int main(int argc, char **argv) {
         auto runRapidWords = [](const RapidTestCase &rtc) {
             skey::VietnameseEngine eng;
             eng.setMethod(rtc.method);
-            eng.setFreeMarking(true);
+            eng.setFreeMarking(false);
 
             for (size_t w = 0; w < rtc.wordKeys.size(); ++w) {
                 auto [committed, composed] = feedKeys(eng, rtc.wordKeys[w]);

@@ -169,3 +169,41 @@ pub unsafe extern "C" fn skey_engine_restore_last_word(
     }
 }
 
+/// Set the free tone marking flag on an engine instance.
+/// When enabled (non-zero), tone marks and diacritics can be placed freely
+/// (not restricted to standard Vietnamese syllable structure).
+///
+/// # Safety
+/// `engine` must be a valid pointer from `bamboo_engine_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn skey_engine_set_free_marking(
+    engine: *mut Engine,
+    free: i32,
+) {
+    if !engine.is_null() {
+        let e = unsafe { &mut *engine };
+        let mut cfg = e.config();
+        cfg.free_tone_marking = free != 0;
+        e.set_config(cfg);
+    }
+}
+
+/// Set the standard tone style flag on an engine instance.
+/// When enabled (non-zero), uses modern/new tone placement (e.g., "hòa").
+/// When disabled (zero), uses traditional/old tone placement (e.g., "hoà").
+///
+/// # Safety
+/// `engine` must be a valid pointer from `bamboo_engine_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn skey_engine_set_std_tone_style(
+    engine: *mut Engine,
+    std_style: i32,
+) {
+    if !engine.is_null() {
+        let e = unsafe { &mut *engine };
+        let mut cfg = e.config();
+        cfg.std_tone_style = std_style != 0;
+        e.set_config(cfg);
+    }
+}
+

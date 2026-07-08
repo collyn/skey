@@ -28,6 +28,7 @@ VietnameseEngine::VietnameseEngine(VietnameseEngine &&other) noexcept
       method_(other.method_),
       toneStyle_(other.toneStyle_),
       freeMarking_(other.freeMarking_),
+      autoRestore_(other.autoRestore_),
       rawInput_(std::move(other.rawInput_)),
       composed_(std::move(other.composed_)),
       englishBypass_(other.englishBypass_),
@@ -45,6 +46,7 @@ VietnameseEngine &VietnameseEngine::operator=(VietnameseEngine &&other) noexcept
         method_ = other.method_;
         toneStyle_ = other.toneStyle_;
         freeMarking_ = other.freeMarking_;
+        autoRestore_ = other.autoRestore_;
         rawInput_ = std::move(other.rawInput_);
         composed_ = std::move(other.composed_);
         englishBypass_ = other.englishBypass_;
@@ -74,14 +76,21 @@ void VietnameseEngine::setMethod(InputMethod method) {
 
 void VietnameseEngine::setToneStyle(ToneStyle style) {
     toneStyle_ = style;
-    // bamboo-core handles tone placement internally.
-    // TODO: Map to bamboo-core Config if exposed in future versions.
+    // Modern = "hòa" (std_tone_style=true), Traditional = "hoà" (std_tone_style=false)
+    skey_engine_set_std_tone_style(handle_, style == ToneStyle::Modern ? 1 : 0);
 }
 
 void VietnameseEngine::setFreeMarking(bool free) {
     freeMarking_ = free;
-    // bamboo-core handles free marking via its Config.
-    // TODO: Map to bamboo-core Config if exposed in future versions.
+    // bamboo-core's free_tone_marking=true means "enable smart tone relocation"
+    // (the engine auto-moves tone marks to standard position).
+    // User's "Đánh dấu tự do" = true means "let me place tone freely" →
+    // so we INVERT: user free=true → bamboo free_tone_marking=false.
+    skey_engine_set_free_marking(handle_, free ? 0 : 1);
+}
+
+void VietnameseEngine::setAutoRestore(bool restore) {
+    autoRestore_ = restore;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +206,8 @@ void VietnameseEngine::recompose() {
     // If composed differs from raw AND is not valid Vietnamese:
     //   - If it contains Vietnamese vowels/tone marks → restore to raw
     //   - If it only contains đ/Đ (no vowels) → keep (abbreviations like đc)
-    if (composed_ != rawInput_ && !rawInput_.empty() &&
+    if (autoRestore_ &&
+        composed_ != rawInput_ && !rawInput_.empty() &&
         skey_engine_is_valid(handle_) == 0) {
 
         // Check if composed has any non-ASCII char that isn't đ (U+0111) / Đ (U+0110).
@@ -235,6 +245,7 @@ void VietnameseEngine::recompose() {
 }
 
 void VietnameseEngine::autoRestore() {
+    if (!autoRestore_) return;
     if (rawInput_.empty() || composed_ == rawInput_) return;
 
     if (skey_engine_is_valid(handle_) == 0) {

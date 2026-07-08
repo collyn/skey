@@ -18,10 +18,6 @@ FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyOutputMode, N_("Uinput"),
                                  N_("Surrounding Text"),
                                  N_("Preedit"));
 
-// Tone mark position style
-enum class TonePosition { Modern, Traditional };
-FCITX_CONFIG_ENUM_NAME_WITH_I18N(TonePosition, N_("Modern (hoà)"),
-                                 N_("Traditional (hòa)"));
 
 FCITX_CONFIGURATION(
     SKeyConfig,
@@ -32,12 +28,8 @@ FCITX_CONFIGURATION(
     // Output mode: uinput (default), surrounding text, or preedit
     Option<SKeyOutputMode> outputMode{this, "OutputMode", _("Output Mode"),
                                       SKeyOutputMode::Uinput};
-    // Tone position style
-    Option<TonePosition> tonePosition{this, "TonePosition",
-                                      _("Tone Mark Position"),
-                                      TonePosition::Modern};
     // Allow free tone/mark placement
-    Option<bool> freeMarking{this, "FreeMarking", _("Free marking"), true};
+    Option<bool> freeMarking{this, "FreeMarking", _("Free marking"), false};
     // Auto restore non-Vietnamese text
     Option<bool> autoRestore{this, "AutoRestore",
                              _("Auto restore non-Vietnamese"), true};

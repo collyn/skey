@@ -11,8 +11,7 @@ std::string configDir();
 struct SKeyConfig {
     std::string inputMethod  = "Telex";       // "Telex", "VNI", "Telex W"
     std::string outputMode   = "Uinput";      // "Uinput", "Surrounding Text", "Preedit"
-    std::string tonePosition = "Modern (hoà)"; // "Modern (hoà)", "Traditional (hòa)"
-    bool freeMarking  = true;
+    bool freeMarking  = false;
     bool autoRestore  = true;
     bool showPreedit  = true;
     bool chromiumAddressBarPreedit = true;

@@ -38,12 +38,6 @@ void GeneralTab::setupUI() {
     outputModeCombo_->addItem("Preedit",           "Preedit");
     enumLayout->addRow(QString::fromUtf8("Chế độ xuất:"), outputModeCombo_);
 
-    tonePositionCombo_ = new QComboBox(enumFrame);
-    tonePositionCombo_->addItem(QString::fromUtf8("Modern (hoà)"),
-                                QString::fromUtf8("Modern (hoà)"));
-    tonePositionCombo_->addItem(QString::fromUtf8("Traditional (hòa)"),
-                                QString::fromUtf8("Traditional (hòa)"));
-    enumLayout->addRow(QString::fromUtf8("Dấu thanh:"), tonePositionCombo_);
 
     triggerKeyEdit_ = new HotkeyEdit(enumFrame);
     triggerKeyEdit_->setToolTip(
@@ -91,7 +85,6 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
 
     setCombo(inputMethodCombo_,  cfg.inputMethod);
     setCombo(outputModeCombo_,   cfg.outputMode);
-    setCombo(tonePositionCombo_, cfg.tonePosition);
 
     freeMarkingCheck_->setChecked(cfg.freeMarking);
     autoRestoreCheck_->setChecked(cfg.autoRestore);
@@ -104,7 +97,6 @@ SKeyConfig GeneralTab::collectConfig() const {
     SKeyConfig cfg;
     cfg.inputMethod  = inputMethodCombo_->currentData().toString().toStdString();
     cfg.outputMode   = outputModeCombo_->currentData().toString().toStdString();
-    cfg.tonePosition = tonePositionCombo_->currentData().toString().toStdString();
     cfg.freeMarking  = freeMarkingCheck_->isChecked();
     cfg.autoRestore  = autoRestoreCheck_->isChecked();
     cfg.showPreedit  = showPreeditCheck_->isChecked();

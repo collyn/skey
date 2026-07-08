@@ -81,7 +81,6 @@ SKeyConfig readSkeyConfig() {
 
         if (key == "InputMethod")      cfg.inputMethod  = val;
         else if (key == "OutputMode")   cfg.outputMode   = val;
-        else if (key == "TonePosition") cfg.tonePosition = val;
         else if (key == "FreeMarking")  cfg.freeMarking   = parseBool(val);
         else if (key == "AutoRestore")  cfg.autoRestore   = parseBool(val);
         else if (key == "ShowPreedit")  cfg.showPreedit   = parseBool(val);
@@ -99,8 +98,6 @@ bool writeSkeyConfig(const SKeyConfig &cfg) {
     out << "InputMethod="   << maybeQuote(cfg.inputMethod)  << "\n";
     out << "# Output Mode"                  << "\n";
     out << "OutputMode="    << maybeQuote(cfg.outputMode)   << "\n";
-    out << "# Tone Mark Position"          << "\n";
-    out << "TonePosition="  << maybeQuote(cfg.tonePosition) << "\n";
     out << "# Free marking"                << "\n";
     out << "FreeMarking="   << boolStr(cfg.freeMarking)     << "\n";
     out << "# Auto restore non-Vietnamese" << "\n";

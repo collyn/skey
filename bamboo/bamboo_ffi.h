@@ -124,6 +124,19 @@ int32_t skey_engine_is_valid(BambooEngine *engine);
  */
 void skey_engine_restore_last_word(BambooEngine *engine, int32_t to_vietnamese);
 
+/**
+ * Set the free tone marking flag.
+ * @param free  Non-zero to enable free marking, zero to disable.
+ */
+void skey_engine_set_free_marking(BambooEngine *engine, int32_t free);
+
+/**
+ * Set the standard tone style flag.
+ * @param std_style  Non-zero for modern/new style ("hòa"),
+ *                   zero for traditional/old style ("hoà").
+ */
+void skey_engine_set_std_tone_style(BambooEngine *engine, int32_t std_style);
+
 /* ── Memory management ──────────────────────────────────────────────── */
 
 /**
