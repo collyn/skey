@@ -1,5 +1,7 @@
 #include "a11y_monitor.h"
 
+#include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -237,6 +239,135 @@ static bool hasDocumentWebAncestor(DBusConnection *bus,
 }
 
 // ---------------------------------------------------------------------------
+// Chromium native accessibility activation
+// ---------------------------------------------------------------------------
+// Chromium (>= ~M12x, verified against 150) no longer reads
+// org.a11y.Status.ScreenReaderEnabled. After a restart its accessible tree
+// stays empty (no focus events for the address bar) until an AT-SPI client
+// calls GetRelationSet or GetAttributes on one of its objects — Chromium
+// treats those calls as "a screen reader is exploring me" and enables native
+// accessibility for the rest of the browser session (AtkRefRelationSet in
+// ui/accessibility/platform/ax_platform_node_auralinux.cc). Poking the app
+// root of every Chromium-based browser on the bus replaces having to enable
+// chrome://accessibility manually after each browser restart.
+
+static std::string queryName(DBusConnection *bus, const char *sender,
+                             const char *path) {
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *msg = dbus_message_new_method_call(
+        sender, path, "org.freedesktop.DBus.Properties", "Get");
+    if (!msg) return {};
+
+    const char *iface = "org.a11y.atspi.Accessible";
+    const char *prop = "Name";
+    dbus_message_append_args(msg, DBUS_TYPE_STRING, &iface,
+                             DBUS_TYPE_STRING, &prop, DBUS_TYPE_INVALID);
+
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
+        bus, msg, 500, &err);
+    dbus_message_unref(msg);
+
+    std::string name;
+    if (reply && !dbus_error_is_set(&err)) {
+        DBusMessageIter iter, variant;
+        if (dbus_message_iter_init(reply, &iter) &&
+            dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_VARIANT) {
+            dbus_message_iter_recurse(&iter, &variant);
+            if (dbus_message_iter_get_arg_type(&variant) == DBUS_TYPE_STRING) {
+                const char *s = nullptr;
+                dbus_message_iter_get_basic(&variant, &s);
+                if (s) name = s;
+            }
+        }
+    }
+    if (reply) dbus_message_unref(reply);
+    dbus_error_free(&err);
+    return name;
+}
+
+static bool isChromiumBrowserAppName(const std::string &name) {
+    // Keep in sync with isChromiumBrowser() in engine.cpp; these are the
+    // application names exposed on the AT-SPI bus ("Google Chrome", ...).
+    static constexpr const char *kBrowserNames[] = {
+        "chrome", "chromium", "brave", "vivaldi", "edge", "opera",
+    };
+    std::string lower;
+    lower.reserve(name.size());
+    for (char c : name)
+        lower += static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    for (const char *b : kBrowserNames)
+        if (lower.find(b) != std::string::npos)
+            return true;
+    return false;
+}
+
+static void pokeChromiumBrowsers(DBusConnection *bus) {
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *msg = dbus_message_new_method_call(
+        "org.a11y.atspi.Registry", "/org/a11y/atspi/accessible/root",
+        "org.a11y.atspi.Accessible", "GetChildren");
+    if (!msg) return;
+
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
+        bus, msg, 2000, &err);
+    dbus_message_unref(msg);
+    if (!reply || dbus_error_is_set(&err)) {
+        if (reply) dbus_message_unref(reply);
+        dbus_error_free(&err);
+        return;
+    }
+
+    DBusMessageIter iter, arr;
+    if (!dbus_message_iter_init(reply, &iter) ||
+        dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_ARRAY) {
+        dbus_message_unref(reply);
+        return;
+    }
+    dbus_message_iter_recurse(&iter, &arr);
+
+    while (dbus_message_iter_get_arg_type(&arr) == DBUS_TYPE_STRUCT) {
+        DBusMessageIter struc;
+        dbus_message_iter_recurse(&arr, &struc);
+
+        const char *appBus = nullptr;
+        const char *appPath = nullptr;
+        if (dbus_message_iter_get_arg_type(&struc) == DBUS_TYPE_STRING) {
+            dbus_message_iter_get_basic(&struc, &appBus);
+            dbus_message_iter_next(&struc);
+            if (dbus_message_iter_get_arg_type(&struc) == DBUS_TYPE_OBJECT_PATH)
+                dbus_message_iter_get_basic(&struc, &appPath);
+        }
+
+        if (appBus && appPath && appPath[0] == '/') {
+            std::string name = queryName(bus, appBus, appPath);
+            if (isChromiumBrowserAppName(name)) {
+                DBusMessage *poke = dbus_message_new_method_call(
+                    appBus, appPath, "org.a11y.atspi.Accessible",
+                    "GetRelationSet");
+                if (poke) {
+                    DBusError perr;
+                    dbus_error_init(&perr);
+                    DBusMessage *preply =
+                        dbus_connection_send_with_reply_and_block(
+                            bus, poke, 500, &perr);
+                    if (preply) dbus_message_unref(preply);
+                    dbus_message_unref(poke);
+                    A11Y_LOG("Poked '%s' (%s) to enable native a11y%s",
+                             name.c_str(), appBus,
+                             dbus_error_is_set(&perr) ? " [failed]" : "");
+                    dbus_error_free(&perr);
+                }
+            }
+        }
+        dbus_message_iter_next(&arr);
+    }
+    dbus_message_unref(reply);
+    dbus_error_free(&err);
+}
+
+// ---------------------------------------------------------------------------
 // A11yMonitor
 // ---------------------------------------------------------------------------
 
@@ -303,8 +434,29 @@ void A11yMonitor::threadFunc() {
                        "interface='org.a11y.atspi.Event.Focus'",
                        &err);
     dbus_error_free(&err);
+    dbus_error_init(&err);
+    // New connections joining the a11y bus (e.g. a browser starting up)
+    dbus_bus_add_match(bus,
+                       "type='signal',sender='org.freedesktop.DBus',"
+                       "interface='org.freedesktop.DBus',"
+                       "member='NameOwnerChanged'",
+                       &err);
+    dbus_error_free(&err);
 
     A11Y_LOG("A11yMonitor started");
+
+    // Poke browsers already on the bus, then re-poke whenever a new app
+    // connects (short + late retry: the app root only becomes queryable once
+    // the browser's ATK bridge has registered with the registry), plus a
+    // periodic sweep as a fallback.
+    pokeChromiumBrowsers(bus);
+
+    using Clock = std::chrono::steady_clock;
+    const auto kNever = Clock::time_point::max();
+    Clock::time_point pokeAt = kNever;
+    Clock::time_point latePokeAt = kNever;
+    Clock::time_point periodicPokeAt =
+        Clock::now() + std::chrono::seconds(15);
 
     // Poll loop
     while (!stopRequested_.load()) {
@@ -344,6 +496,27 @@ void A11yMonitor::threadFunc() {
                 strcmp(iface, "org.a11y.atspi.Event.Focus") == 0)
                 isFocusEvent = true;
 
+            if (iface && member &&
+                strcmp(iface, "org.freedesktop.DBus") == 0 &&
+                strcmp(member, "NameOwnerChanged") == 0) {
+                const char *busName = nullptr;
+                const char *oldOwner = nullptr;
+                const char *newOwner = nullptr;
+                DBusError nerr;
+                dbus_error_init(&nerr);
+                if (dbus_message_get_args(msg, &nerr,
+                                          DBUS_TYPE_STRING, &busName,
+                                          DBUS_TYPE_STRING, &oldOwner,
+                                          DBUS_TYPE_STRING, &newOwner,
+                                          DBUS_TYPE_INVALID) &&
+                    newOwner && newOwner[0]) {
+                    auto now = Clock::now();
+                    pokeAt = now + std::chrono::milliseconds(600);
+                    latePokeAt = now + std::chrono::milliseconds(3000);
+                }
+                dbus_error_free(&nerr);
+            }
+
             if (isFocusEvent) {
                 const char *sender = dbus_message_get_sender(msg);
                 const char *path = dbus_message_get_path(msg);
@@ -358,6 +531,15 @@ void A11yMonitor::threadFunc() {
             }
 
             dbus_message_unref(msg);
+        }
+
+        auto now = Clock::now();
+        if (now >= pokeAt || now >= latePokeAt || now >= periodicPokeAt) {
+            if (now >= pokeAt) pokeAt = kNever;
+            if (now >= latePokeAt) latePokeAt = kNever;
+            if (now >= periodicPokeAt)
+                periodicPokeAt = now + std::chrono::seconds(15);
+            pokeChromiumBrowsers(bus);
         }
     }
 
