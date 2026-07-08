@@ -68,6 +68,14 @@ void GeneralTab::setupUI() {
     showPreeditCheck_ = new QCheckBox(QString::fromUtf8("Hiện preedit"), checkFrame);
     checkLayout->addWidget(showPreeditCheck_);
 
+    chromiumAddressBarPreeditCheck_ = new QCheckBox(
+        QString::fromUtf8("Tự động Preedit ở thanh địa chỉ"), checkFrame);
+    chromiumAddressBarPreeditCheck_->setToolTip(
+        QString::fromUtf8("Tự động chuyển sang chế độ Preedit khi gõ ở thanh\n"
+                          "địa chỉ trình duyệt (Chrome, Chromium, Edge...).\n"
+                          "Web content vẫn dùng chế độ gõ đã cấu hình."));
+    checkLayout->addWidget(chromiumAddressBarPreeditCheck_);
+
     debugCheck_ = new QCheckBox(QString::fromUtf8("Ghi log debug"), checkFrame);
     checkLayout->addWidget(debugCheck_);
 
@@ -88,6 +96,7 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
     freeMarkingCheck_->setChecked(cfg.freeMarking);
     autoRestoreCheck_->setChecked(cfg.autoRestore);
     showPreeditCheck_->setChecked(cfg.showPreedit);
+    chromiumAddressBarPreeditCheck_->setChecked(cfg.chromiumAddressBarPreedit);
     debugCheck_->setChecked(cfg.debug);
 }
 
@@ -99,6 +108,7 @@ SKeyConfig GeneralTab::collectConfig() const {
     cfg.freeMarking  = freeMarkingCheck_->isChecked();
     cfg.autoRestore  = autoRestoreCheck_->isChecked();
     cfg.showPreedit  = showPreeditCheck_->isChecked();
+    cfg.chromiumAddressBarPreedit = chromiumAddressBarPreeditCheck_->isChecked();
     cfg.debug        = debugCheck_->isChecked();
     return cfg;
 }

@@ -15,6 +15,7 @@ struct SKeyConfig {
     bool freeMarking  = true;
     bool autoRestore  = true;
     bool showPreedit  = true;
+    bool chromiumAddressBarPreedit = true;
     bool debug        = false;
 };
 

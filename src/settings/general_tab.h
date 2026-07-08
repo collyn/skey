@@ -31,6 +31,7 @@ private:
     QCheckBox *freeMarkingCheck_;
     QCheckBox *autoRestoreCheck_;
     QCheckBox *showPreeditCheck_;
+    QCheckBox *chromiumAddressBarPreeditCheck_;
     QCheckBox *debugCheck_;
 };
 

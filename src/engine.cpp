@@ -159,6 +159,22 @@ FCITX_DEFINE_LOG_CATEGORY(skey_log, "skey");
 #define SKEY_DEBUG() SKeyLogger()
 #define SKEY_INFO() SKeyLogger()
 
+/// Check if a program name is a known Chromium-based browser.
+static bool isChromiumBrowser(const std::string &prog) {
+    // Match common Chromium browser program names
+    static const char *const patterns[] = {
+        "chrome",    "chromium", "google-chrome",
+        "brave",     "vivaldi",  "microsoft-edge",
+        "opera",     "electron",
+    };
+    for (const char *p : patterns) {
+        if (prog.find(p) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 FCITX_ADDON_FACTORY(SKeyEngineFactory);
 
 // Candidate word for mode switch dropdown menu
@@ -215,6 +231,14 @@ SKeyEngine::SKeyEngine(Instance *instance)
     reloadConfig();
     instance_->inputContextManager().registerProperty("skeyState", &factory_);
     setupTrayMenu();
+
+    // Start AT-SPI2 monitor for address bar detection
+    if (*config_.chromiumAddressBarPreedit) {
+        a11yMonitor_ = std::make_unique<A11yMonitor>();
+        a11yMonitor_->setDebug(*config_.debug);
+        a11yMonitor_->start();
+    }
+
     SKEY_INFO() << "SKey Vietnamese Input Method loaded";
 }
 
@@ -446,6 +470,8 @@ bool SKeyEngine::isAppExcluded(const std::string &app) const {
 void SKeyEngine::reloadConfig() {
     readAsIni(config_, "conf/skey.conf");
     g_skeyDebugEnabled = readDebugFromFile();
+    if (a11yMonitor_)
+        a11yMonitor_->setDebug(g_skeyDebugEnabled);
     std::string modeStr = outputModeName(config_.outputMode.value());
     SKEY_INFO() << "Config: outputMode=" << modeStr
                 << " debug(from file)=" << g_skeyDebugEnabled;
@@ -540,6 +566,21 @@ void SKeyState::refreshAppMode() {
 
 SKeyOutputMode SKeyState::effectiveMode() const {
     const_cast<SKeyState *>(this)->refreshAppMode();
+
+    // Auto-switch to Preedit in URL fields (e.g. Chromium address bar)
+    if (*engine_->config().chromiumAddressBarPreedit) {
+        // Method 1: Wayland — Chrome sends CapabilityFlag::Url natively
+        if (ic_->capabilityFlags().test(CapabilityFlag::Url)) {
+            return SKeyOutputMode::Preedit;
+        }
+        // Method 2: X11 — use AT-SPI2 accessibility monitor
+        if (engine_->a11yMonitor() &&
+            engine_->a11yMonitor()->isBrowserUIFocused() &&
+            isChromiumBrowser(ic_->program())) {
+            return SKeyOutputMode::Preedit;
+        }
+    }
+
     if (hasAppModeOverride_)
         return appModeOverride_;
     return engine_->config().outputMode.value();
@@ -623,11 +664,19 @@ void SKeyState::activate() {
                  << " surroundingCap="
                  << caps.test(CapabilityFlag::SurroundingText)
                  << " password=" << caps.test(CapabilityFlag::Password)
+                 << " urlCap=" << caps.test(CapabilityFlag::Url)
                  << " preeditCap=" << caps.test(CapabilityFlag::Preedit)
                  << " nativeSurrounding=" << useNativeSurroundingApi()
                  << " frontend=" << ic_->frontendName()
                  << " display=" << ic_->display()
-                 << " app=" << ic_->program();
+                 << " app=" << ic_->program()
+                 << " caps=0x" << std::hex
+                 << static_cast<uint64_t>(caps.toInteger()) << std::dec
+                 << " cursor=("
+                 << ic_->cursorRect().left() << ","
+                 << ic_->cursorRect().top() << ","
+                 << ic_->cursorRect().width() << "x"
+                 << ic_->cursorRect().height() << ")";
 }
 
 bool SKeyState::connectUinputServer() {

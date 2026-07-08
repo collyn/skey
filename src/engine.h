@@ -1,6 +1,7 @@
 #ifndef FCITX5_SKEY_ENGINE_H
 #define FCITX5_SKEY_ENGINE_H
 
+#include <memory>
 #include <vector>
 
 #include <fcitx-utils/event.h>
@@ -15,6 +16,7 @@
 
 #include "config.h"
 #include "vietnamese.h"
+#include "a11y_monitor.h"
 
 namespace fcitx {
 
@@ -136,6 +138,7 @@ public:
     void saveAppExcluded(const std::string &app, bool excluded);
     bool isAppExcluded(const std::string &app) const;
     void updateMenuActions();
+    A11yMonitor *a11yMonitor() const { return a11yMonitor_.get(); }
 
 private:
     void setupTrayMenu();
@@ -160,6 +163,9 @@ private:
 
     // Tray menu: Launch settings app
     SimpleAction settingsAction_;
+
+    // AT-SPI2 accessibility monitor for address bar detection
+    std::unique_ptr<A11yMonitor> a11yMonitor_;
 };
 
 class SKeyEngineFactory : public AddonFactory {

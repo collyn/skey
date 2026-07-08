@@ -43,6 +43,10 @@ FCITX_CONFIGURATION(
                              _("Auto restore non-Vietnamese"), true};
     // Show preedit text
     Option<bool> showPreedit{this, "ShowPreedit", _("Show preedit"), true};
+    // Auto switch to Preedit in URL fields (e.g. Chromium address bar)
+    Option<bool> chromiumAddressBarPreedit{
+        this, "ChromiumAddressBarPreedit",
+        _("Auto Preedit for address bar"), true};
     // Enable debug logging
     Option<bool> debug{this, "Debug", _("Enable debug logging"), false};);
 
