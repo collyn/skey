@@ -234,22 +234,22 @@ Khi người dùng kết thúc từ (nhấn Space, Enter, hoặc ký tự đặc
 │        SKey Addon  (skey.so — shared library)   │
 │                                                 │
 │  SKeyEngine ─── SKeyConfig                      │
-│      │      └── A11yMonitor (AT-SPI2, address    │
-│      │            bar Chromium trên X11)         │
-│      ▼                                           │
-│  SKeyState (per-window)                          │
-│      │                                           │
-│      ├── Output: Preedit / Surrounding Text /    │
-│      │           Uinput                          │
-│      │              │ (Uinput mode)              │
-│      │              ▼                            │
-│      │      fcitx5-skey-uinput-server            │
-│      │      (tiến trình riêng ↔ /dev/uinput)     │
-│      ▼                                           │
-│  VietnameseEngine  (wrapper C++)                 │
-│      │                                           │
-│      ▼                                           │
-│  bamboo-core (Rust FFI)                          │
+│      │      └── A11yMonitor (AT-SPI2, address   │
+│      │            bar Chromium trên X11)        │
+│      ▼                                          │
+│  SKeyState (per-window)                         │
+│      │                                          │
+│      ├── Output: Preedit / Surrounding Text /   │
+│      │           Uinput                         │
+│      │              │ (Uinput mode)             │
+│      │              ▼                           │
+│      │      fcitx5-skey-uinput-server           │
+│      │      (tiến trình riêng ↔ /dev/uinput)   │
+│      ▼                                          │
+│  VietnameseEngine  (wrapper C++)                │
+│      │                                          │
+│      ▼                                          │
+│  bamboo-core (Rust FFI)                         │
 │  ┌─────────────────────────────────────────┐    │
 │  │ skey_engine_process_string()            │    │
 │  │ skey_engine_is_valid()                  │    │
