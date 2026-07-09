@@ -2,7 +2,7 @@
  * test_vietnamese.cpp — Comprehensive Vietnamese typing test suite for skey.
  *
  * Tests the VietnameseEngine wrapper against bamboo-core for all common
- * Telex, VNI, and TelexW typing patterns, plus edge cases.
+ * Telex, VNI, and Telex+ShortW/BracketUO typing patterns, plus edge cases.
  *
  * Build:
  *   cd build && cmake .. && make test_vietnamese
@@ -53,6 +53,8 @@ struct TestCase {
     const char *keys;
     const char *expectedText; // final composed text visible (after all commits)
     const char *note;         // optional explanation, nullptr if none
+    bool shortW = false;      // Telex: bare 'w' → 'ư'
+    bool bracketUO = false;   // Telex: '[' → 'ơ', ']' → 'ư'
 };
 
 struct BackspaceTest {
@@ -86,6 +88,8 @@ feedKeys(skey::VietnameseEngine &eng, const std::string &keys) {
 
 static void runTest(const TestCase &tc) {
     skey::VietnameseEngine eng;
+    eng.setShortW(tc.shortW);
+    eng.setBracketUO(tc.bracketUO);
     eng.setMethod(tc.method);
     eng.setFreeMarking(false);
 
@@ -228,7 +232,7 @@ int main(int argc, char **argv) {
         runTest({cat, "uw → ư",            skey::InputMethod::Telex, "uw",  "ư"});
         runTest({cat, "dd → đ",            skey::InputMethod::Telex, "dd",  "đ"});
 
-        // Note: bare 'w' → 'ư' is TelexW only.
+        // Note: bare 'w' → 'ư' is ShortW only.
         // In standard Telex, 'uw' → 'ư' and 'ow' → 'ơ'.
 
         std::cout << std::endl;
@@ -283,7 +287,7 @@ int main(int argc, char **argv) {
         runTest({cat, "ư + ngã (uwx)",       skey::InputMethod::Telex, "uwx",   "ữ"});
         runTest({cat, "ư + nặng (uwj)",      skey::InputMethod::Telex, "uwj",   "ự"});
 
-        // Note: bare-w ư + tones is TelexW only.
+        // Note: bare-w ư + tones is ShortW only.
         // In standard Telex use uw+s → ứ etc.
 
         std::cout << std::endl;
@@ -803,52 +807,85 @@ int main(int argc, char **argv) {
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // TelexW — Basic patterns
+    // Telex + ShortW (bare w → ư)
     // ══════════════════════════════════════════════════════════════════════
     {
-        const char *cat = "TelexW / Basic";
+        const char *cat = "Telex+ShortW / Basic";
         std::cout << CYAN << "── " << cat << " ──" << RESET << std::endl;
 
         runTest({cat, "w → ư (bare w = ư)",
-                 skey::InputMethod::TelexW, "w", "ư"});
+                 skey::InputMethod::Telex, "w", "ư", nullptr, true});
         runTest({cat, "ws → ứ",
-                 skey::InputMethod::TelexW, "ws", "ứ"});
+                 skey::InputMethod::Telex, "ws", "ứ", nullptr, true});
         runTest({cat, "wf → ừ",
-                 skey::InputMethod::TelexW, "wf", "ừ"});
+                 skey::InputMethod::Telex, "wf", "ừ", nullptr, true});
         runTest({cat, "ow → ơ",
-                 skey::InputMethod::TelexW, "ow", "ơ"});
+                 skey::InputMethod::Telex, "ow", "ơ", nullptr, true});
         runTest({cat, "ows → ớ",
-                 skey::InputMethod::TelexW, "ows", "ớ"});
+                 skey::InputMethod::Telex, "ows", "ớ", nullptr, true});
         runTest({cat, "aw → ă",
-                 skey::InputMethod::TelexW, "aw", "ă"});
+                 skey::InputMethod::Telex, "aw", "ă", nullptr, true});
         runTest({cat, "dd → đ",
-                 skey::InputMethod::TelexW, "dd", "đ"});
+                 skey::InputMethod::Telex, "dd", "đ", nullptr, true});
         runTest({cat, "aa → â",
-                 skey::InputMethod::TelexW, "aa", "â"});
+                 skey::InputMethod::Telex, "aa", "â", nullptr, true});
         runTest({cat, "ee → ê",
-                 skey::InputMethod::TelexW, "ee", "ê"});
+                 skey::InputMethod::Telex, "ee", "ê", nullptr, true});
         runTest({cat, "oo → ô",
-                 skey::InputMethod::TelexW, "oo", "ô"});
+                 skey::InputMethod::Telex, "oo", "ô", nullptr, true});
 
         runTest({cat, "tieengs → tiếng",
-                 skey::InputMethod::TelexW, "tieengs", "tiếng"});
+                 skey::InputMethod::Telex, "tieengs", "tiếng", nullptr, true});
         runTest({cat, "dduwowcj → được",
-                 skey::InputMethod::TelexW, "dduwowcj", "được"});
+                 skey::InputMethod::Telex, "dduwowcj", "được", nullptr, true});
 
         std::cout << std::endl;
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // TelexW — Undo (w-based)
+    // Telex + ShortW — Undo (w-based)
     // ══════════════════════════════════════════════════════════════════════
     {
-        const char *cat = "TelexW / Undo";
+        const char *cat = "Telex+ShortW / Undo";
         std::cout << CYAN << "── " << cat << " ──" << RESET << std::endl;
 
-        // In TelexW, w is always ư (not a modifier for u like in Telex)
+        // With ShortW, w is always ư (not a modifier for u).
         // ww: first w=ư, second w cancels → "w" committed
         runTest({cat, "ww → w (undo ư)",
-                 skey::InputMethod::TelexW, "ww", "w"});
+                 skey::InputMethod::Telex, "ww", "w", nullptr, true});
+
+        std::cout << std::endl;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Telex + BracketUO ('[' → ơ, ']' → ư)
+    // ══════════════════════════════════════════════════════════════════════
+    {
+        const char *cat = "Telex+BracketUO / Basic";
+        std::cout << CYAN << "── " << cat << " ──" << RESET << std::endl;
+
+        auto bracket = [](const char *name, const char *keys,
+                          const char *expected) {
+            return TestCase{"Telex+BracketUO / Basic", name,
+                            skey::InputMethod::Telex, keys, expected,
+                            nullptr, false, true};
+        };
+
+        runTest(bracket("] → ư", "]", "ư"));
+        runTest(bracket("[ → ơ", "[", "ơ"));
+        runTest(bracket("]s → ứ", "]s", "ứ"));
+        runTest(bracket("[s → ớ", "[s", "ớ"));
+        // "được" typed with brackets: d d ] [ c j  (]=ư, [=ơ)
+        runTest(bracket("dd][cj → được", "dd][cj", "được"));
+        // "người": ng ] [ i f
+        runTest(bracket("ng][if → người", "ng][if", "người"));
+
+        // BracketUO combined with ShortW (both enabled): '[' / ']' should
+        // still yield ơ / ư via the ow/uw translation under telex_w.
+        runTest({cat, "] → ư (with ShortW too)",
+                 skey::InputMethod::Telex, "]", "ư", nullptr, true, true});
+        runTest({cat, "[ → ơ (with ShortW too)",
+                 skey::InputMethod::Telex, "[", "ơ", nullptr, true, true});
 
         std::cout << std::endl;
     }
@@ -1083,11 +1120,11 @@ int main(int argc, char **argv) {
             const char *name;
             const char *telexKeys;
             const char *vniKeys;
-            const char *telexWKeys;
+            const char *shortWKeys;
             const char *expected;
         };
 
-        auto runCrossMethod = [](const CrossMethodTest &cmt, bool checkVNI, bool checkTelexW) {
+        auto runCrossMethod = [](const CrossMethodTest &cmt, bool checkVNI, bool checkShortW) {
             int localPassed = 0, localFailed = 0;
 
             // Telex
@@ -1122,21 +1159,22 @@ int main(int argc, char **argv) {
                 ++localPassed; // skip VNI
             }
 
-            // TelexW
-            if (checkTelexW) {
+            // Telex + ShortW
+            if (checkShortW) {
                 skey::VietnameseEngine eng;
-                eng.setMethod(skey::InputMethod::TelexW);
-                auto [c, p] = feedKeys(eng, cmt.telexWKeys);
+                eng.setShortW(true);
+                eng.setMethod(skey::InputMethod::Telex);
+                auto [c, p] = feedKeys(eng, cmt.shortWKeys);
                 std::string result = c + p;
                 if (result == cmt.expected) ++localPassed;
                 else {
                     ++localFailed;
                     std::cout << RED << "  FAIL" << RESET << "  " << cmt.name
-                              << " TelexW: \"" << cmt.telexWKeys << "\" → \""
+                              << " ShortW: \"" << cmt.shortWKeys << "\" → \""
                               << result << "\" (expected \"" << cmt.expected << "\")\n";
                 }
             } else {
-                ++localPassed; // skip TelexW
+                ++localPassed; // skip ShortW
             }
 
             if (localFailed == 0) {
@@ -1174,7 +1212,8 @@ int main(int argc, char **argv) {
                 skey::VietnameseEngine eng;
                 eng.setMethod(skey::InputMethod::Telex);
                 eng.setMethod(skey::InputMethod::VNI);
-                eng.setMethod(skey::InputMethod::TelexW);
+                eng.setShortW(true);
+                eng.setMethod(skey::InputMethod::Telex);
                 feedKeys(eng, "tieengs");
                 eng.reset();
             }
@@ -1205,7 +1244,7 @@ int main(int argc, char **argv) {
             skey::VietnameseEngine eng;
             bool pass = true;
             for (int i = 0; i < 50; ++i) {
-                auto methods = {skey::InputMethod::Telex, skey::InputMethod::VNI, skey::InputMethod::TelexW};
+                auto methods = {skey::InputMethod::Telex, skey::InputMethod::VNI};
                 for (auto m : methods) {
                     eng.setMethod(m);
                     eng.reset();

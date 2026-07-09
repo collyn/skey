@@ -11,7 +11,7 @@ extern "C" {
 namespace skey {
 
 /// Input method type
-enum class InputMethod { Telex, VNI, TelexW };
+enum class InputMethod { Telex, VNI };
 
 /// Tone mark position style
 enum class ToneStyle { Modern, Traditional };
@@ -46,6 +46,10 @@ public:
     void setToneStyle(ToneStyle style);
     void setFreeMarking(bool free);
     void setAutoRestore(bool restore);
+    /// Telex only: bare 'w' → 'ư' (switches bamboo to telex_w).
+    void setShortW(bool enabled);
+    /// Telex only: '[' → 'ơ', ']' → 'ư' (translated to ow/uw for bamboo).
+    void setBracketUO(bool enabled);
 
     /// Process a single key press. Returns the result type.
     ProcessResult processKey(char ch);
@@ -85,6 +89,8 @@ private:
     ToneStyle toneStyle_ = ToneStyle::Modern;
     bool freeMarking_ = false;
     bool autoRestore_ = true;
+    bool shortW_ = false;      // Telex: bare 'w' → 'ư' (telex_w)
+    bool bracketUO_ = false;   // Telex: '[' → 'ơ', ']' → 'ư'
 
     std::string rawInput_;       // What the user actually typed
     std::string composed_;       // Cached composed output from bamboo-core

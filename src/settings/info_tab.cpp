@@ -67,7 +67,7 @@ void InfoTab::setupUI() {
 
     auto *descLabel = new QLabel(
         QString::fromUtf8("Bộ gõ tiếng Việt cho Fcitx5\n"
-                          "Hỗ trợ Telex, Telex W, VNI"),
+                          "Hỗ trợ Telex, VNI"),
         this);
     descLabel->setAlignment(Qt::AlignCenter);
     descLabel->setWordWrap(true);

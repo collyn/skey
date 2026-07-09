@@ -107,7 +107,8 @@ def reload_fcitx5_config():
 
 # ── Config ─────────────────────────────────────────────────────────────────
 
-def write_skey_config(output_mode: str = "Uinput", input_method: str = "Telex"):
+def write_skey_config(output_mode: str = "Uinput", input_method: str = "Telex",
+                      short_w: bool = False, bracket_uo: bool = False):
     """Write skey configuration file."""
     config_path = os.path.expanduser("~/.config/fcitx5/conf/skey.conf")
 
@@ -115,7 +116,7 @@ def write_skey_config(output_mode: str = "Uinput", input_method: str = "Telex"):
         "uinput": "Uinput", "surrounding": "SurroundingText", "preedit": "Preedit",
     }
     im_map = {
-        "telex": "Telex", "vni": "VNI", "telexw": "TelexW",
+        "telex": "Telex", "vni": "VNI",
     }
 
     mode_val = mode_map.get(output_mode.lower(), output_mode)
@@ -124,6 +125,8 @@ def write_skey_config(output_mode: str = "Uinput", input_method: str = "Telex"):
     config = f"""[SKeyConfig]
 InputMethod={im_val}
 OutputMode={mode_val}
+ShortW={"True" if short_w else "False"}
+BracketUO={"True" if bracket_uo else "False"}
 TonePosition=Modern
 FreeMarking=True
 AutoRestore=True
@@ -406,8 +409,12 @@ def main():
                        help="Show recent typing activity from debug log")
     parser.add_argument("--mode", choices=["uinput", "surrounding", "preedit"],
                        default="uinput", help="Output mode (default: uinput)")
-    parser.add_argument("--im", choices=["telex", "vni", "telexw"],
+    parser.add_argument("--im", choices=["telex", "vni"],
                        default="telex", help="Input method (default: telex)")
+    parser.add_argument("--short-w", action="store_true",
+                       help="Telex: type bare 'w' as ư")
+    parser.add_argument("--bracket-uo", action="store_true",
+                       help="Telex: type [ as ơ and ] as ư")
     parser.add_argument("--all", action="store_true",
                        help="Run all checks and show test phrases")
     args = parser.parse_args()
@@ -418,7 +425,7 @@ def main():
 
     # Setup
     if args.setup or args.all:
-        write_skey_config(args.mode, args.im)
+        write_skey_config(args.mode, args.im, args.short_w, args.bracket_uo)
 
     # Check system
     if args.check or args.all:

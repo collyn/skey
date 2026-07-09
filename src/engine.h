@@ -153,7 +153,6 @@ private:
     Menu imMenu_;
     SimpleAction imTelex_;
     SimpleAction imVni_;
-    SimpleAction imTelexW_;
 
     // Tray menu: Output Mode selector
     SimpleAction omAction_;

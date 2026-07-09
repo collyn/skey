@@ -6,6 +6,7 @@
 #include <QComboBox>
 #include <QFormLayout>
 #include <QFrame>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QLabel>
 #include <QRadioButton>
@@ -31,7 +32,6 @@ void GeneralTab::setupUI() {
     inputMethodCombo_ = new QComboBox(enumFrame);
     inputMethodCombo_->addItem("Telex",    "Telex");
     inputMethodCombo_->addItem("VNI",      "VNI");
-    inputMethodCombo_->addItem("Telex W",  "Telex W");
     enumLayout->addRow(QString::fromUtf8("Kiểu gõ:"), inputMethodCombo_);
 
     outputModeCombo_ = new QComboBox(enumFrame);
@@ -48,24 +48,39 @@ void GeneralTab::setupUI() {
 
     mainLayout->addWidget(enumFrame);
 
-    // ── Checkbox section ──
+    // ── Checkbox section (2 columns) ──
     auto *checkFrame = new QFrame(this);
     checkFrame->setFrameStyle(QFrame::StyledPanel);
-    auto *checkLayout = new QVBoxLayout(checkFrame);
-    checkLayout->setSpacing(4);
+    auto *checkLayout = new QGridLayout(checkFrame);
+    checkLayout->setHorizontalSpacing(24);
+    checkLayout->setVerticalSpacing(4);
     checkLayout->setContentsMargins(12, 12, 12, 12);
+    checkLayout->setColumnStretch(0, 1);
+    checkLayout->setColumnStretch(1, 1);
+
+    // Telex-only options: 'w'→'ư' and '][' → 'ư'/'ơ'.
+    // Enabled only when the current input method is Telex (see below).
+    shortWCheck_ = new QCheckBox(QString::fromUtf8("Gõ w thành ư"), checkFrame);
+    shortWCheck_->setToolTip(
+        QString::fromUtf8("Chỉ Telex: gõ phím w đơn lẻ sẽ ra chữ ư."));
+    checkLayout->addWidget(shortWCheck_, 0, 0);
+
+    bracketUOCheck_ = new QCheckBox(QString::fromUtf8("Gõ ][ thành ư ơ"), checkFrame);
+    bracketUOCheck_->setToolTip(
+        QString::fromUtf8("Chỉ Telex: gõ [ ra ơ và ] ra ư (giống UniKey)."));
+    checkLayout->addWidget(bracketUOCheck_, 0, 1);
 
     freeMarkingCheck_ = new QCheckBox(QString::fromUtf8("Đánh dấu tự do"), checkFrame);
-    checkLayout->addWidget(freeMarkingCheck_);
+    checkLayout->addWidget(freeMarkingCheck_, 1, 0);
 
     autoRestoreCheck_ = new QCheckBox(QString::fromUtf8("Tự động khôi phục"), checkFrame);
-    checkLayout->addWidget(autoRestoreCheck_);
+    checkLayout->addWidget(autoRestoreCheck_, 1, 1);
 
     showPreeditCheck_ = new QCheckBox(QString::fromUtf8("Hiện preedit"), checkFrame);
-    checkLayout->addWidget(showPreeditCheck_);
+    checkLayout->addWidget(showPreeditCheck_, 2, 0);
 
     debugCheck_ = new QCheckBox(QString::fromUtf8("Ghi log debug"), checkFrame);
-    checkLayout->addWidget(debugCheck_);
+    checkLayout->addWidget(debugCheck_, 2, 1);
 
     mainLayout->addWidget(checkFrame);
 
@@ -93,6 +108,18 @@ void GeneralTab::setupUI() {
 
     mainLayout->addWidget(addrBarGroup);
     mainLayout->addStretch();
+
+    // Telex-only options are disabled (greyed out) unless Telex is selected.
+    auto syncTelexOptions = [this]() {
+        bool isTelex =
+            inputMethodCombo_->currentData().toString() == QLatin1String("Telex");
+        shortWCheck_->setEnabled(isTelex);
+        bracketUOCheck_->setEnabled(isTelex);
+    };
+    connect(inputMethodCombo_,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [syncTelexOptions](int) { syncTelexOptions(); });
+    syncTelexOptions();
 }
 
 void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
@@ -104,6 +131,8 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
     setCombo(inputMethodCombo_,  cfg.inputMethod);
     setCombo(outputModeCombo_,   cfg.outputMode);
 
+    shortWCheck_->setChecked(cfg.shortW);
+    bracketUOCheck_->setChecked(cfg.bracketUO);
     freeMarkingCheck_->setChecked(cfg.freeMarking);
     autoRestoreCheck_->setChecked(cfg.autoRestore);
     showPreeditCheck_->setChecked(cfg.showPreedit);
@@ -120,6 +149,8 @@ SKeyConfig GeneralTab::collectConfig() const {
     SKeyConfig cfg;
     cfg.inputMethod  = inputMethodCombo_->currentData().toString().toStdString();
     cfg.outputMode   = outputModeCombo_->currentData().toString().toStdString();
+    cfg.shortW       = shortWCheck_->isChecked();
+    cfg.bracketUO    = bracketUOCheck_->isChecked();
     cfg.freeMarking  = freeMarkingCheck_->isChecked();
     cfg.autoRestore  = autoRestoreCheck_->isChecked();
     cfg.showPreedit  = showPreeditCheck_->isChecked();

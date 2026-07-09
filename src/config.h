@@ -8,9 +8,8 @@
 namespace fcitx {
 
 // Input method type
-enum class SKeyInputMethod { Telex, VNI, TelexW };
-FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyInputMethod, N_("Telex"), N_("VNI"),
-                                 N_("Telex W"));
+enum class SKeyInputMethod { Telex, VNI };
+FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyInputMethod, N_("Telex"), N_("VNI"));
 
 // Output mode
 enum class SKeyOutputMode { Uinput, SurroundingText, Preedit };
@@ -30,6 +29,10 @@ FCITX_CONFIGURATION(
     Option<SKeyInputMethod> inputMethod{this, "InputMethod",
                                         _("Input Method"),
                                         SKeyInputMethod::Telex};
+    // Telex only: type bare 'w' → 'ư' (uses bamboo telex_w)
+    Option<bool> shortW{this, "ShortW", _("Gõ w thành ư"), false};
+    // Telex only: type '[' → 'ơ' and ']' → 'ư' (UniKey-style)
+    Option<bool> bracketUO{this, "BracketUO", _("Gõ ][ thành ư ơ"), false};
     // Output mode: uinput (default), surrounding text, or preedit
     Option<SKeyOutputMode> outputMode{this, "OutputMode", _("Output Mode"),
                                       SKeyOutputMode::Uinput};

@@ -251,13 +251,9 @@ void SKeyEngine::setupTrayMenu() {
     imVni_.setShortText("VNI");
     imVni_.setCheckable(true);
     imVni_.registerAction("skey-im-vni", &uiManager);
-    imTelexW_.setShortText("Telex W");
-    imTelexW_.setCheckable(true);
-    imTelexW_.registerAction("skey-im-telexw", &uiManager);
 
     imMenu_.addAction(&imTelex_);
     imMenu_.addAction(&imVni_);
-    imMenu_.addAction(&imTelexW_);
 
     imAction_.setShortText(_("Input Method"));
     imAction_.setMenu(&imMenu_);
@@ -270,10 +266,6 @@ void SKeyEngine::setupTrayMenu() {
     imVni_.connect<SimpleAction::Activated>([this](InputContext *ic) {
         FCITX_UNUSED(ic);
         setInputMethod(SKeyInputMethod::VNI);
-    });
-    imTelexW_.connect<SimpleAction::Activated>([this](InputContext *ic) {
-        FCITX_UNUSED(ic);
-        setInputMethod(SKeyInputMethod::TelexW);
     });
 
     // ── Output Mode menu ──
@@ -399,13 +391,10 @@ void SKeyEngine::updateMenuActions() {
     auto im = config_.inputMethod.value();
     imTelex_.setChecked(im == SKeyInputMethod::Telex);
     imVni_.setChecked(im == SKeyInputMethod::VNI);
-    imTelexW_.setChecked(im == SKeyInputMethod::TelexW);
 
     // Update parent label to show current selection
     if (im == SKeyInputMethod::VNI) {
         imAction_.setShortText(_("Input Method: VNI"));
-    } else if (im == SKeyInputMethod::TelexW) {
-        imAction_.setShortText(_("Input Method: Telex W"));
     } else {
         imAction_.setShortText(_("Input Method: Telex"));
     }
@@ -467,6 +456,20 @@ bool SKeyEngine::isAppExcluded(const std::string &app) const {
 }
 
 void SKeyEngine::reloadConfig() {
+    // Migrate legacy "Telex W" input method → Telex + ShortW=True.
+    // The TelexW enum value no longer exists, so peek the raw ini first.
+    {
+        RawConfig raw;
+        readAsIni(raw, "conf/skey.conf");
+        auto *im = raw.valueByPath("InputMethod");
+        if (im && (*im == "Telex W" || *im == "TelexW")) {
+            readAsIni(config_, "conf/skey.conf");
+            config_.inputMethod.setValue(SKeyInputMethod::Telex);
+            config_.shortW.setValue(true);
+            safeSaveAsIni(config_, "conf/skey.conf");
+            SKEY_INFO() << "Migrated legacy 'Telex W' → Telex + ShortW";
+        }
+    }
     readAsIni(config_, "conf/skey.conf");
     g_skeyDebugEnabled = readDebugFromFile();
     if (a11yMonitor_)
@@ -482,9 +485,6 @@ std::string SKeyEngine::subMode(const InputMethodEntry &entry,
     FCITX_UNUSED(ic);
     if (*config_.inputMethod == SKeyInputMethod::VNI) {
         return "VNI";
-    }
-    if (*config_.inputMethod == SKeyInputMethod::TelexW) {
-        return "Telex W";
     }
     return "Telex";
 }
@@ -524,9 +524,9 @@ SKeyState::SKeyState(SKeyEngine *engine, InputContext *ic)
     skey::InputMethod im = skey::InputMethod::Telex;
     if (*cfg.inputMethod == SKeyInputMethod::VNI) {
         im = skey::InputMethod::VNI;
-    } else if (*cfg.inputMethod == SKeyInputMethod::TelexW) {
-        im = skey::InputMethod::TelexW;
     }
+    viet_.setShortW(*cfg.shortW);
+    viet_.setBracketUO(*cfg.bracketUO);
     viet_.setMethod(im);
     viet_.setFreeMarking(*cfg.freeMarking);
     viet_.setAutoRestore(*cfg.autoRestore);
@@ -624,9 +624,9 @@ void SKeyState::activate() {
     skey::InputMethod im = skey::InputMethod::Telex;
     if (*cfg.inputMethod == SKeyInputMethod::VNI) {
         im = skey::InputMethod::VNI;
-    } else if (*cfg.inputMethod == SKeyInputMethod::TelexW) {
-        im = skey::InputMethod::TelexW;
     }
+    viet_.setShortW(*cfg.shortW);
+    viet_.setBracketUO(*cfg.bracketUO);
     viet_.setMethod(im);
     viet_.setFreeMarking(*cfg.freeMarking);
     viet_.setAutoRestore(*cfg.autoRestore);
@@ -1210,8 +1210,13 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         bool isVNIModifier =
             (engine_->config().inputMethod.value() == SKeyInputMethod::VNI) &&
             isDigit && !viet_.getRawInput().empty();
+        // Telex "][→ươ" option: '[' / ']' become composition keys.
+        bool isBracketKey =
+            (ch == '[' || ch == ']') &&
+            engine_->config().bracketUO.value() &&
+            engine_->config().inputMethod.value() == SKeyInputMethod::Telex;
 
-        if (isLetter || isVNIModifier) {
+        if (isLetter || isVNIModifier || isBracketKey) {
             // Retroactive tone editing (Unikey-style): if the user has
             // backspaced into the previous word and types a tone modifier
             // key (s/f/r/x/j for Telex, 1-5/0 for VNI), reclaim the last
@@ -1221,7 +1226,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 && reclaimReady_ && useSurroundingText()) {
                 auto im = engine_->config().inputMethod.value();
                 bool isToneKey = false;
-                if (im == SKeyInputMethod::Telex || im == SKeyInputMethod::TelexW) {
+                if (im == SKeyInputMethod::Telex) {
                     isToneKey = (ch == 's' || ch == 'f' || ch == 'r'
                                  || ch == 'x' || ch == 'j' || ch == 'z');
                 } else if (im == SKeyInputMethod::VNI) {

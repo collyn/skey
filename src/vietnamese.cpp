@@ -29,6 +29,8 @@ VietnameseEngine::VietnameseEngine(VietnameseEngine &&other) noexcept
       toneStyle_(other.toneStyle_),
       freeMarking_(other.freeMarking_),
       autoRestore_(other.autoRestore_),
+      shortW_(other.shortW_),
+      bracketUO_(other.bracketUO_),
       rawInput_(std::move(other.rawInput_)),
       composed_(std::move(other.composed_)),
       englishBypass_(other.englishBypass_),
@@ -47,6 +49,8 @@ VietnameseEngine &VietnameseEngine::operator=(VietnameseEngine &&other) noexcept
         toneStyle_ = other.toneStyle_;
         freeMarking_ = other.freeMarking_;
         autoRestore_ = other.autoRestore_;
+        shortW_ = other.shortW_;
+        bracketUO_ = other.bracketUO_;
         rawInput_ = std::move(other.rawInput_);
         composed_ = std::move(other.composed_);
         englishBypass_ = other.englishBypass_;
@@ -66,7 +70,8 @@ void VietnameseEngine::setMethod(InputMethod method) {
     int32_t m;
     if (method == InputMethod::VNI) {
         m = BAMBOO_METHOD_VNI;
-    } else if (method == InputMethod::TelexW) {
+    } else if (shortW_) {
+        // Telex + "bare w → ư" option → bamboo telex_w variant
         m = BAMBOO_METHOD_TELEXW;
     } else {
         m = BAMBOO_METHOD_TELEX;
@@ -93,6 +98,17 @@ void VietnameseEngine::setAutoRestore(bool restore) {
     autoRestore_ = restore;
 }
 
+void VietnameseEngine::setShortW(bool enabled) {
+    if (shortW_ == enabled) return;
+    shortW_ = enabled;
+    // Re-apply method so bamboo switches between telex() and telex_w().
+    setMethod(method_);
+}
+
+void VietnameseEngine::setBracketUO(bool enabled) {
+    bracketUO_ = enabled;
+}
+
 // ---------------------------------------------------------------------------
 // Input processing
 // ---------------------------------------------------------------------------
@@ -102,7 +118,13 @@ ProcessResult VietnameseEngine::processKey(char ch) {
     bool isLetter = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
     bool isDigit = (ch >= '0' && ch <= '9');
 
-    if (!isLetter && !(method_ == InputMethod::VNI && isDigit && !rawInput_.empty())) {
+    // Telex "][→ươ" option: let '[' and ']' through as composition keys.
+    // recompose() translates them to "ow"/"uw" before feeding bamboo.
+    bool bracketActive = bracketUO_ && method_ == InputMethod::Telex &&
+                         (ch == '[' || ch == ']');
+
+    if (!isLetter && !bracketActive &&
+        !(method_ == InputMethod::VNI && isDigit && !rawInput_.empty())) {
         return ProcessResult::Ignored;
     }
 
@@ -132,7 +154,7 @@ ProcessResult VietnameseEngine::processKey(char ch) {
     //     composed_ is shorter than rawInput_. Commit all.
     //     ooo → "oo" (2<3) → commit "oo"
     //     ddd → "dd" (2<3) → commit "dd"
-    //   - Single-char transforms (w→ư in TelexW): trigger NOT consumed.
+    //   - Single-char transforms (w→ư when shortW/telex_w): trigger NOT consumed.
     //     composed_ equals rawInput_. Strip last char (the trigger).
     //     ww  → "ww" (2=2) → commit "w"
     if (rawInput_.size() > 1 && oldComposed != oldRawInput) {
@@ -194,7 +216,24 @@ std::string VietnameseEngine::getComposed() const {
 // ---------------------------------------------------------------------------
 
 void VietnameseEngine::recompose() {
-    char *result = skey_engine_process_string(handle_, rawInput_.c_str());
+    // Telex "][→ươ": translate bracket keys to their Telex equivalents
+    // ('[' → "ow" → ơ, ']' → "uw" → ư) before feeding bamboo. rawInput_
+    // keeps the literal brackets so backspace/undo stay 1-char-per-key.
+    const char *input = rawInput_.c_str();
+    std::string translated;
+    if (bracketUO_ && method_ == InputMethod::Telex &&
+        (rawInput_.find('[') != std::string::npos ||
+         rawInput_.find(']') != std::string::npos)) {
+        translated.reserve(rawInput_.size() + 4);
+        for (char c : rawInput_) {
+            if (c == '[') translated += "ow";
+            else if (c == ']') translated += "uw";
+            else translated += c;
+        }
+        input = translated.c_str();
+    }
+
+    char *result = skey_engine_process_string(handle_, input);
     if (result) {
         composed_ = result;
         bamboo_free_string(result);

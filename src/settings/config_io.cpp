@@ -81,11 +81,19 @@ SKeyConfig readSkeyConfig() {
 
         if (key == "InputMethod")      cfg.inputMethod  = val;
         else if (key == "OutputMode")   cfg.outputMode   = val;
+        else if (key == "ShortW")       cfg.shortW        = parseBool(val);
+        else if (key == "BracketUO")    cfg.bracketUO     = parseBool(val);
         else if (key == "FreeMarking")  cfg.freeMarking   = parseBool(val);
         else if (key == "AutoRestore")  cfg.autoRestore   = parseBool(val);
         else if (key == "ShowPreedit")  cfg.showPreedit   = parseBool(val);
         else if (key == "ChromiumAddressBarMode") cfg.chromiumAddressBarMode = val;
         else if (key == "Debug")        cfg.debug         = parseBool(val);
+    }
+
+    // Migration: the old "Telex W" input method is now Telex + ShortW.
+    if (cfg.inputMethod == "Telex W" || cfg.inputMethod == "TelexW") {
+        cfg.inputMethod = "Telex";
+        cfg.shortW = true;
     }
     return cfg;
 }
@@ -98,6 +106,10 @@ bool writeSkeyConfig(const SKeyConfig &cfg) {
     out << "InputMethod="   << maybeQuote(cfg.inputMethod)  << "\n";
     out << "# Output Mode"                  << "\n";
     out << "OutputMode="    << maybeQuote(cfg.outputMode)   << "\n";
+    out << "# Telex: type w as ư"           << "\n";
+    out << "ShortW="        << boolStr(cfg.shortW)          << "\n";
+    out << "# Telex: type ][ as ư ơ"        << "\n";
+    out << "BracketUO="     << boolStr(cfg.bracketUO)       << "\n";
     out << "# Free marking"                << "\n";
     out << "FreeMarking="   << boolStr(cfg.freeMarking)     << "\n";
     out << "# Auto restore non-Vietnamese" << "\n";

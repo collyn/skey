@@ -9,8 +9,10 @@ std::string configDir();
 
 /// Main Skey configuration (maps to skey.conf)
 struct SKeyConfig {
-    std::string inputMethod  = "Telex";       // "Telex", "VNI", "Telex W"
+    std::string inputMethod  = "Telex";       // "Telex", "VNI"
     std::string outputMode   = "Uinput";      // "Uinput", "Surrounding Text", "Preedit"
+    bool shortW       = false;   // Telex: bare 'w' → 'ư'
+    bool bracketUO    = false;   // Telex: '[' → 'ơ', ']' → 'ư'
     bool freeMarking  = false;
     bool autoRestore  = true;
     bool showPreedit  = true;
