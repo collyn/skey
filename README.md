@@ -108,7 +108,7 @@ Sau khi cài đặt + chạy `skey-setup`, SKey là bộ gõ mặc định. Chuy
 | `aa` | â | Dấu mũ |
 | `oo` | ô | Dấu mũ |
 | `ee` | ê | Dấu mũ |
-| `uw` hoặc `w` | ư | Dấu móc |
+| `uw` | ư | Dấu móc |
 | `ow` | ơ | Dấu móc |
 | `aw` | ă | Dấu trăng |
 | `dd` | đ | D đét |
@@ -118,6 +118,16 @@ Sau khi cài đặt + chạy `skey-setup`, SKey là bộ gõ mặc định. Chuy
 | `x` | dấu ngã | ã, ẽ, õ... |
 | `j` | dấu nặng | ạ, ẹ, ọ... |
 | `z` | xóa dấu | bỏ dấu thanh |
+
+**Tuỳ chọn mở rộng cho Telex** (bật trong cấu hình, mặc định tắt):
+
+| Gõ | Kết quả | Tuỳ chọn |
+|----|---------|----------|
+| `w` | ư | **Gõ w thành ư** — phím `w` đơn lẻ ra `ư` |
+| `[` | ơ | **Gõ ][ thành ư ơ** — kiểu UniKey |
+| `]` | ư | **Gõ ][ thành ư ơ** — kiểu UniKey |
+
+Ví dụ khi bật **Gõ ][ thành ư ơ**: gõ `dd][cj` → `được`, `ng][if` → `người`.
 
 ### Bảng gõ VNI
 
@@ -224,23 +234,28 @@ Khi người dùng kết thúc từ (nhấn Space, Enter, hoặc ký tự đặc
 │        SKey Addon  (skey.so — shared library)   │
 │                                                 │
 │  SKeyEngine ─── SKeyConfig                      │
-│       │                                         │
-│       ▼                                         │
-│  SKeyState (per-window)                         │
-│       │                                         │
-│   ┌───┴───┐                                     │
-│   │       │                                     │
-│   ▼       ▼                                     │
-│ Preedit  Surrounding Text                       │
-│  Mode      Mode                                 │
-│   │       │                                     │
-│   └───┬───┘                                     │
-│       ▼                                         │
-│  bamboo-core (Rust FFI)                         │
+│      │      └── A11yMonitor (AT-SPI2, address    │
+│      │            bar Chromium trên X11)         │
+│      ▼                                           │
+│  SKeyState (per-window)                          │
+│      │                                           │
+│      ├── Output: Preedit / Surrounding Text /    │
+│      │           Uinput                          │
+│      │              │ (Uinput mode)              │
+│      │              ▼                            │
+│      │      fcitx5-skey-uinput-server            │
+│      │      (tiến trình riêng ↔ /dev/uinput)     │
+│      ▼                                           │
+│  VietnameseEngine  (wrapper C++)                 │
+│      │                                           │
+│      ▼                                           │
+│  bamboo-core (Rust FFI)                          │
 │  ┌─────────────────────────────────────────┐    │
-│  │ bamboo_engine_process_key_buf()         │    │
+│  │ skey_engine_process_string()            │    │
 │  │ skey_engine_is_valid()                  │    │
-│  │ skey_engine_restore_last_word()         │    │
+│  │ skey_engine_set_method() / _reset()     │    │
+│  │ skey_engine_set_free_marking()          │    │
+│  │ skey_engine_set_std_tone_style()        │    │
 │  └─────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────┘
 ```
@@ -261,11 +276,14 @@ Log bao gồm: trạng thái activation/deactivation, phím nhấn (old/new comp
 
 ## License
 
-[GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html)
+Phát hành theo giấy phép [MIT](LICENSE).
 
 ---
 
 ## Credits
 
-- [bamboo-core](https://github.com/nguyen10t2/bamboo_core) — engine xử lý tiếng Việt (Rust)
-- [fcitx5](https://fcitx-im.org/) — input method framework cho Linux
+Xin chân thành cảm ơn:
+
+- **[bamboo-core](https://github.com/nguyen10t2/bamboo_core)** — engine xử lý tiếng Việt (Rust) là trái tim của SKey. Toàn bộ logic biến đổi Telex/VNI, kiểm tra âm tiết và khôi phục từ đều dựa trên bamboo-core. Cảm ơn tác giả đã xây dựng và chia sẻ một engine gõ tiếng Việt mạnh mẽ và mã nguồn mở.
+- **[fcitx5](https://fcitx-im.org/)** — input method framework cho Linux.
+
