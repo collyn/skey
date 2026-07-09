@@ -1,6 +1,16 @@
+<div align="center">
+
+<img src="data/icons/fcitx-skey.svg" alt="SKey" width="128" height="128">
+
 # SKey — Simple Key
 
 **Bộ gõ Tiếng Việt đơn giản, nhẹ, và nhanh cho Linux.**
+
+[![Release](https://img.shields.io/github/v/release/collyn/skey?label=release&sort=semver)](https://github.com/collyn/skey/releases)
+[![License](https://img.shields.io/github/license/collyn/skey?label=license)](LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/collyn/skey/total?label=downloads)](https://github.com/collyn/skey/releases)
+
+</div>
 
 SKey (Simple Key) là bộ gõ Tiếng Việt cho Linux trên nền tảng [fcitx5](https://fcitx-im.org/), sử dụng engine [bamboo-core](https://github.com/nguyen10t2/bamboo_core) (Rust) qua FFI. Mặc định bộ gõ chạy monolithic không cần server; riêng chế độ Uinput đi kèm một server tùy chọn để tối ưu hóa việc xóa/thay thế chữ.
 
