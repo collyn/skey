@@ -244,7 +244,7 @@ Khi người dùng kết thúc từ (nhấn Space, Enter, hoặc ký tự đặc
 │      │              │ (Uinput mode)             │
 │      │              ▼                           │
 │      │      fcitx5-skey-uinput-server           │
-│      │      (tiến trình riêng ↔ /dev/uinput)   │
+│      │      (tiến trình riêng ↔ /dev/uinput)    │
 │      ▼                                          │
 │  VietnameseEngine  (wrapper C++)                │
 │      │                                          │
