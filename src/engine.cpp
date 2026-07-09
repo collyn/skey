@@ -1,5 +1,7 @@
 #include "engine.h"
 
+#include "charset.h"
+
 #include <fcitx-config/iniparser.h>
 #include <fcitx-utils/log.h>
 #include <fcitx-utils/utf8.h>
@@ -525,11 +527,23 @@ SKeyState::SKeyState(SKeyEngine *engine, InputContext *ic)
     if (*cfg.inputMethod == SKeyInputMethod::VNI) {
         im = skey::InputMethod::VNI;
     }
+    // Charset
+    switch (*cfg.charset) {
+        case SKeyCharset::TCVN3: charset_ = skey::Charset::TCVN3; break;
+        case SKeyCharset::VNIWindows: charset_ = skey::Charset::VNIWindows; break;
+        default: charset_ = skey::Charset::Unicode; break;
+    }
+
     viet_.setShortW(*cfg.shortW);
     viet_.setBracketUO(*cfg.bracketUO);
     viet_.setMethod(im);
     viet_.setFreeMarking(*cfg.freeMarking);
     viet_.setAutoRestore(*cfg.autoRestore);
+}
+
+void SKeyState::commitText(const std::string &utf8) {
+    if (utf8.empty()) return;
+    ic_->commitString(skey::convertCharset(utf8, charset_));
 }
 
 void SKeyState::refreshAppMode() {
@@ -624,6 +638,12 @@ void SKeyState::activate() {
     skey::InputMethod im = skey::InputMethod::Telex;
     if (*cfg.inputMethod == SKeyInputMethod::VNI) {
         im = skey::InputMethod::VNI;
+    }
+    // Charset
+    switch (*cfg.charset) {
+        case SKeyCharset::TCVN3: charset_ = skey::Charset::TCVN3; break;
+        case SKeyCharset::VNIWindows: charset_ = skey::Charset::VNIWindows; break;
+        default: charset_ = skey::Charset::Unicode; break;
     }
     viet_.setShortW(*cfg.shortW);
     viet_.setBracketUO(*cfg.bracketUO);
@@ -813,11 +833,11 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
             CLOCK_MONOTONIC,
             now(CLOCK_MONOTONIC) + delayUsec,
             0,
-            [this, commitText](EventSourceTime *, uint64_t) {
+            [this, cText = commitText](EventSourceTime *, uint64_t) {
                 uinputCommitTimer_.reset();
                 uinputDeleting_ = false;
-                if (!commitText.empty()) {
-                    ic_->commitString(commitText);
+                if (!cText.empty()) {
+                    this->commitText(cText);
                 }
                 if (!bufferedUinputKeys_.empty()) {
                     replayBufferedUinputKeys();
@@ -1285,7 +1305,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                     }
                 } else {
                     if (!committed.empty()) {
-                        ic_->commitString(committed);
+                        commitText(committed);
                     }
                     committedLen_ = 0;
                     if (!newComposed.empty()) {
@@ -1346,7 +1366,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                         } else if (!addPart.empty()) {
                             SKEY_DEBUG() << "Uinput: consume '" << keyUtf8
                                          << "' commit '" << addPart << "'";
-                            ic_->commitString(addPart);
+                            commitText(addPart);
                         }
                         committedLen_ = static_cast<int>(
                             utf8::length(newComposed));
@@ -1410,7 +1430,7 @@ void SKeyState::commitBuffer() {
     std::string text = viet_.getComposed();
     SKEY_DEBUG() << "Commit: '" << text << "'";
     if (!text.empty()) {
-        ic_->commitString(text);
+        commitText(text);
     }
     viet_.reset();
 }
@@ -1463,7 +1483,7 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
             deferredBsSentAt_ = 0;
             pendingFlushSuffix_.clear();
             deferredCommitTimer_.reset();
-            ic_->commitString(toCommit);
+            commitText(toCommit);
             return true;
         });
 }
@@ -1502,7 +1522,7 @@ void SKeyState::flushDeferredCommit() {
                     deferredBsSentAt_ = 0;
                     pendingFlushSuffix_.clear();
                     deferredCommitTimer_.reset();
-                    ic_->commitString(toCommit);
+                    commitText(toCommit);
                     return true;
                 });
             return;
@@ -1517,7 +1537,7 @@ void SKeyState::flushDeferredCommit() {
     deferredBsSentAt_ = 0;
     pendingFlushSuffix_.clear();
     deferredCommitTimer_.reset();
-    ic_->commitString(toCommit);
+    commitText(toCommit);
 }
 
 void SKeyState::forceFlushDeferredCommit() {
@@ -1535,7 +1555,7 @@ void SKeyState::forceFlushDeferredCommit() {
     deferredBsSentAt_ = 0;
     pendingFlushSuffix_.clear();
     deferredCommitTimer_.reset();
-    ic_->commitString(toCommit);
+    commitText(toCommit);
 }
 
 void SKeyState::surroundingCommit(const std::string &oldComposed,
@@ -1568,12 +1588,12 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
 
     if (oldComposed.empty()) {
         SKEY_DEBUG() << "Surr: first '" << newComposed << "'";
-        ic_->commitString(newComposed);
+        commitText(newComposed);
         committedLen_ = newLen;
     } else if (isSimpleAppend) {
         std::string appended = newComposed.substr(oldComposed.size());
         SKEY_DEBUG() << "Surr: append '" << appended << "'";
-        ic_->commitString(appended);
+        commitText(appended);
         committedLen_ = newLen;
     } else {
         size_t commonPrefix = commonUtf8PrefixBytes(oldComposed, newComposed);
@@ -1607,7 +1627,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
                 }
                 committedLen_ = newLen;
                 if (!addedPart.empty()) {
-                    ic_->commitString(addedPart);
+                    commitText(addedPart);
                 }
             };
 
@@ -1625,7 +1645,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
                     committedLen_ = newLen;
                     if (!addedPart.empty()) {
                         SKEY_DEBUG() << "Surr: direct commit '" << addedPart << "'";
-                        ic_->commitString(addedPart);
+                        commitText(addedPart);
                     }
                 }
             } else {
@@ -1635,7 +1655,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         } else {
             // deleteLen == 0: no deletion needed, only add new suffix if any
             if (!addedPart.empty()) {
-                ic_->commitString(addedPart);
+                commitText(addedPart);
             }
             committedLen_ = newLen;
         }

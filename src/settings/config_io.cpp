@@ -81,6 +81,7 @@ SKeyConfig readSkeyConfig() {
 
         if (key == "InputMethod")      cfg.inputMethod  = val;
         else if (key == "OutputMode")   cfg.outputMode   = val;
+        else if (key == "Charset")      cfg.charset       = val;
         else if (key == "ShortW")       cfg.shortW        = parseBool(val);
         else if (key == "BracketUO")    cfg.bracketUO     = parseBool(val);
         else if (key == "FreeMarking")  cfg.freeMarking   = parseBool(val);
@@ -106,6 +107,8 @@ bool writeSkeyConfig(const SKeyConfig &cfg) {
     out << "InputMethod="   << maybeQuote(cfg.inputMethod)  << "\n";
     out << "# Output Mode"                  << "\n";
     out << "OutputMode="    << maybeQuote(cfg.outputMode)   << "\n";
+    out << "# Character set (Unicode / TCVN3 (ABC) / VNI Windows)" << "\n";
+    out << "Charset="       << maybeQuote(cfg.charset)      << "\n";
     out << "# Telex: type w as ư"           << "\n";
     out << "ShortW="        << boolStr(cfg.shortW)          << "\n";
     out << "# Telex: type ][ as ư ơ"        << "\n";

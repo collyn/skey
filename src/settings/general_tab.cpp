@@ -40,6 +40,12 @@ void GeneralTab::setupUI() {
     outputModeCombo_->addItem("Preedit",           "Preedit");
     enumLayout->addRow(QString::fromUtf8("Chế độ xuất:"), outputModeCombo_);
 
+    charsetCombo_ = new QComboBox(enumFrame);
+    charsetCombo_->addItem("Unicode",          "Unicode");
+    charsetCombo_->addItem("TCVN3 (ABC)",      "TCVN3 (ABC)");
+    charsetCombo_->addItem("VNI Windows",      "VNI Windows");
+    enumLayout->addRow(QString::fromUtf8("Bảng mã:"), charsetCombo_);
+
 
     triggerKeyEdit_ = new HotkeyEdit(enumFrame);
     triggerKeyEdit_->setToolTip(
@@ -130,6 +136,7 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
 
     setCombo(inputMethodCombo_,  cfg.inputMethod);
     setCombo(outputModeCombo_,   cfg.outputMode);
+    setCombo(charsetCombo_,      cfg.charset);
 
     shortWCheck_->setChecked(cfg.shortW);
     bracketUOCheck_->setChecked(cfg.bracketUO);
@@ -149,6 +156,7 @@ SKeyConfig GeneralTab::collectConfig() const {
     SKeyConfig cfg;
     cfg.inputMethod  = inputMethodCombo_->currentData().toString().toStdString();
     cfg.outputMode   = outputModeCombo_->currentData().toString().toStdString();
+    cfg.charset      = charsetCombo_->currentData().toString().toStdString();
     cfg.shortW       = shortWCheck_->isChecked();
     cfg.bracketUO    = bracketUOCheck_->isChecked();
     cfg.freeMarking  = freeMarkingCheck_->isChecked();

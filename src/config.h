@@ -22,6 +22,11 @@ enum class SKeyChromiumAddressBarMode { Preedit, NoVietnamese };
 FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyChromiumAddressBarMode, N_("Preedit"),
                                  N_("No Vietnamese"));
 
+// Character set / encoding
+enum class SKeyCharset { Unicode, TCVN3, VNIWindows };
+FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyCharset, N_("Unicode"),
+                                 N_("TCVN3 (ABC)"), N_("VNI Windows"));
+
 
 FCITX_CONFIGURATION(
     SKeyConfig,
@@ -33,6 +38,9 @@ FCITX_CONFIGURATION(
     Option<bool> shortW{this, "ShortW", _("Gõ w thành ư"), false};
     // Telex only: type '[' → 'ơ' and ']' → 'ư' (UniKey-style)
     Option<bool> bracketUO{this, "BracketUO", _("Gõ ][ thành ư ơ"), false};
+    // Character set / encoding
+    Option<SKeyCharset> charset{this, "Charset", _("Bảng mã"),
+                                SKeyCharset::Unicode};
     // Output mode: uinput (default), surrounding text, or preedit
     Option<SKeyOutputMode> outputMode{this, "OutputMode", _("Output Mode"),
                                       SKeyOutputMode::Uinput};

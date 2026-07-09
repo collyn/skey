@@ -11,6 +11,7 @@ std::string configDir();
 struct SKeyConfig {
     std::string inputMethod  = "Telex";       // "Telex", "VNI"
     std::string outputMode   = "Uinput";      // "Uinput", "Surrounding Text", "Preedit"
+    std::string charset      = "Unicode";     // "Unicode", "TCVN3 (ABC)", "VNI Windows"
     bool shortW       = false;   // Telex: bare 'w' → 'ư'
     bool bracketUO    = false;   // Telex: '[' → 'ơ', ']' → 'ư'
     bool freeMarking  = false;

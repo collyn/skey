@@ -15,6 +15,7 @@
 #include <fcitx/menu.h>
 
 #include "config.h"
+#include "charset.h"
 #include "vietnamese.h"
 #include "a11y_monitor.h"
 
@@ -72,7 +73,12 @@ private:
     SKeyEngine *engine_;
     InputContext *ic_;
     skey::VietnameseEngine viet_;
+    skey::Charset charset_ = skey::Charset::Unicode;
     int committedLen_ = 0;
+
+    /// Commit text to the app, converting to the configured charset.
+    void commitText(const std::string &utf8);
+    void commitText(const std::string &utf8, const std::string &fallbackCharset);
     bool modeMenuActive_ = false;
     bool hasAppModeOverride_ = false;
     bool appExcluded_ = false;
