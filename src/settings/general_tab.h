@@ -5,6 +5,7 @@
 
 class QComboBox;
 class QCheckBox;
+class QRadioButton;
 class HotkeyEdit;
 
 struct SKeyConfig;
@@ -30,7 +31,8 @@ private:
     QCheckBox *freeMarkingCheck_;
     QCheckBox *autoRestoreCheck_;
     QCheckBox *showPreeditCheck_;
-    QCheckBox *chromiumAddressBarPreeditCheck_;
+    QRadioButton *addrBarPreeditRadio_;
+    QRadioButton *addrBarNoVietRadio_;
     QCheckBox *debugCheck_;
 };
 

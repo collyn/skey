@@ -14,7 +14,7 @@ struct SKeyConfig {
     bool freeMarking  = false;
     bool autoRestore  = true;
     bool showPreedit  = true;
-    bool chromiumAddressBarPreedit = true;
+    std::string chromiumAddressBarMode = "Preedit";  // "Preedit", "No Vietnamese"
     bool debug        = false;
 };
 

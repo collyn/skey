@@ -232,12 +232,11 @@ SKeyEngine::SKeyEngine(Instance *instance)
     instance_->inputContextManager().registerProperty("skeyState", &factory_);
     setupTrayMenu();
 
-    // Start AT-SPI2 monitor for address bar detection
-    if (*config_.chromiumAddressBarPreedit) {
-        a11yMonitor_ = std::make_unique<A11yMonitor>();
-        a11yMonitor_->setDebug(*config_.debug);
-        a11yMonitor_->start();
-    }
+    // Start AT-SPI2 monitor for Chromium address bar detection.
+    // Both address-bar modes (Preedit / No Vietnamese) rely on it.
+    a11yMonitor_ = std::make_unique<A11yMonitor>();
+    a11yMonitor_->setDebug(*config_.debug);
+    a11yMonitor_->start();
 
     SKEY_INFO() << "SKey Vietnamese Input Method loaded";
 }
@@ -562,21 +561,32 @@ void SKeyState::refreshAppMode() {
     }
 }
 
+// True when the cursor is in a Chromium-family browser's address/search bar
+// (as opposed to web content). Two detection paths: the native Url capability
+// (Wayland) and the AT-SPI2 accessibility monitor (X11).
+bool SKeyState::inChromiumAddressBar() const {
+    // Method 1: Wayland — Chrome sends CapabilityFlag::Url natively
+    if (ic_->capabilityFlags().test(CapabilityFlag::Url)) {
+        return true;
+    }
+    // Method 2: X11 — use AT-SPI2 accessibility monitor
+    if (engine_->a11yMonitor() &&
+        engine_->a11yMonitor()->isBrowserUIFocused() &&
+        isChromiumBrowser(ic_->program())) {
+        return true;
+    }
+    return false;
+}
+
 SKeyOutputMode SKeyState::effectiveMode() const {
     const_cast<SKeyState *>(this)->refreshAppMode();
 
-    // Auto-switch to Preedit in URL fields (e.g. Chromium address bar)
-    if (*engine_->config().chromiumAddressBarPreedit) {
-        // Method 1: Wayland — Chrome sends CapabilityFlag::Url natively
-        if (ic_->capabilityFlags().test(CapabilityFlag::Url)) {
-            return SKeyOutputMode::Preedit;
-        }
-        // Method 2: X11 — use AT-SPI2 accessibility monitor
-        if (engine_->a11yMonitor() &&
-            engine_->a11yMonitor()->isBrowserUIFocused() &&
-            isChromiumBrowser(ic_->program())) {
-            return SKeyOutputMode::Preedit;
-        }
+    // Chromium address bar → force Preedit when configured that way.
+    // (The "No Vietnamese" option is handled as a pass-through in keyEvent.)
+    if (engine_->config().chromiumAddressBarMode.value() ==
+            SKeyChromiumAddressBarMode::Preedit &&
+        inChromiumAddressBar()) {
+        return SKeyOutputMode::Preedit;
     }
 
     if (hasAppModeOverride_)
@@ -973,6 +983,15 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             showModeMenu();
             keyEvent.filterAndAccept();
         }
+        return;
+    }
+
+    // Chromium address bar set to "No Vietnamese" — pass keys through so the
+    // user types plain ASCII in the URL bar (web content is unaffected).
+    if (!modeMenuActive_ &&
+        engine_->config().chromiumAddressBarMode.value() ==
+            SKeyChromiumAddressBarMode::NoVietnamese &&
+        inChromiumAddressBar()) {
         return;
     }
 

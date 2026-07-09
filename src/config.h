@@ -18,6 +18,11 @@ FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyOutputMode, N_("Uinput"),
                                  N_("Surrounding Text"),
                                  N_("Preedit"));
 
+// Chromium address bar behavior: auto-Preedit vs. disable Vietnamese
+enum class SKeyChromiumAddressBarMode { Preedit, NoVietnamese };
+FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyChromiumAddressBarMode, N_("Preedit"),
+                                 N_("No Vietnamese"));
+
 
 FCITX_CONFIGURATION(
     SKeyConfig,
@@ -35,10 +40,10 @@ FCITX_CONFIGURATION(
                              _("Auto restore non-Vietnamese"), true};
     // Show preedit text
     Option<bool> showPreedit{this, "ShowPreedit", _("Show preedit"), true};
-    // Auto switch to Preedit in URL fields (e.g. Chromium address bar)
-    Option<bool> chromiumAddressBarPreedit{
-        this, "ChromiumAddressBarPreedit",
-        _("Auto Preedit for address bar"), true};
+    // Chromium address bar behavior (auto-Preedit or disable Vietnamese)
+    Option<SKeyChromiumAddressBarMode> chromiumAddressBarMode{
+        this, "ChromiumAddressBarMode",
+        _("Chromium address bar"), SKeyChromiumAddressBarMode::Preedit};
     // Enable debug logging
     Option<bool> debug{this, "Debug", _("Enable debug logging"), false};);
 

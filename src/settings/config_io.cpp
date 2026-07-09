@@ -84,7 +84,7 @@ SKeyConfig readSkeyConfig() {
         else if (key == "FreeMarking")  cfg.freeMarking   = parseBool(val);
         else if (key == "AutoRestore")  cfg.autoRestore   = parseBool(val);
         else if (key == "ShowPreedit")  cfg.showPreedit   = parseBool(val);
-        else if (key == "ChromiumAddressBarPreedit") cfg.chromiumAddressBarPreedit = parseBool(val);
+        else if (key == "ChromiumAddressBarMode") cfg.chromiumAddressBarMode = val;
         else if (key == "Debug")        cfg.debug         = parseBool(val);
     }
     return cfg;
@@ -104,8 +104,8 @@ bool writeSkeyConfig(const SKeyConfig &cfg) {
     out << "AutoRestore="   << boolStr(cfg.autoRestore)     << "\n";
     out << "# Show preedit"                << "\n";
     out << "ShowPreedit="   << boolStr(cfg.showPreedit)     << "\n";
-    out << "# Auto Preedit for address bar" << "\n";
-    out << "ChromiumAddressBarPreedit=" << boolStr(cfg.chromiumAddressBarPreedit) << "\n";
+    out << "# Chromium address bar (Preedit / No Vietnamese)" << "\n";
+    out << "ChromiumAddressBarMode=" << maybeQuote(cfg.chromiumAddressBarMode) << "\n";
     out << "# Enable debug logging"        << "\n";
     out << "Debug="         << boolStr(cfg.debug)           << "\n";
 

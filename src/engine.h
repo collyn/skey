@@ -40,6 +40,7 @@ private:
     friend class ModeCandidateWord;
     friend class ExcludeCandidateWord;
     SKeyOutputMode effectiveMode() const;
+    bool inChromiumAddressBar() const;
     bool useSurroundingText() const;
     bool canEditWithSurroundingText() const;
     bool useNativeSurroundingApi() const;
