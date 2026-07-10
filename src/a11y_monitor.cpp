@@ -10,7 +10,10 @@
 // AT-SPI2 role constants (from atspi-constants.h)
 static constexpr int ROLE_DOCUMENT_WEB = 95;
 static constexpr int ROLE_DOCUMENT_FRAME = 82;
-static constexpr int MAX_ANCESTOR_DEPTH = 20;
+// Chromium may emit a focus event for a nested accessibility node inside a
+// contenteditable control. Facebook comments currently reach DOCUMENT_WEB at
+// depth 22, so 20 incorrectly classifies that event as browser chrome.
+static constexpr int MAX_ANCESTOR_DEPTH = 64;
 
 // Debug logging — controlled by the debug_ atomic flag via a thread-local
 // pointer. The thread function sets this up so A11Y_LOG can check it.
