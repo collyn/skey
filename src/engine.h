@@ -105,7 +105,6 @@ private:
     // injected key events pass back through fcitx5.  Suppress engine
     // processing during this window so those keys reach the app unmodified.
     uint64_t uinputPassthroughUntil_ = 0;
-    static constexpr uint64_t kUinputPassthroughMinUsec = 35000;  // 35ms min
     // Retroactive tone editing (Unikey-style): saved state of last committed word
     std::string lastRawInput_;      // Raw input of last committed word
     std::string lastComposed_;      // Composed text of last committed word
