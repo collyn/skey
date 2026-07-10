@@ -40,6 +40,7 @@ public:
 private:
     friend class ModeCandidateWord;
     friend class ExcludeCandidateWord;
+    friend class AddressBarModeCandidateWord;
     SKeyOutputMode effectiveMode() const;
     bool inChromiumAddressBar() const;
     bool useSurroundingText() const;
@@ -80,6 +81,7 @@ private:
     void commitText(const std::string &utf8);
     void commitText(const std::string &utf8, const std::string &fallbackCharset);
     bool modeMenuActive_ = false;
+    bool modeMenuForAddressBar_ = false;
     bool hasAppModeOverride_ = false;
     bool appExcluded_ = false;
     SKeyOutputMode appModeOverride_ = SKeyOutputMode::SurroundingText;
@@ -139,6 +141,7 @@ public:
     const SKeyConfig &config() const { return config_; }
     Instance *instance() { return instance_; }
     void setOutputMode(SKeyOutputMode mode);
+    void setChromiumAddressBarMode(SKeyChromiumAddressBarMode mode);
     void setInputMethod(SKeyInputMethod method);
     void saveAppMode(const std::string &app, SKeyOutputMode mode);
     SKeyOutputMode loadAppMode(const std::string &app) const;

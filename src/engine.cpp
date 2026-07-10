@@ -201,6 +201,26 @@ private:
     SKeyOutputMode mode_;
 };
 
+class AddressBarModeCandidateWord : public CandidateWord {
+public:
+    AddressBarModeCandidateWord(SKeyEngine *engine, SKeyState *state,
+                                const std::string &text,
+                                SKeyChromiumAddressBarMode mode)
+        : CandidateWord(Text(text)), engine_(engine), state_(state),
+          mode_(mode) {}
+
+    void select(InputContext *) const override {
+        engine_->setChromiumAddressBarMode(mode_);
+        SKEY_INFO() << "Address bar mode switched";
+        state_->dismissModeMenu();
+    }
+
+private:
+    SKeyEngine *engine_;
+    SKeyState *state_;
+    SKeyChromiumAddressBarMode mode_;
+};
+
 class ExcludeCandidateWord : public CandidateWord {
 public:
     ExcludeCandidateWord(SKeyEngine *engine, SKeyState *state,
@@ -381,6 +401,12 @@ void SKeyEngine::setOutputMode(SKeyOutputMode mode) {
     config_.outputMode.setValue(mode);
     safeSaveAsIni(config_, "conf/skey.conf");
     updateMenuActions();
+}
+
+void SKeyEngine::setChromiumAddressBarMode(
+    SKeyChromiumAddressBarMode mode) {
+    config_.chromiumAddressBarMode.setValue(mode);
+    safeSaveAsIni(config_, "conf/skey.conf");
 }
 
 void SKeyEngine::setInputMethod(SKeyInputMethod method) {
@@ -1018,7 +1044,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     if (!modeMenuActive_ &&
         engine_->config().chromiumAddressBarMode.value() ==
             SKeyChromiumAddressBarMode::NoVietnamese &&
-        inChromiumAddressBar()) {
+        inChromiumAddressBar() &&
+        !keyEvent.key().check(FcitxKey_grave)) {
         return;
     }
 
@@ -1054,7 +1081,23 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         else if (sym == FcitxKey_3 || sym == FcitxKey_KP_3) choice = 3;
         else if (sym == FcitxKey_4 || sym == FcitxKey_KP_4) choice = 4;
 
-        if (choice > 0 && choice <= 3) {
+        if (modeMenuForAddressBar_) {
+            SKeyChromiumAddressBarMode newMode;
+            switch (choice) {
+            case 1: newMode = SKeyChromiumAddressBarMode::Uinput; break;
+            case 2: newMode = SKeyChromiumAddressBarMode::SurroundingText; break;
+            case 3: newMode = SKeyChromiumAddressBarMode::Preedit; break;
+            case 4: newMode = SKeyChromiumAddressBarMode::NoVietnamese; break;
+            default: newMode = SKeyChromiumAddressBarMode::Preedit; break;
+            }
+            if (choice > 0) {
+                engine_->setChromiumAddressBarMode(newMode);
+                SKEY_INFO() << "Address bar mode switched";
+                dismissModeMenu();
+                keyEvent.filterAndAccept();
+                return;
+            }
+        } else if (choice > 0 && choice <= 3) {
             SKeyOutputMode newMode;
             switch (choice) {
             case 1: newMode = SKeyOutputMode::Uinput; break;
@@ -1810,6 +1853,7 @@ void SKeyState::clearUI() {
 
 void SKeyState::showModeMenu() {
     modeMenuActive_ = true;
+    modeMenuForAddressBar_ = inChromiumAddressBar();
     auto mode = effectiveMode();
 
     // Build candidate list for dropdown menu
@@ -1817,27 +1861,41 @@ void SKeyState::showModeMenu() {
     candList->setPageSize(4);
     candList->setLayoutHint(CandidateLayoutHint::Vertical);
 
-    candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, "1. Uinput", SKeyOutputMode::Uinput));
-    candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, "2. Surrounding Text",
-        SKeyOutputMode::SurroundingText));
-    candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, "3. Preedit", SKeyOutputMode::Preedit));
+    int cursorIdx = 0;
+    if (modeMenuForAddressBar_) {
+        auto addressBarMode = engine_->config().chromiumAddressBarMode.value();
+        candList->append(std::make_unique<AddressBarModeCandidateWord>(
+            engine_, this, "1. Uinput", SKeyChromiumAddressBarMode::Uinput));
+        candList->append(std::make_unique<AddressBarModeCandidateWord>(
+            engine_, this, "2. Surrounding Text",
+            SKeyChromiumAddressBarMode::SurroundingText));
+        candList->append(std::make_unique<AddressBarModeCandidateWord>(
+            engine_, this, "3. Preedit", SKeyChromiumAddressBarMode::Preedit));
+        candList->append(std::make_unique<AddressBarModeCandidateWord>(
+            engine_, this, "4. Không gõ tiếng Việt",
+            SKeyChromiumAddressBarMode::NoVietnamese));
+        cursorIdx = static_cast<int>(addressBarMode);
+    } else {
+        candList->append(std::make_unique<ModeCandidateWord>(
+            engine_, this, "1. Uinput", SKeyOutputMode::Uinput));
+        candList->append(std::make_unique<ModeCandidateWord>(
+            engine_, this, "2. Surrounding Text",
+            SKeyOutputMode::SurroundingText));
+        candList->append(std::make_unique<ModeCandidateWord>(
+            engine_, this, "3. Preedit", SKeyOutputMode::Preedit));
 
-    // Exclude/Include toggle
-    std::string excludeLabel = appExcluded_
-        ? "4. ✓ Loại trừ ứng dụng"
-        : "4. Loại trừ ứng dụng";
-    candList->append(std::make_unique<ExcludeCandidateWord>(
-        engine_, this, excludeLabel));
+        std::string excludeLabel = appExcluded_
+            ? "4. ✓ Loại trừ ứng dụng"
+            : "4. Loại trừ ứng dụng";
+        candList->append(std::make_unique<ExcludeCandidateWord>(
+            engine_, this, excludeLabel));
 
-    // Highlight the currently active mode via cursor index
-    int cursorIdx = appExcluded_                                ? 3
-                    : (mode == SKeyOutputMode::Uinput)          ? 0
-                    : (mode == SKeyOutputMode::SurroundingText) ? 1
-                    : (mode == SKeyOutputMode::Preedit)         ? 2
-                                                                 : 0;
+        cursorIdx = appExcluded_                                ? 3
+                  : (mode == SKeyOutputMode::Uinput)          ? 0
+                  : (mode == SKeyOutputMode::SurroundingText) ? 1
+                  : (mode == SKeyOutputMode::Preedit)         ? 2
+                                                               : 0;
+    }
     candList->setGlobalCursorIndex(cursorIdx);
 
     ic_->inputPanel().setCandidateList(std::move(candList));
@@ -1847,6 +1905,7 @@ void SKeyState::showModeMenu() {
 
 void SKeyState::dismissModeMenu() {
     modeMenuActive_ = false;
+    modeMenuForAddressBar_ = false;
     ic_->inputPanel().setCandidateList(nullptr);
     clearUI();
 }
