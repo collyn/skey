@@ -9,7 +9,6 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QLabel>
-#include <QRadioButton>
 #include <QVBoxLayout>
 
 GeneralTab::GeneralTab(QWidget *parent) : QWidget(parent) {
@@ -93,24 +92,21 @@ void GeneralTab::setupUI() {
     // ── Chromium address bar section ──
     auto *addrBarGroup = new QGroupBox(
         QString::fromUtf8("Thanh địa chỉ ở trình duyệt họ chromium"), this);
-    auto *addrBarLayout = new QVBoxLayout(addrBarGroup);
-    addrBarLayout->setSpacing(4);
+    auto *addrBarLayout = new QFormLayout(addrBarGroup);
+    addrBarLayout->setLabelAlignment(Qt::AlignRight);
+    addrBarLayout->setSpacing(6);
     addrBarLayout->setContentsMargins(12, 12, 12, 12);
 
-    addrBarPreeditRadio_ = new QRadioButton(
-        QString::fromUtf8("Tự động Preedit"), addrBarGroup);
-    addrBarPreeditRadio_->setToolTip(
-        QString::fromUtf8("Tự động chuyển sang chế độ Preedit khi gõ ở thanh\n"
-                          "địa chỉ trình duyệt (Chrome, Chromium, Edge...).\n"
-                          "Web content vẫn dùng chế độ gõ đã cấu hình."));
-    addrBarLayout->addWidget(addrBarPreeditRadio_);
-
-    addrBarNoVietRadio_ = new QRadioButton(
-        QString::fromUtf8("Không gõ tiếng Việt"), addrBarGroup);
-    addrBarNoVietRadio_->setToolTip(
-        QString::fromUtf8("Tắt bộ gõ tiếng Việt khi con trỏ ở thanh địa chỉ\n"
-                          "trình duyệt. Web content vẫn gõ bình thường."));
-    addrBarLayout->addWidget(addrBarNoVietRadio_);
+    addrBarModeCombo_ = new QComboBox(addrBarGroup);
+    addrBarModeCombo_->addItem("Uinput", "Uinput");
+    addrBarModeCombo_->addItem("Surrounding Text", "Surrounding Text");
+    addrBarModeCombo_->addItem("Preedit", "Preedit");
+    addrBarModeCombo_->addItem(QString::fromUtf8("Không gõ tiếng Việt"),
+                               "No Vietnamese");
+    addrBarModeCombo_->setToolTip(
+        QString::fromUtf8("Chế độ gõ chỉ áp dụng cho thanh địa chỉ trình duyệt.\n"
+                          "Web content vẫn dùng chế độ xuất đã cấu hình."));
+    addrBarLayout->addRow(QString::fromUtf8("Chế độ gõ:"), addrBarModeCombo_);
 
     mainLayout->addWidget(addrBarGroup);
     mainLayout->addStretch();
@@ -144,10 +140,10 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
     autoRestoreCheck_->setChecked(cfg.autoRestore);
     showPreeditCheck_->setChecked(cfg.showPreedit);
 
-    bool noViet = (cfg.chromiumAddressBarMode == "No Vietnamese" ||
-                   cfg.chromiumAddressBarMode == "NoVietnamese");
-    addrBarNoVietRadio_->setChecked(noViet);
-    addrBarPreeditRadio_->setChecked(!noViet);
+    std::string addressBarMode = cfg.chromiumAddressBarMode;
+    if (addressBarMode == "NoVietnamese")
+        addressBarMode = "No Vietnamese";
+    setCombo(addrBarModeCombo_, addressBarMode);
 
     debugCheck_->setChecked(cfg.debug);
 }
@@ -163,7 +159,7 @@ SKeyConfig GeneralTab::collectConfig() const {
     cfg.autoRestore  = autoRestoreCheck_->isChecked();
     cfg.showPreedit  = showPreeditCheck_->isChecked();
     cfg.chromiumAddressBarMode =
-        addrBarNoVietRadio_->isChecked() ? "No Vietnamese" : "Preedit";
+        addrBarModeCombo_->currentData().toString().toStdString();
     cfg.debug        = debugCheck_->isChecked();
     return cfg;
 }

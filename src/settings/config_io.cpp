@@ -119,7 +119,7 @@ bool writeSkeyConfig(const SKeyConfig &cfg) {
     out << "AutoRestore="   << boolStr(cfg.autoRestore)     << "\n";
     out << "# Show preedit"                << "\n";
     out << "ShowPreedit="   << boolStr(cfg.showPreedit)     << "\n";
-    out << "# Chromium address bar (Preedit / No Vietnamese)" << "\n";
+    out << "# Chromium address bar mode (Uinput / Surrounding Text / Preedit / No Vietnamese)" << "\n";
     out << "ChromiumAddressBarMode=" << maybeQuote(cfg.chromiumAddressBarMode) << "\n";
     out << "# Enable debug logging"        << "\n";
     out << "Debug="         << boolStr(cfg.debug)           << "\n";

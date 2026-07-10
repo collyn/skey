@@ -17,9 +17,13 @@ FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyOutputMode, N_("Uinput"),
                                  N_("Surrounding Text"),
                                  N_("Preedit"));
 
-// Chromium address bar behavior: auto-Preedit vs. disable Vietnamese
-enum class SKeyChromiumAddressBarMode { Preedit, NoVietnamese };
-FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyChromiumAddressBarMode, N_("Preedit"),
+// Output mode used only in Chromium-family browser address bars.
+enum class SKeyChromiumAddressBarMode {
+    Uinput, SurroundingText, Preedit, NoVietnamese
+};
+FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyChromiumAddressBarMode, N_("Uinput"),
+                                 N_("Surrounding Text"),
+                                 N_("Preedit"),
                                  N_("No Vietnamese"));
 
 // Character set / encoding
@@ -51,7 +55,7 @@ FCITX_CONFIGURATION(
                              _("Auto restore non-Vietnamese"), true};
     // Show preedit text
     Option<bool> showPreedit{this, "ShowPreedit", _("Show preedit"), true};
-    // Chromium address bar behavior (auto-Preedit or disable Vietnamese)
+    // Output mode used in Chromium-family browser address bars
     Option<SKeyChromiumAddressBarMode> chromiumAddressBarMode{
         this, "ChromiumAddressBarMode",
         _("Chromium address bar"), SKeyChromiumAddressBarMode::Preedit};

@@ -595,12 +595,19 @@ bool SKeyState::inChromiumAddressBar() const {
 SKeyOutputMode SKeyState::effectiveMode() const {
     const_cast<SKeyState *>(this)->refreshAppMode();
 
-    // Chromium address bar → force Preedit when configured that way.
-    // (The "No Vietnamese" option is handled as a pass-through in keyEvent.)
-    if (engine_->config().chromiumAddressBarMode.value() ==
-            SKeyChromiumAddressBarMode::Preedit &&
-        inChromiumAddressBar()) {
-        return SKeyOutputMode::Preedit;
+    // Address bar output mode overrides the general and per-application modes.
+    // NoVietnamese is handled as a pass-through in keyEvent().
+    if (inChromiumAddressBar()) {
+        switch (engine_->config().chromiumAddressBarMode.value()) {
+        case SKeyChromiumAddressBarMode::Uinput:
+            return SKeyOutputMode::Uinput;
+        case SKeyChromiumAddressBarMode::SurroundingText:
+            return SKeyOutputMode::SurroundingText;
+        case SKeyChromiumAddressBarMode::Preedit:
+            return SKeyOutputMode::Preedit;
+        case SKeyChromiumAddressBarMode::NoVietnamese:
+            break;
+        }
     }
 
     if (hasAppModeOverride_)
