@@ -1817,15 +1817,15 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       auto deleteViaBackspace = [&]() {
         SKEY_DEBUG() << "Surr: BS x" << deleteLen
                      << (useUinputMode() ? " (uinput)" : " (forward)");
+        // Chromium address bar: use uinput BS + buffering for both
+        // Uinput and SurroundingText modes, avoiding D-Bus forwardKey
+        // focus-change issues.
+        if (inChromiumAddressBar()) {
+          committedLen_ = newLen;
+          scheduleAddrBarReplacement(deleteLen, addedPart);
+          return;
+        }
         if (useUinputMode()) {
-          // Chromium address bar: use forwardKey (D-Bus) for BS so
-          // both BS and commit travel the same channel — avoids the
-          // cross-channel race between uinput BS and D-Bus commitString.
-          if (inChromiumAddressBar()) {
-            committedLen_ = newLen;
-            scheduleAddrBarReplacement(deleteLen, addedPart);
-            return;
-          }
           sendBackspaceUinput(deleteLen);
           expectedUinputBackspaces_ = deleteLen;
           seenUinputBackspaces_ = 0;
