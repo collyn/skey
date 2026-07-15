@@ -70,6 +70,8 @@ private:
     void refreshAppMode();
     void saveLastWord();
     void clearLastWord();
+    void flushAddrBarReplacement();
+    void scheduleAddrBarReplacement(int bs, const std::string &text);
 
     SKeyEngine *engine_;
     InputContext *ic_;
@@ -97,6 +99,14 @@ private:
     std::unique_ptr<EventSourceTime> uinputCommitTimer_;
     int expectedUinputBackspaces_ = 0;
     int seenUinputBackspaces_ = 0;
+    // Address bar deferred replacement state
+    int addrBarPendingBs_ = 0;
+    std::string addrBarPendingText_;
+    // Spurious Deactivate/Reset/Activate detection for Chromium
+    // address bar. Set before sending forwardKey/commitString and
+    // cleared after a reactivate or 200ms timeout.
+    bool addrBarExpectCycle_ = false;
+    std::unique_ptr<EventSourceTime> addrBarCycleTimer_;
     std::string pendingUinputCommit_;
     std::vector<KeySym> bufferedUinputKeys_;
     uint64_t bsSentAt_ = 0;        // timestamp when BS was sent

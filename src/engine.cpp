@@ -107,6 +107,18 @@ namespace fcitx {
 // Timing tunables for uinput backspace → commit coordination (microseconds)
 // kMinDelayUsec: minimum pad after BS round-trip before commitString via D-Bus
 static constexpr uint64_t kMinDelayUsec = 8000;
+// kAddressBarUinputMinDelayUsec: larger pad for Chromium address bar uinput
+// mode.  The omnibox autocomplete engine adds internal processing latency
+// after each keystroke; on fast (bare-metal) machines the default 8 ms pad
+// is often too short and commitString races with the omnibox update, causing
+// garbled text.  A longer pad gives Chromium time to settle before we commit.
+static constexpr uint64_t kAddressBarUinputMinDelayUsec = 25000;
+// kAddressBarForwardKeyCommitDelayUsec: delay between forwardKey(BS) and
+// commitString in the Chromium address bar.  Both travel the same D-Bus
+// channel so ordering is guaranteed, but Chrome still needs time to process
+// the BS internally (omnibox update, autocomplete) before receiving the
+// commit.  Too short and fast typing loses characters.
+static constexpr uint64_t kAddressBarForwardKeyCommitDelayUsec = 10000;
 // dbusDeferredDefaultUsec: default delay for surrounding-text deferred commit
 static constexpr uint64_t dbusDeferredDefaultUsec = 15000;
 // dbusDeferredMinUsec: floor for adaptive deferred commit delay
@@ -714,8 +726,14 @@ void SKeyState::activate() {
   viet_.setFreeMarking(*cfg.freeMarking);
   viet_.setAutoRestore(*cfg.autoRestore);
 
-  viet_.reset();
-  committedLen_ = 0;
+  // Reactivate after spurious cycle: cancel the genuine-loss timer.
+  if (addrBarExpectCycle_) {
+    SKEY_DEBUG() << "Activate: spurious cycle, cancel loss timer";
+    addrBarCycleTimer_.reset();
+  } else {
+    viet_.reset();
+    committedLen_ = 0;
+  }
   clearLastWord();
   modeMenuActive_ = false;
   deferredCommitTimer_.reset();
@@ -883,12 +901,17 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     lastBsRoundTrip_ = elapsed;
 
     // BS (uinput) and commit (D-Bus) go through different channels.
-    // Wait at least until the BS round-trip has elapsed + 8ms pad,
+    // Wait at least until the BS round-trip has elapsed + pad,
     // to give the app time to process the uinput BS before commitString.
-    uint64_t delayUsec = std::max(elapsed + kMinDelayUsec, kMinDelayUsec);
+    // Chromium address bar needs a larger pad because the omnibox
+    // autocomplete engine adds internal processing latency.
+    uint64_t padUsec = inChromiumAddressBar() ? kAddressBarUinputMinDelayUsec
+                                              : kMinDelayUsec;
+    uint64_t delayUsec = std::max(elapsed + padUsec, padUsec);
     SKEY_DEBUG() << "Uinput: all BS passed, round-trip " << (elapsed / 1000)
                  << "ms, commit '" << commitText << "' in "
-                 << (delayUsec / 1000) << "ms";
+                 << (delayUsec / 1000) << "ms"
+                 << (inChromiumAddressBar() ? " [addrbar]" : "");
 
     uinputCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + delayUsec, 0,
@@ -949,6 +972,7 @@ void SKeyState::replayBufferedUinputKeys() {
       continue;
     }
 
+    flushAddrBarReplacement();
     std::string oldComposed = viet_.getComposed();
     auto result = viet_.processKey(ch);
 
@@ -1015,6 +1039,28 @@ void SKeyState::deactivate() {
     close(uinputClientFd_);
     uinputClientFd_ = -1;
   }
+  // Chromium address bar: Chrome sends spurious Reset→Deactivate→
+  // Activate cycles. Skip ALL state cleanup if we're expecting a cycle.
+  // If no reactivate within 500ms, this is a genuine focus loss → clear flag.
+  if (addrBarExpectCycle_) {
+    SKEY_DEBUG() << "Deactivate: expecting cycle, skip all cleanup";
+    addrBarCycleTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 500000, 0,
+        [this](EventSourceTime *, uint64_t) {
+          SKEY_DEBUG() << "Deactivate: no reactivate, genuine focus loss";
+          addrBarExpectCycle_ = false;
+          addrBarCycleTimer_.reset();
+          if (!viet_.getComposed().empty() && !useSurroundingText())
+            commitBuffer();
+          viet_.reset();
+          committedLen_ = 0;
+          clearLastWord();
+          clearUI();
+          return true;
+        });
+    return;
+  }
+
   expectedUinputBackspaces_ = 0;
   seenUinputBackspaces_ = 0;
   pendingUinputCommit_.clear();
@@ -1023,6 +1069,7 @@ void SKeyState::deactivate() {
   lastBsRoundTrip_ = 0;
   uinputCommitTimer_.reset();
   uinputDeleting_ = false;
+
   if (!viet_.getComposed().empty() && !useSurroundingText()) {
     commitBuffer();
   }
@@ -1033,6 +1080,10 @@ void SKeyState::deactivate() {
 }
 
 void SKeyState::reset() {
+  if (addrBarExpectCycle_) {
+    SKEY_DEBUG() << "Reset: expecting cycle, skip";
+    return;
+  }
   if (hasDeferredCommitPending()) {
     SKEY_DEBUG() << "Reset: keeping deferred commit";
   }
@@ -1224,6 +1275,19 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
   // Handle Backspace while composing
   if (key.check(FcitxKey_BackSpace) && !viet_.getRawInput().empty()) {
+    // Chromium address bar: pass raw BS through to Chrome (X11) instead
+    // of sending forwardKey via D-Bus (which triggers focus changes).
+    // Just update bamboo state and let the keystroke reach the app.
+    if (inChromiumAddressBar()) {
+      viet_.backspace();
+      committedLen_ = viet_.getRawInput().empty()
+                          ? 0
+                          : static_cast<int>(utf8::length(viet_.getComposed()));
+      SKEY_DEBUG() << "AddrBar BS: rawInput='" << viet_.getRawInput()
+                   << "' composed='" << viet_.getComposed()
+                   << "' len=" << committedLen_;
+      return; // pass raw BS through to Chrome
+    }
     if (useSurroundingText()) {
       surroundingBackspace();
     } else {
@@ -1352,6 +1416,10 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         reclaimReady_ = false;
       }
 
+      // Flush any pending address bar replacement before processing
+      // a new key, so the screen state matches viet_'s expectation.
+      flushAddrBarReplacement();
+
       std::string oldComposed = viet_.getComposed();
 
       auto result = viet_.processKey(ch);
@@ -1428,6 +1496,18 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
             // Check matching append: old + key == new
             if (oldComposed + keyUtf8 == newComposed) {
+              // Chromium address bar: commit via D-Bus instead of
+              // forwarding raw key through X11.  This keeps all
+              // text operations on the same D-Bus channel so Chrome
+              // processes them in order with BS and commitString.
+              if (inChromiumAddressBar()) {
+                keyEvent.filterAndAccept();
+                addrBarExpectCycle_ = true;
+                commitText(keyUtf8);
+                SKEY_DEBUG() << "Uinput: addrbar commit append '" << keyUtf8
+                             << "'";
+                return;
+              }
               SKEY_DEBUG() << "Uinput: forward append '" << keyUtf8 << "'";
               return; // forward raw key
             }
@@ -1445,6 +1525,15 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               SKEY_DEBUG() << "Uinput: consume '" << keyUtf8
                            << "' replace (del=" << deleteLen << " add='"
                            << addPart << "')";
+              // Chromium address bar on X11: use forwardKey (D-Bus)
+              // for BackSpace instead of uinput so both BS and
+              // commitString travel the same channel — D-Bus ordering
+              // guarantees commitString arrives after BS is processed.
+              if (inChromiumAddressBar()) {
+                committedLen_ = static_cast<int>(utf8::length(newComposed));
+                scheduleAddrBarReplacement(deleteLen, addPart);
+                return;
+              }
               sendBackspaceUinput(deleteLen);
               expectedUinputBackspaces_ = deleteLen;
               seenUinputBackspaces_ = 0;
@@ -1453,6 +1542,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             } else if (!addPart.empty()) {
               SKEY_DEBUG() << "Uinput: consume '" << keyUtf8 << "' commit '"
                            << addPart << "'";
+              if (inChromiumAddressBar()) addrBarExpectCycle_ = true;
               commitText(addPart);
             }
             committedLen_ = static_cast<int>(utf8::length(newComposed));
@@ -1519,6 +1609,39 @@ void SKeyState::commitBuffer() {
     commitText(text);
   }
   viet_.reset();
+}
+
+void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text) {
+  // Use uinput BS + buffering mechanism (like the original uinput path)
+  // instead of D-Bus forwardKey.  D-Bus forwardKey can trigger focus
+  // changes in Chrome that interleave with commitString.
+  addrBarExpectCycle_ = true;
+  if (bs > 0) {
+    sendBackspaceUinput(bs);
+    expectedUinputBackspaces_ = bs;
+    seenUinputBackspaces_ = 0;
+    pendingUinputCommit_ = text;
+    uinputDeleting_ = true;
+  } else if (!text.empty()) {
+    commitText(text);
+  }
+}
+
+void SKeyState::flushAddrBarReplacement() {
+  // If a uinput replacement is in flight (BS sent, waiting to commit),
+  // flush it synchronously so the next key operates on the correct state.
+  if (uinputDeleting_ && !pendingUinputCommit_.empty() &&
+      expectedUinputBackspaces_ == 0) {
+    uinputCommitTimer_.reset();
+    uinputDeleting_ = false;
+    SKEY_DEBUG() << "AddrBar: flush pending uinput commit '"
+                 << pendingUinputCommit_ << "'";
+    commitText(pendingUinputCommit_);
+    pendingUinputCommit_.clear();
+    if (!bufferedUinputKeys_.empty()) {
+      replayBufferedUinputKeys();
+    }
+  }
 }
 
 bool SKeyState::hasDeferredCommitPending() const {
@@ -1695,6 +1818,14 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         SKEY_DEBUG() << "Surr: BS x" << deleteLen
                      << (useUinputMode() ? " (uinput)" : " (forward)");
         if (useUinputMode()) {
+          // Chromium address bar: use forwardKey (D-Bus) for BS so
+          // both BS and commit travel the same channel — avoids the
+          // cross-channel race between uinput BS and D-Bus commitString.
+          if (inChromiumAddressBar()) {
+            committedLen_ = newLen;
+            scheduleAddrBarReplacement(deleteLen, addedPart);
+            return;
+          }
           sendBackspaceUinput(deleteLen);
           expectedUinputBackspaces_ = deleteLen;
           seenUinputBackspaces_ = 0;
