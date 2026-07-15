@@ -171,6 +171,7 @@ public:
   }
 
   void backspace() const { tap(KEY_BACKSPACE); }
+  void escape() const { tap(KEY_ESC); }
 
   int hexKey(char ch) const {
     if (ch >= '0' && ch <= '9') {
@@ -331,12 +332,27 @@ int main(int argc, char **argv) {
         continue;
       }
 
+      // Protocol:
+      //   v1 (8+ bytes):  int32_t count + uint32_t textLen + text
+      //   v2 (12+ bytes): int32_t count + uint32_t flags  + uint32_t textLen + text
+      //   flags bit 0: send Escape before BS (dismisses Chrome autocomplete)
       int32_t count = 0;
+      uint32_t flags = 0;
       std::string text;
       if (n == static_cast<ssize_t>(sizeof(int32_t))) {
         memcpy(&count, buf, sizeof(count));
-      } else if (n >=
-                 static_cast<ssize_t>(sizeof(int32_t) + sizeof(uint32_t))) {
+      } else if (n >= static_cast<ssize_t>(sizeof(int32_t) + sizeof(uint32_t) + sizeof(uint32_t))) {
+        // v2: count + flags + textLen + text
+        uint32_t textLen = 0;
+        memcpy(&count, buf, sizeof(count));
+        memcpy(&flags, buf + sizeof(count), sizeof(flags));
+        memcpy(&textLen, buf + sizeof(count) + sizeof(flags), sizeof(textLen));
+        size_t available = static_cast<size_t>(n) - sizeof(count) - sizeof(flags) - sizeof(textLen);
+        textLen = std::min<uint32_t>(textLen, static_cast<uint32_t>(available));
+        text.assign(buf + sizeof(count) + sizeof(flags) + sizeof(textLen),
+                    buf + sizeof(count) + sizeof(flags) + sizeof(textLen) + textLen);
+      } else if (n >= static_cast<ssize_t>(sizeof(int32_t) + sizeof(uint32_t))) {
+        // v1: count + textLen + text (backward-compatible)
         uint32_t textLen = 0;
         memcpy(&count, buf, sizeof(count));
         memcpy(&textLen, buf + sizeof(count), sizeof(textLen));
@@ -347,6 +363,12 @@ int main(int argc, char **argv) {
                     buf + sizeof(count) + sizeof(textLen) + textLen);
       } else {
         continue;
+      }
+
+      // Flags: bit 0 = send Escape to dismiss autocomplete before BS
+      if ((flags & 1) != 0) {
+        uinput.escape();
+        usleep(BACKSPACE_GAP_US);
       }
 
       count = std::clamp(count, 1, 64);

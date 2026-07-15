@@ -733,6 +733,7 @@ void SKeyState::activate() {
   } else {
     viet_.reset();
     committedLen_ = 0;
+    addrBarIsFirstWord_ = true;
   }
   clearLastWord();
   modeMenuActive_ = false;
@@ -813,11 +814,12 @@ bool SKeyState::connectUinputServer() {
   return false;
 }
 
-void SKeyState::sendBackspaceUinput(int count, const std::string &text) {
+void SKeyState::sendBackspaceUinput(int count, const std::string &text,
+                                     uint32_t flags) {
   if (count < 0) {
     return;
   }
-  if (count == 0 && text.empty()) {
+  if (count == 0 && text.empty() && flags == 0) {
     return;
   }
   if (!connectUinputServer()) {
@@ -825,16 +827,18 @@ void SKeyState::sendBackspaceUinput(int count, const std::string &text) {
     return;
   }
 
-  // Protocol: int32_t count, uint32_t textLen, then text bytes.
-  // The server sends `count` BS events, then types `text` via Ctrl+Shift+U.
+  // Protocol v2: int32_t count, uint32_t flags, uint32_t textLen, then text.
+  // flags bit 0: send Escape before BS (dismisses Chrome autocomplete popup).
+  // The server detects v1 vs v2 by message size for backward compatibility.
   int32_t count32 = count;
   uint32_t textLen = static_cast<uint32_t>(text.size());
-  std::vector<char> msg(sizeof(int32_t) + sizeof(uint32_t) + textLen);
+  std::vector<char> msg(sizeof(int32_t) + sizeof(uint32_t) * 2 + textLen);
   memcpy(msg.data(), &count32, sizeof(count32));
-  memcpy(msg.data() + sizeof(count32), &textLen, sizeof(textLen));
+  memcpy(msg.data() + sizeof(count32), &flags, sizeof(flags));
+  memcpy(msg.data() + sizeof(count32) + sizeof(flags), &textLen, sizeof(textLen));
   if (textLen > 0) {
-    memcpy(msg.data() + sizeof(count32) + sizeof(textLen), text.data(),
-           textLen);
+    memcpy(msg.data() + sizeof(count32) + sizeof(flags) + sizeof(textLen),
+           text.data(), textLen);
   }
 
   bsSentAt_ = now(CLOCK_MONOTONIC);
@@ -866,11 +870,21 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     return false;
   }
 
-  // While waiting for BS, buffer ANY non-BS keys (including user-typed
-  // space, letters, etc.) so they don't reach the app prematurely.
+  // While waiting for BS, buffer non-BS keys (user-typed space, letters,
+  // etc.) so they don't reach the app prematurely.
+  // In the address bar, Chrome's spurious focus cycles can cause X11 to
+  // re-deliver the trigger key — drop it to avoid double-processing.
   if (!keyEvent.key().check(FcitxKey_BackSpace) ||
       expectedUinputBackspaces_ == 0) {
     auto sym = keyEvent.key().sym();
+    if (inChromiumAddressBar() && addrBarLastTriggerKey_ != 0 &&
+        now(CLOCK_MONOTONIC) < addrBarTriggerDeadline_ &&
+        sym == static_cast<uint32_t>(addrBarLastTriggerKey_)) {
+      SKEY_DEBUG() << "Uinput: drop re-delivered trigger key 0x"
+                   << std::hex << sym;
+      keyEvent.filterAndAccept();
+      return true;
+    }
     std::string keyUtf8 = Key::keySymToUTF8(sym);
     if (!keyUtf8.empty() &&
         bufferedUinputKeys_.size() < maxBufferedUinputKeys) {
@@ -1050,10 +1064,16 @@ void SKeyState::deactivate() {
           SKEY_DEBUG() << "Deactivate: no reactivate, genuine focus loss";
           addrBarExpectCycle_ = false;
           addrBarCycleTimer_.reset();
-          if (!viet_.getComposed().empty() && !useSurroundingText())
-            commitBuffer();
-          viet_.reset();
-          committedLen_ = 0;
+          // Only commit/flush if using non-uinput modes (preedit, etc.)
+          // where the composition hasn't been committed yet.  In uinput
+          // mode, replacements already committed via commitText() so
+          // commitBuffer() here would double-commit.
+          if (!useUinputMode()) {
+            if (!viet_.getComposed().empty() && !useSurroundingText())
+              commitBuffer();
+            viet_.reset();
+            committedLen_ = 0;
+          }
           clearLastWord();
           clearUI();
           return true;
@@ -1126,6 +1146,20 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
   if (handlePendingUinputBackspace(keyEvent)) {
     return;
+  }
+
+  // Drop re-delivered trigger key after address bar replacement.
+  // Chrome's spurious focus cycles cause X11 to re-send the key that
+  // triggered the last replacement, even after uinput deletion completed.
+  // We use a 200ms deadline so the guard doesn't stay active forever.
+  if (inChromiumAddressBar() && addrBarLastTriggerKey_ != 0 &&
+      now(CLOCK_MONOTONIC) < addrBarTriggerDeadline_) {
+    if (keyEvent.key().sym() == static_cast<uint32_t>(addrBarLastTriggerKey_)) {
+      SKEY_DEBUG() << "AddrBar: drop re-delivered trigger key 0x"
+                   << std::hex << keyEvent.key().sym();
+      keyEvent.filterAndAccept();
+      return;
+    }
   }
 
   // Passthrough window: after uinput types text via Ctrl+Shift+U hex,
@@ -1283,6 +1317,12 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       committedLen_ = viet_.getRawInput().empty()
                           ? 0
                           : static_cast<int>(utf8::length(viet_.getComposed()));
+      // Re-arm cycle protection and first-word flag: clearing composed text
+      // puts us back in "first word" state where autocomplete may trigger.
+      addrBarExpectCycle_ = true;
+      if (viet_.getRawInput().empty()) {
+        addrBarIsFirstWord_ = true;
+      }
       SKEY_DEBUG() << "AddrBar BS: rawInput='" << viet_.getRawInput()
                    << "' composed='" << viet_.getComposed()
                    << "' len=" << committedLen_;
@@ -1307,6 +1347,10 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   if (key.check(FcitxKey_BackSpace) && viet_.getRawInput().empty()) {
     if (!lastRawInput_.empty()) {
       reclaimReady_ = true;
+    }
+    // Re-arm cycle protection for address bar (see composing BS handler).
+    if (inChromiumAddressBar()) {
+      addrBarExpectCycle_ = true;
     }
     return; // pass through
   }
@@ -1359,6 +1403,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       }
       viet_.reset();
       committedLen_ = 0;
+      // After space, the next word is NOT the first word — autocomplete
+      // won't trigger on multi-word text.
+      addrBarIsFirstWord_ = false;
     }
     return;
   }
@@ -1531,7 +1578,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               // guarantees commitString arrives after BS is processed.
               if (inChromiumAddressBar()) {
                 committedLen_ = static_cast<int>(utf8::length(newComposed));
-                scheduleAddrBarReplacement(deleteLen, addPart);
+                scheduleAddrBarReplacement(deleteLen, addPart,
+                                           static_cast<int>(utf8::length(oldComposed)),
+                                           static_cast<int>(sym));
                 return;
               }
               sendBackspaceUinput(deleteLen);
@@ -1609,16 +1658,42 @@ void SKeyState::commitBuffer() {
     commitText(text);
   }
   viet_.reset();
+  // After committing a word, the next one is not the first.
+  addrBarIsFirstWord_ = false;
 }
 
-void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text) {
+void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
+                                             int oldComposedLen,
+                                             int triggerKeySym) {
   // Use uinput BS + buffering mechanism (like the original uinput path)
   // instead of D-Bus forwardKey.  D-Bus forwardKey can trigger focus
   // changes in Chrome that interleave with commitString.
+  //
+  // Chrome omnibox autocomplete: if the user's browsing history matches
+  // typed text, Chrome shows a suggestion popup and selects the suggestion.
+  // The first uinput BS event dismisses the autocomplete selection WITHOUT
+  // deleting a character, causing the delete count to be off-by-one.
+  // We compensate by sending one extra BS, but ONLY when the composition
+  // before this key was a single character (= first character typed after
+  // focus/clear, when Chrome autocomplete is most aggressive).  Once the
+  // composition has grown to 2+ chars, the typed text is specific enough
+  // that Chrome has already dismissed the suggestion or it's stale.
   addrBarExpectCycle_ = true;
+  addrBarLastTriggerKey_ = triggerKeySym;
+  addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 200000;  // 200ms window
   if (bs > 0) {
-    sendBackspaceUinput(bs);
-    expectedUinputBackspaces_ = bs;
+    int totalBs = bs;
+    // Extra BS only for the first word after focus/clear, when Chrome
+    // omnibox autocomplete may be active (history matching).  Subsequent
+    // words (after space) have specific enough text that autocomplete
+    // won't trigger, so extra BS would over-delete (e.g. the space).
+    if (addrBarIsFirstWord_ && oldComposedLen == 1) {
+      ++totalBs;
+      addrBarIsFirstWord_ = false;
+      SKEY_DEBUG() << "AddrBar: extra BS (first word), total=" << totalBs;
+    }
+    sendBackspaceUinput(totalBs);
+    expectedUinputBackspaces_ = totalBs;
     seenUinputBackspaces_ = 0;
     pendingUinputCommit_ = text;
     uinputDeleting_ = true;
@@ -1822,7 +1897,8 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         // focus-change issues.
         if (inChromiumAddressBar()) {
           committedLen_ = newLen;
-          scheduleAddrBarReplacement(deleteLen, addedPart);
+          scheduleAddrBarReplacement(deleteLen, addedPart,
+                                     static_cast<int>(utf8::length(oldComposed)));
           return;
         }
         if (useUinputMode()) {

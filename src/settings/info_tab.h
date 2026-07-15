@@ -16,6 +16,7 @@ public:
 private slots:
     void onCheckUpdate();
     void onOpenGitHub();
+    void onRestartFcitx5();
 
     // Updater slots
     void onUpdateAvailable(const QString &newVersion,
@@ -35,6 +36,7 @@ private:
     QLabel *versionLabel_;
     QLabel *statusLabel_;
     QPushButton *updateBtn_;
+    QPushButton *restartBtn_;
     QProgressBar *progressBar_;
     Updater *updater_;
 

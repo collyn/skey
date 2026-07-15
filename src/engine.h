@@ -49,7 +49,8 @@ private:
     bool useHiddenComposition() const;
     bool useUinputMode() const;
     bool connectUinputServer();
-    void sendBackspaceUinput(int count, const std::string &text = "");
+    void sendBackspaceUinput(int count, const std::string &text = "",
+                              uint32_t flags = 0);
     bool handlePendingUinputBackspace(KeyEvent &keyEvent);
     void replayBufferedUinputKeys();
     void commitBuffer();
@@ -71,7 +72,9 @@ private:
     void saveLastWord();
     void clearLastWord();
     void flushAddrBarReplacement();
-    void scheduleAddrBarReplacement(int bs, const std::string &text);
+    void scheduleAddrBarReplacement(int bs, const std::string &text,
+                                     int oldComposedLen = 0,
+                                     int triggerKeySym = 0);
 
     SKeyEngine *engine_;
     InputContext *ic_;
@@ -106,6 +109,15 @@ private:
     // address bar. Set before sending forwardKey/commitString and
     // cleared after a reactivate or 200ms timeout.
     bool addrBarExpectCycle_ = false;
+    // KeySym of the key that triggered the current address bar replacement.
+    // X11 may re-deliver this key after Chrome's spurious focus cycles;
+    // we drop it within a 200ms window to avoid double-processing.
+    int addrBarLastTriggerKey_ = 0;
+    uint64_t addrBarTriggerDeadline_ = 0;  // CLOCK_MONOTONIC deadline
+    // True when the next replacement is for the first word after focus or
+    // after backspacing to empty.  Only the first word may trigger Chrome
+    // autocomplete; subsequent words (after space) don't need extra BS.
+    bool addrBarIsFirstWord_ = false;
     std::unique_ptr<EventSourceTime> addrBarCycleTimer_;
     std::string pendingUinputCommit_;
     std::vector<KeySym> bufferedUinputKeys_;

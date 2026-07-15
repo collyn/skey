@@ -1,6 +1,8 @@
 #include "info_tab.h"
+#include "config_io.h"
 #include "updater.h"
 
+#include <QApplication>
 #include <QDesktopServices>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -110,9 +112,15 @@ void InfoTab::setupUI() {
     connect(updateBtn_, &QPushButton::clicked,
             this, &InfoTab::onCheckUpdate);
 
+    restartBtn_ = new QPushButton(
+        QString::fromUtf8("Khởi động lại Fcitx5"), this);
+    connect(restartBtn_, &QPushButton::clicked,
+            this, &InfoTab::onRestartFcitx5);
+
     btnRow->addStretch();
     btnRow->addWidget(githubBtn);
     btnRow->addWidget(updateBtn_);
+    btnRow->addWidget(restartBtn_);
     btnRow->addStretch();
     mainLayout->addLayout(btnRow);
 
@@ -176,6 +184,24 @@ void InfoTab::onCheckUpdate() {
 
 void InfoTab::onOpenGitHub() {
     QDesktopServices::openUrl(QUrl(kGitHubUrl));
+}
+
+void InfoTab::onRestartFcitx5() {
+    restartBtn_->setEnabled(false);
+    restartBtn_->setText(QString::fromUtf8("Đang khởi động lại..."));
+    statusLabel_->setText(QString::fromUtf8("Đang khởi động lại Fcitx5..."));
+    statusLabel_->setStyleSheet("font-size: 12px; color: #666;");
+    statusLabel_->show();
+
+    // Force UI update before blocking
+    QApplication::processEvents();
+
+    restartFcitx5();
+
+    restartBtn_->setEnabled(true);
+    restartBtn_->setText(QString::fromUtf8("Khởi động lại Fcitx5"));
+    statusLabel_->setText(QString::fromUtf8("✓ Fcitx5 đã được khởi động lại"));
+    statusLabel_->setStyleSheet("font-size: 12px; color: green;");
 }
 
 // ── Updater: check result slots ─────────────────────────────────────────
