@@ -1500,6 +1500,11 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         if (useSurroundingText()) {
           // In surrounding text mode, oldComposed is already on screen.
           // Replace it with committed + newComposed.
+          // Set trigger-key guard for Chromium (see same logic below).
+          if (isChromiumBrowser(ic_->program()) && !oldComposed.empty()) {
+            addrBarLastTriggerKey_ = static_cast<int>(sym);
+            addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 200000;
+          }
           std::string fullNew = committed + newComposed;
           if (!fullNew.empty()) {
             surroundingCommit(oldComposed, fullNew);
@@ -1597,6 +1602,14 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             committedLen_ = static_cast<int>(utf8::length(newComposed));
             return;
           }
+          // SurroundingText path in Chromium: set trigger-key guard so
+          // X11 re-delivery after forwardKey-induced focus cycles is dropped.
+          // Only for replacements (oldComposed non-empty), not first char.
+          if (isChromiumBrowser(ic_->program()) &&
+              !oldComposed.empty() && oldComposed != newComposed) {
+            addrBarLastTriggerKey_ = static_cast<int>(sym);
+            addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 200000;
+          }
           surroundingCommit(oldComposed, newComposed);
         } else {
           updatePreedit();
@@ -1683,11 +1696,11 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
   addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 200000;  // 200ms window
   if (bs > 0) {
     int totalBs = bs;
-    // Extra BS only for the first word after focus/clear, when Chrome
-    // omnibox autocomplete may be active (history matching).  Subsequent
-    // words (after space) have specific enough text that autocomplete
-    // won't trigger, so extra BS would over-delete (e.g. the space).
-    if (addrBarIsFirstWord_ && oldComposedLen == 1) {
+    // Extra BS for the first word after focus/clear, when Chrome omnibox
+    // autocomplete may be active (history matching like "go"→google.com).
+    // Subsequent words (after space) have specific enough text that
+    // autocomplete won't trigger, so extra BS would over-delete the space.
+    if (addrBarIsFirstWord_) {
       ++totalBs;
       addrBarIsFirstWord_ = false;
       SKEY_DEBUG() << "AddrBar: extra BS (first word), total=" << totalBs;
@@ -1909,6 +1922,12 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           uinputDeleting_ = true;
           committedLen_ = newLen;
           return;
+        }
+        // SurroundingText forwardKey path: D-Bus forwardKey may trigger
+        // Chrome focus cycles (omnibox autocomplete).  Protect engine state
+        // even when inChromiumAddressBar() wasn't detected (AT-SPI2 race).
+        if (isChromiumBrowser(ic_->program())) {
+          addrBarExpectCycle_ = true;
         }
         for (int i = 0; i < deleteLen; ++i) {
           ic_->forwardKey(Key(FcitxKey_BackSpace));
