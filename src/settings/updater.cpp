@@ -1,4 +1,5 @@
 #include "updater.h"
+#include "config_io.h"
 
 #include <QFile>
 #include <QJsonArray>
@@ -166,11 +167,14 @@ void Updater::onDownloadFinished() {
                 proc->deleteLater();
 
                 if (exitCode == 0) {
+                    // Restart fcitx5 to load the new .so, with Wayland
+                    // compositor reconnect so virtual keyboard stays bound.
+                    restartFcitx5();
                     emit installFinished(
                         true,
                         QString::fromUtf8(
-                            "Cập nhật thành công! Vui lòng khởi "
-                            "động lại Fcitx5 để áp dụng."));
+                            "Cập nhật thành công! Fcitx5 đã được "
+                            "khởi động lại."));
                 } else {
                     emit installFinished(
                         false,

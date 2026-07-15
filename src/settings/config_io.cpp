@@ -8,6 +8,7 @@
 #include <QProcess>
 #include <QStandardPaths>
 #include <QString>
+#include <QThread>
 
 // ── Path resolution ────────────────────────────────────────────────────
 
@@ -296,8 +297,65 @@ SKeyConfig defaultConfig() {
     return SKeyConfig{};   // struct initializers are the defaults
 }
 
-// ── Reload fcitx5 ───────────────────────────────────────────────────────
+// ── Reload / Restart fcitx5 ─────────────────────────────────────────────
 
 bool reloadFcitx5() {
     return QProcess::startDetached("fcitx5-remote", {"-r"});
+}
+
+bool restartFcitx5() {
+    // Hard-restart: kill and re-launch fcitx5, then reconnect Wayland
+    // compositor so virtual keyboard doesn't silently fall back to "None".
+    QProcess proc;
+
+    // 1. Restart the daemon
+    proc.start("fcitx5", {"-r", "-d"});
+    if (!proc.waitForFinished(5000)) {
+        // didn't finish in time — may still be OK
+        proc.terminate();
+    }
+
+    // 2. Give fcitx5 time to start and accept D-Bus connections
+    QThread::sleep(1);
+
+    // 3. Wayland: re-trigger compositor virtual keyboard binding
+    //    When fcitx5 restarts, the compositor does NOT automatically
+    //    reconnect — we must re-apply the InputMethod preference.
+    auto env = QProcessEnvironment::systemEnvironment();
+    if (env.value("XDG_SESSION_TYPE") == "wayland") {
+        QString desktop = env.value("XDG_CURRENT_DESKTOP");
+        if (desktop == "KDE" || desktop == "kde" ||
+            desktop == "KDE-Plasma" || desktop == "plasma") {
+            // KWin: re-apply InputMethod to force reconnect
+            QProcess::startDetached("kwriteconfig5",
+                {"--file", "kwinrc",
+                 "--group", "Wayland",
+                 "--key", "InputMethod",
+                 "/usr/share/applications/org.fcitx.Fcitx5.desktop"});
+            // Notify KWin to reload (only works on 5.27+)
+            QProcess::startDetached("dbus-send",
+                {"--type=signal", "/KWin",
+                 "org.kde.KWin.reloadConfig"});
+        } else if (desktop == "GNOME" || desktop == "gnome" ||
+                   desktop == "GNOME-Classic") {
+            // GNOME Shell: toggle input sources to force reconnect
+            QProcess gs;
+            gs.start("gsettings", {"get",
+                "org.gnome.desktop.input-sources", "sources"});
+            if (gs.waitForFinished(3000)) {
+                QString sources = QString::fromUtf8(gs.readAllStandardOutput()).trimmed();
+                if (!sources.isEmpty() && sources != "@as []") {
+                    QProcess::startDetached("gsettings",
+                        {"set", "org.gnome.desktop.input-sources",
+                         "sources", "[]"});
+                    QThread::msleep(500);
+                    QProcess::startDetached("gsettings",
+                        {"set", "org.gnome.desktop.input-sources",
+                         "sources", sources});
+                }
+            }
+        }
+    }
+
+    return true;
 }

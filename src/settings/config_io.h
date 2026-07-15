@@ -47,9 +47,14 @@ std::string qKeySeqToFcitx5(const std::string &qKeySeq);
 // ── Defaults ────────────────────────────────────────────────────────────
 SKeyConfig defaultConfig();
 
-// ── Reload ──────────────────────────────────────────────────────────────
+// ── Reload / Restart ──────────────────────────────────────────────────────
 /// Runs fcitx5-remote -r to tell fcitx5 to reload its config.
 /// Returns true if the command was launched successfully.
 bool reloadFcitx5();
+
+/// Hard-restart fcitx5 (-r -d) and reconnect Wayland compositor.
+/// Use after .deb update when the .so binary has changed.
+/// Returns true if the restart was attempted.
+bool restartFcitx5();
 
 #endif // SKEY_SETTINGS_CONFIG_IO_H

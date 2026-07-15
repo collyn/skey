@@ -117,9 +117,48 @@ SNION
 fi
 
 # ── Restart fcitx5 if running ──
+# On Wayland, the compositor (KWin/Mutter) connects directly to fcitx5 via
+# zwp_input_method_v1.  When fcitx5 restarts, the compositor does NOT
+# automatically reconnect — the virtual keyboard silently falls back to
+# "None", breaking Vietnamese input until the user manually re-selects
+# fcitx5 in system settings.  We fix this by re-applying the compositor's
+# input method preference after restart, which forces a reconnect.
 if pidof fcitx5 > /dev/null 2>&1; then
     fcitx5 -r -d 2>/dev/null &
+    sleep 1  # give fcitx5 time to start and accept D-Bus connections
     echo "✓ fcitx5 restarted"
+
+    # ── Wayland: re-trigger compositor virtual keyboard binding ──
+    if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+        case "${XDG_CURRENT_DESKTOP:-}" in
+            KDE|kde|KDE-Plasma|plasma)
+                # KWin: re-apply InputMethod setting to force reconnect
+                kwriteconfig5 --file kwinrc --group Wayland \
+                    --key InputMethod /usr/share/applications/org.fcitx.Fcitx5.desktop 2>/dev/null || true
+                # Notify KWin to reload (KWin's D-Bus reloadConfig only available in 5.27+)
+                dbus-send --type=signal /KWin org.kde.KWin.reloadConfig 2>/dev/null || true
+                echo "✓ KWin virtual keyboard reconnected to fcitx5"
+                ;;
+            GNOME|gnome|GNOME-Classic)
+                # GNOME Shell: re-apply input sources to trigger reconnect
+                if command -v gsettings >/dev/null 2>&1; then
+                    CURRENT_SRC=$(gsettings get org.gnome.desktop.input-sources sources 2>/dev/null || true)
+                    if [ -n "$CURRENT_SRC" ]; then
+                        # Toggle off then on to force Shell to reconnect
+                        gsettings set org.gnome.desktop.input-sources sources "[]" 2>/dev/null || true
+                        sleep 0.5
+                        gsettings set org.gnome.desktop.input-sources sources "$CURRENT_SRC" 2>/dev/null || true
+                        echo "✓ GNOME Shell input sources refreshed"
+                    fi
+                fi
+                ;;
+            *)
+                echo "⚠ Wayland detected ($XDG_CURRENT_DESKTOP)."
+                echo "  If Vietnamese input stops working, manually re-select"
+                echo "  'Fcitx 5' in System Settings → Keyboard → Virtual Keyboard."
+                ;;
+        esac
+    fi
 else
     echo "ℹ fcitx5 is not running. Start it with: fcitx5 -d"
 fi
@@ -127,3 +166,8 @@ fi
 echo ""
 echo "Done! skey is now the default Vietnamese input method."
 echo "Toggle with Ctrl+Space. Settings: fcitx5-configtool"
+echo ""
+if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+    echo "⚠  Wayland note: If some apps still don't work after this,"
+    echo "   log out and back in to fully refresh the session."
+fi
