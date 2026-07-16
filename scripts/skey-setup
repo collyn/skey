@@ -134,7 +134,7 @@ if pidof fcitx5 > /dev/null 2>&1; then
             KDE|kde|KDE-Plasma|plasma)
                 # KWin: re-apply InputMethod setting to force reconnect
                 kwriteconfig5 --file kwinrc --group Wayland \
-                    --key InputMethod /usr/share/applications/org.fcitx.Fcitx5.desktop 2>/dev/null || true
+                    --key InputMethod /usr/share/applications/fcitx5-wayland-launcher.desktop 2>/dev/null || true
                 # Notify KWin to reload (KWin's D-Bus reloadConfig only available in 5.27+)
                 dbus-send --type=signal /KWin org.kde.KWin.reloadConfig 2>/dev/null || true
                 echo "✓ KWin virtual keyboard reconnected to fcitx5"

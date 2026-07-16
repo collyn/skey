@@ -331,7 +331,7 @@ bool restartFcitx5() {
                 {"--file", "kwinrc",
                  "--group", "Wayland",
                  "--key", "InputMethod",
-                 "/usr/share/applications/org.fcitx.Fcitx5.desktop"});
+                 "/usr/share/applications/fcitx5-wayland-launcher.desktop"});
             // Notify KWin to reload (only works on 5.27+)
             QProcess::startDetached("dbus-send",
                 {"--type=signal", "/KWin",
