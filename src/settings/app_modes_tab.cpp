@@ -63,8 +63,14 @@ void AppModesTab::addRow(const std::string &name, const std::string &mode) {
     int row = table_->rowCount();
     table_->insertRow(row);
 
-    // Column 0 — read-only app name
-    auto *nameItem = new QTableWidgetItem(QString::fromStdString(name));
+    // Column 0 — read-only app name.
+    // IBus frontend reports empty program name (AppImages like Viber).
+    // Display a readable label but keep the real key for save/load.
+    QString displayName = name.empty()
+        ? QString::fromUtf8("(IBus app)")
+        : QString::fromStdString(name);
+    auto *nameItem = new QTableWidgetItem(displayName);
+    nameItem->setData(Qt::UserRole, QString::fromStdString(name)); // real key
     nameItem->setFlags(nameItem->flags() & ~Qt::ItemIsEditable);
     table_->setItem(row, 0, nameItem);
 
@@ -99,9 +105,14 @@ AppModesConfig AppModesTab::collectConfig() const {
         auto *combo    = qobject_cast<QComboBox *>(table_->cellWidget(r, 1));
         if (!nameItem || !combo) continue;
 
-        std::string name = nameItem->text().toStdString();
+        // Use the real key stored in UserRole (may be empty for IBus apps)
+        std::string name = nameItem->data(Qt::UserRole).toString().toStdString();
+        // Fallback to display text for manually added entries
+        if (name.empty() && !nameItem->text().isEmpty()) {
+            name = nameItem->text().toStdString();
+        }
         std::string mode = combo->currentData().toString().toStdString();
-        if (!name.empty() && !mode.empty()) {
+        if (!mode.empty()) {
             cfg.entries.emplace_back(name, mode);
         }
     }

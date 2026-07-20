@@ -90,7 +90,7 @@ private:
     bool hasAppModeOverride_ = false;
     bool appExcluded_ = false;
     SKeyOutputMode appModeOverride_ = SKeyOutputMode::SurroundingText;
-    std::string cachedProgram_;
+    std::string cachedProgram_{"\x01"};  // sentinel ≠ any real program name, incl. empty
     std::unique_ptr<EventSourceTime> deferredCommitTimer_;
     std::string deferredCommitText_;
     std::string deferredPrefix_;

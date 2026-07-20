@@ -621,9 +621,10 @@ void SKeyState::refreshAppMode() {
 
   hasAppModeOverride_ = false;
   appExcluded_ = false;
-  if (prog.empty())
-    return;
 
+  // IBus frontend reports empty program name (AppImages etc.).
+  // Still try to load saved per-app config — the entry is keyed
+  // by program name, which may be empty.
   RawConfig cfg;
   readAsIni(cfg, "conf/skey-app-modes.conf");
   auto *val = cfg.valueByPath(prog);
@@ -745,10 +746,11 @@ void SKeyState::activate() {
   deferredCommitTimer_.reset();
   deferredCommitText_.clear();
   deferredPrefix_.clear();
-  // Load per-app mode preference / exclusion
+  // Load per-app mode preference / exclusion.
+  // IBus frontend reports empty program name — still try to load saved config.
   hasAppModeOverride_ = false;
   appExcluded_ = false;
-  if (!ic_->program().empty()) {
+  {
     RawConfig cfg;
     readAsIni(cfg, "conf/skey-app-modes.conf");
     auto *val = cfg.valueByPath(ic_->program());

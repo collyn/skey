@@ -151,7 +151,7 @@ AppModesConfig readAppModesConfig() {
         rtrim(name);
         rtrim(val);
 
-        if (!name.empty() && !val.empty() && val != "Excluded") {
+        if (!val.empty() && val != "Excluded") {
             // Migrate legacy config
             if (val == "SurroundingTextSlow") val = "SurroundingText";
             cfg.entries.emplace_back(name, val);
