@@ -5,6 +5,7 @@
 #include <sstream>
 #include <unistd.h>
 
+#include <QDir>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QString>
@@ -297,6 +298,107 @@ SKeyConfig defaultConfig() {
     return SKeyConfig{};   // struct initializers are the defaults
 }
 
+// ── Environment fix ─────────────────────────────────────────────────────
+
+/// Write a block of env exports to a file, ensuring it exists and
+/// contains the correct values.  Works both for env-file style (key=value)
+/// and shell-rc style (export KEY=VALUE).
+/// If the block marker "# fcitx5-skey" is found, replace everything between
+/// the marker lines.  Otherwise append the block at the end.
+static void writeEnvBlock(const char *path, const char *block) {
+    std::string content;
+    {
+        std::ifstream in(path);
+        if (in.is_open()) {
+            std::stringstream ss;
+            ss << in.rdbuf();
+            content = ss.str();
+        }
+    }
+
+    const char *marker = "# fcitx5-skey";
+    auto markerPos = content.find(marker);
+    if (markerPos != std::string::npos) {
+        // Replace existing block: from marker to end of block
+        auto endMarker = content.find(marker, markerPos + 1);
+        if (endMarker != std::string::npos) {
+            content.replace(markerPos, endMarker - markerPos, block);
+        } else {
+            // Only one marker — replace from marker to end of file
+            content.replace(markerPos, content.size() - markerPos, block);
+        }
+    } else {
+        // No existing block — append
+        if (!content.empty() && content.back() != '\n') {
+            content += '\n';
+        }
+        content += block;
+    }
+
+    // Ensure parent directory exists
+    std::string pathStr(path);
+    auto slash = pathStr.rfind('/');
+    if (slash != std::string::npos) {
+        QDir().mkpath(QString::fromStdString(pathStr.substr(0, slash)));
+    }
+
+    std::ofstream out(path);
+    if (out.is_open()) {
+        out << content;
+    }
+}
+
+static const char kEnvBlock[] =
+    "# fcitx5-skey: required for IM to work in all apps (esp. AppImages)\n"
+    "export QT_IM_MODULE=ibus\n"
+    "export XMODIFIERS=@im=fcitx\n"
+    "# fcitx5-skey\n";
+
+static void fixEnvironmentFiles() {
+    const char *home = getenv("HOME");
+    if (!home) return;
+
+    std::string homeStr(home);
+
+    // Files that need the env block
+    writeEnvBlock((homeStr + "/.xprofile").c_str(), kEnvBlock);
+
+    // KDE Plasma startup scripts (sourced at login)
+    writeEnvBlock((homeStr + "/.config/plasma-workspace/env/skey.sh").c_str(), kEnvBlock);
+
+    // Shell rc — ensures new terminals pick up correct env immediately
+    writeEnvBlock((homeStr + "/.zshenv").c_str(), kEnvBlock);
+    writeEnvBlock((homeStr + "/.profile").c_str(), kEnvBlock);
+
+    // systemd environment.d (read by environment-d-generator at login)
+    writeEnvBlock((homeStr + "/.config/environment.d/fcitx5-skey.conf").c_str(),
+                  "QT_IM_MODULE=ibus\nXMODIFIERS=@im=fcitx\n");
+
+    // Also update the running session environment (not just files).
+    // systemctl set-environment: propagates to subsequently launched
+    //   processes within the user slice (KDE launcher, etc.)
+    // dbus-update-activation-environment: syncs D-Bus session bus
+    //   so D-Bus activated services see the new vars
+    QProcess::startDetached("systemctl",
+        {"--user", "set-environment", "QT_IM_MODULE=ibus"});
+    QProcess::startDetached("systemctl",
+        {"--user", "set-environment", "XMODIFIERS=@im=fcitx"});
+    QProcess::startDetached("dbus-update-activation-environment",
+        {"--systemd", "QT_IM_MODULE", "XMODIFIERS"});
+
+    // Also update QT_IM_MODULE for the current process' environment
+    // so child processes launched by the settings app inherit the fix
+    setenv("QT_IM_MODULE", "ibus", 1);
+    setenv("XMODIFIERS", "@im=fcitx", 1);
+
+    // Restart Dolphin so file-manager-launched AppImages get the new env.
+    // kquitapp5 sends a graceful quit via D-Bus; Dolphin restarts below.
+    // If dolphin isn't running or kquitapp5 fails, this is harmless.
+    QProcess::startDetached("kquitapp5", {"dolphin"});
+    QThread::msleep(800);
+    QProcess::startDetached("dolphin", {});
+}
+
 // ── Reload / Restart fcitx5 ─────────────────────────────────────────────
 
 bool reloadFcitx5() {
@@ -304,6 +406,11 @@ bool reloadFcitx5() {
 }
 
 bool restartFcitx5() {
+    // 0. Fix IM environment files so AppImages (Viber, etc.) can connect.
+    //    Uses IBus protocol because fcitx5 exports org.freedesktop.IBus on D-Bus,
+    //    and IBus plugin is bundled in Qt AppImages.
+    fixEnvironmentFiles();
+
     // Hard-restart: kill and re-launch fcitx5, then reconnect Wayland
     // compositor so virtual keyboard doesn't silently fall back to "None".
     QProcess proc;

@@ -105,20 +105,25 @@ private:
 namespace fcitx {
 
 // Timing tunables for uinput backspace → commit coordination (microseconds)
-// kMinDelayUsec: minimum pad after BS round-trip before commitString via D-Bus
-static constexpr uint64_t kMinDelayUsec = 8000;
-// kAddressBarUinputMinDelayUsec: larger pad for Chromium address bar uinput
-// mode.  The omnibox autocomplete engine adds internal processing latency
-// after each keystroke; on fast (bare-metal) machines the default 8 ms pad
-// is often too short and commitString races with the omnibox update, causing
-// garbled text.  A longer pad gives Chromium time to settle before we commit.
-static constexpr uint64_t kAddressBarUinputMinDelayUsec = 25000;
-// kAddressBarForwardKeyCommitDelayUsec: delay between forwardKey(BS) and
-// commitString in the Chromium address bar.  Both travel the same D-Bus
-// channel so ordering is guaranteed, but Chrome still needs time to process
-// the BS internally (omnibox update, autocomplete) before receiving the
-// commit.  Too short and fast typing loses characters.
-static constexpr uint64_t kAddressBarForwardKeyCommitDelayUsec = 10000;
+//
+// Adaptive delay via EWMA (exponentially weighted moving average) of
+// measured BackSpace round-trip times.  The round-trip covers:
+//   uinput → kernel → X11 → Chrome → X11 → fcitx5
+// Chrome's processing time varies with system load, tab count, and
+// omnibox autocomplete activity.  EWMA smooths out these variations
+// and automatically adjusts the commit delay — faster machines get
+// lower latency, loaded machines get more safety margin.
+static constexpr double kBsRtEwmaAlpha = 0.3;  // weight for new sample
+static constexpr uint64_t kBsRtInitialUsec = 10000;  // seed before first sample
+// Multiplier: commit delay = EWMA * multiplier.  Gives Chrome a full
+// processing window equal to (multiplier-1) additional round-trips to
+// finish post-BS work (text buffer update, omnibox refresh).
+static constexpr uint64_t kBsRtMultiplier = 3;
+// Address bar: higher multiplier for omnibox autocomplete processing
+static constexpr uint64_t kAddrBarBsRtMultiplier = 4;
+// Absolute floors to prevent racing on extremely fast machines
+static constexpr uint64_t kCommitDelayMinUsec = 10000;
+static constexpr uint64_t kAddrBarCommitDelayMinUsec = 15000;
 // dbusDeferredDefaultUsec: default delay for surrounding-text deferred commit
 static constexpr uint64_t dbusDeferredDefaultUsec = 15000;
 // dbusDeferredMinUsec: floor for adaptive deferred commit delay
@@ -914,16 +919,24 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     uint64_t elapsed = now(CLOCK_MONOTONIC) - bsSentAt_;
     lastBsRoundTrip_ = elapsed;
 
-    // BS (uinput) and commit (D-Bus) go through different channels.
-    // Wait at least until the BS round-trip has elapsed + pad,
-    // to give the app time to process the uinput BS before commitString.
-    // Chromium address bar needs a larger pad because the omnibox
-    // autocomplete engine adds internal processing latency.
-    uint64_t padUsec = inChromiumAddressBar() ? kAddressBarUinputMinDelayUsec
-                                              : kMinDelayUsec;
-    uint64_t delayUsec = std::max(elapsed + padUsec, padUsec);
-    SKEY_DEBUG() << "Uinput: all BS passed, round-trip " << (elapsed / 1000)
-                 << "ms, commit '" << commitText << "' in "
+    // Adaptive delay via EWMA of measured round-trip times.
+    // Smooths out Chrome processing time variations (system load,
+    // tab count, omnibox autocomplete activity).  Faster machines
+    // naturally converge to lower delays.
+    if (bsRtEwma_ == kBsRtInitialUsec || bsRtEwma_ == 0) {
+      bsRtEwma_ = elapsed;  // first sample — seed directly
+    } else {
+      bsRtEwma_ = static_cast<uint64_t>(
+          kBsRtEwmaAlpha * elapsed + (1.0 - kBsRtEwmaAlpha) * bsRtEwma_);
+    }
+    uint64_t multiplier = inChromiumAddressBar() ? kAddrBarBsRtMultiplier
+                                                  : kBsRtMultiplier;
+    uint64_t minDelay = inChromiumAddressBar() ? kAddrBarCommitDelayMinUsec
+                                                : kCommitDelayMinUsec;
+    uint64_t delayUsec = std::max(bsRtEwma_ * multiplier, minDelay);
+    SKEY_DEBUG() << "Uinput: all BS passed, RT " << (elapsed / 1000)
+                 << "ms (ewma " << (bsRtEwma_ / 1000)
+                 << "ms), commit '" << commitText << "' in "
                  << (delayUsec / 1000) << "ms"
                  << (inChromiumAddressBar() ? " [addrbar]" : "");
 
@@ -1087,6 +1100,7 @@ void SKeyState::deactivate() {
   bufferedUinputKeys_.clear();
   bsSentAt_ = 0;
   lastBsRoundTrip_ = 0;
+  bsRtEwma_ = kBsRtInitialUsec;
   uinputCommitTimer_.reset();
   uinputDeleting_ = false;
 
@@ -1548,17 +1562,11 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
             // Check matching append: old + key == new
             if (oldComposed + keyUtf8 == newComposed) {
-              // Chromium address bar: commit via D-Bus instead of
-              // forwarding raw key through X11.  This keeps all
-              // text operations on the same D-Bus channel so Chrome
-              // processes them in order with BS and commitString.
+              // Forward raw X11 key — instant, no D-Bus latency.
+              // Set cycle protection: subsequent replacement may trigger
+              // spurious focus changes in Chromium address bar.
               if (inChromiumAddressBar()) {
-                keyEvent.filterAndAccept();
                 addrBarExpectCycle_ = true;
-                commitText(keyUtf8);
-                SKEY_DEBUG() << "Uinput: addrbar commit append '" << keyUtf8
-                             << "'";
-                return;
               }
               SKEY_DEBUG() << "Uinput: forward append '" << keyUtf8 << "'";
               return; // forward raw key
@@ -1676,30 +1684,17 @@ void SKeyState::commitBuffer() {
 }
 
 void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
-                                             int oldComposedLen,
+                                             int /*oldComposedLen*/,
                                              int triggerKeySym) {
-  // Use uinput BS + buffering mechanism (like the original uinput path)
-  // instead of D-Bus forwardKey.  D-Bus forwardKey can trigger focus
-  // changes in Chrome that interleave with commitString.
-  //
-  // Chrome omnibox autocomplete: if the user's browsing history matches
-  // typed text, Chrome shows a suggestion popup and selects the suggestion.
-  // The first uinput BS event dismisses the autocomplete selection WITHOUT
-  // deleting a character, causing the delete count to be off-by-one.
-  // We compensate by sending one extra BS, but ONLY when the composition
-  // before this key was a single character (= first character typed after
-  // focus/clear, when Chrome autocomplete is most aggressive).  Once the
-  // composition has grown to 2+ chars, the typed text is specific enough
-  // that Chrome has already dismissed the suggestion or it's stale.
+  // Use uinput BS + adaptive EWMA timer delay before D-Bus commitString.
+  // uinput BS goes through kernel → Chrome processes it as a real keystroke
+  // (omnibox update, autocomplete dismissal).  The EWMA-based delay adapts
+  // to Chrome's actual processing speed — faster machines get lower latency.
   addrBarExpectCycle_ = true;
   addrBarLastTriggerKey_ = triggerKeySym;
-  addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 200000;  // 200ms window
+  addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 200000;
   if (bs > 0) {
     int totalBs = bs;
-    // Extra BS for the first word after focus/clear, when Chrome omnibox
-    // autocomplete may be active (history matching like "go"→google.com).
-    // Subsequent words (after space) have specific enough text that
-    // autocomplete won't trigger, so extra BS would over-delete the space.
     if (addrBarIsFirstWord_) {
       ++totalBs;
       addrBarIsFirstWord_ = false;
@@ -1760,8 +1755,8 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
   // the timer via the deferred update path in surroundingCommit(), so
   // the commit only happens when the user pauses (natural word boundary).
   uint64_t delayUsec =
-      (lastBsRoundTrip_ > 0)
-          ? std::max(lastBsRoundTrip_ * 2 + 8000, dbusDeferredMinUsec)
+      (bsRtEwma_ > 0 && bsRtEwma_ != kBsRtInitialUsec)
+          ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
           : dbusDeferredDefaultUsec;
 
   SKEY_DEBUG() << "Surr deferred: schedule '" << text << "' in "
@@ -1790,8 +1785,8 @@ void SKeyState::flushDeferredCommit() {
 
   // Enforce adaptive minimum delay between BackSpace and commit.
   uint64_t minGapUsec =
-      (lastBsRoundTrip_ > 0)
-          ? std::max(lastBsRoundTrip_ * 2 + 8000, dbusDeferredMinUsec)
+      (bsRtEwma_ > 0 && bsRtEwma_ != kBsRtInitialUsec)
+          ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
           : dbusDeferredDefaultUsec;
   if (deferredBsSentAt_ > 0) {
     uint64_t nowUs = now(CLOCK_MONOTONIC);

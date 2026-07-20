@@ -123,6 +123,8 @@ private:
     std::vector<KeySym> bufferedUinputKeys_;
     uint64_t bsSentAt_ = 0;        // timestamp when BS was sent
     uint64_t lastBsRoundTrip_ = 0; // last measured round-trip (usec)
+    // EWMA of BS round-trip times for adaptive commit delay (usec)
+    uint64_t bsRtEwma_ = 10000;    // seeded with kBsRtInitialUsec
     // Passthrough window: after uinput sends text via Ctrl+Shift+U, the
     // injected key events pass back through fcitx5.  Suppress engine
     // processing during this window so those keys reach the app unmodified.
