@@ -155,11 +155,13 @@ if pidof fcitx5 > /dev/null 2>&1; then
                 # 1. Clear InputMethod → KWin drops the IM connection
                 $KWRITE --file kwinrc --group Wayland --key InputMethod "" 2>/dev/null || true
                 dbus-send --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure 2>/dev/null || true
+                dbus-send --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reloadConfig 2>/dev/null || true
                 sleep 0.6
                 # 2. Restore fcitx5 Wayland launcher → KWin reconnects
                 $KWRITE --file kwinrc --group Wayland \
                     --key InputMethod /usr/share/applications/fcitx5-wayland-launcher.desktop 2>/dev/null || true
                 dbus-send --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure 2>/dev/null || true
+                dbus-send --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reloadConfig 2>/dev/null || true
                 echo "✓ KWin virtual keyboard reconnected to fcitx5"
                 ;;
             GNOME|gnome|GNOME-Classic)

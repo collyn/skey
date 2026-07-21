@@ -5,6 +5,8 @@
 #include <sstream>
 #include <unistd.h>
 
+#include <QDBusConnection>
+#include <QDBusMessage>
 #include <QDir>
 #include <QProcess>
 #include <QStandardPaths>
@@ -455,6 +457,17 @@ bool restartFcitx5() {
                 kwrite = "kwriteconfig5";  // fallback for Plasma 5
             }
 
+            // Helper: call a KWin D-Bus method (Q_NOREPLY, fire-and-forget).
+            // Tries reconfigure first, then reloadConfig for older Plasma.
+            auto callKWin = [](const char *method) {
+                QDBusMessage msg = QDBusMessage::createMethodCall(
+                    QStringLiteral("org.kde.KWin"),
+                    QStringLiteral("/KWin"),
+                    QStringLiteral("org.kde.KWin"),
+                    QString::fromUtf8(method));
+                QDBusConnection::sessionBus().call(msg, QDBus::NoBlock);
+            };
+
             // 1. Clear InputMethod → KWin drops the IM connection
             QProcess kw1;
             kw1.start(kwrite,
@@ -463,10 +476,9 @@ bool restartFcitx5() {
                  "--key", "InputMethod", ""});
             kw1.waitForFinished(3000);
 
-            // 2. Signal KWin to reload (now with empty IM)
-            QProcess::startDetached("dbus-send",
-                {"--type=method_call", "--dest=org.kde.KWin",
-                 "/KWin", "org.kde.KWin.reconfigure"});
+            // 2. Tell KWin to reload (now with empty IM)
+            callKWin("reconfigure");
+            callKWin("reloadConfig");
             QThread::msleep(600);
 
             // 3. Restore fcitx5 Wayland launcher → KWin reconnects
@@ -478,10 +490,9 @@ bool restartFcitx5() {
                  "/usr/share/applications/fcitx5-wayland-launcher.desktop"});
             kw2.waitForFinished(3000);
 
-            // 4. Signal KWin again to pick up the restored IM
-            QProcess::startDetached("dbus-send",
-                {"--type=method_call", "--dest=org.kde.KWin",
-                 "/KWin", "org.kde.KWin.reconfigure"});
+            // 4. Tell KWin again to pick up the restored IM
+            callKWin("reconfigure");
+            callKWin("reloadConfig");
         } else if (desktop == "GNOME" || desktop == "gnome" ||
                    desktop == "GNOME-Classic") {
             // GNOME Shell: toggle input sources to force reconnect
