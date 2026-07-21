@@ -115,16 +115,15 @@ namespace fcitx {
 // lower latency, loaded machines get more safety margin.
 static constexpr double kBsRtEwmaAlpha = 0.3;  // weight for new sample
 static constexpr uint64_t kBsRtInitialUsec = 8000;  // seed before first sample
-// Multiplier: commit delay = EWMA * multiplier.  One extra round-trip
-// of headroom (~10-15ms ≈ one 60fps frame) for Chrome to finish
-// processing BS before commitString arrives.
-static constexpr uint64_t kBsRtMultiplier = 2;
-// Address bar: same multiplier — full-word replacement already
-// compensates for autocomplete BS consumption.
-static constexpr uint64_t kAddrBarBsRtMultiplier = 2;
+// Multiplier: commit delay = EWMA * multiplier.  The EWMA measures the
+// full BS round-trip; 2x gives one extra round-trip of headroom for
+// Chrome/Electron to finish processing BS before commitString arrives.
+static constexpr double kBsRtMultiplier = 2.0;
+// Address bar: same multiplier — omnibox has similar processing speed.
+static constexpr double kAddrBarBsRtMultiplier = 2.0;
 // Absolute floors to prevent racing on extremely fast machines
-static constexpr uint64_t kCommitDelayMinUsec = 8000;
-static constexpr uint64_t kAddrBarCommitDelayMinUsec = 8000;
+static constexpr uint64_t kCommitDelayMinUsec = 10000;
+static constexpr uint64_t kAddrBarCommitDelayMinUsec = 10000;
 // dbusDeferredDefaultUsec: default delay for surrounding-text deferred commit
 static constexpr uint64_t dbusDeferredDefaultUsec = 15000;
 // dbusDeferredMinUsec: floor for adaptive deferred commit delay
@@ -932,11 +931,12 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
       bsRtEwma_ = static_cast<uint64_t>(
           kBsRtEwmaAlpha * elapsed + (1.0 - kBsRtEwmaAlpha) * bsRtEwma_);
     }
-    uint64_t multiplier = inChromiumAddressBar() ? kAddrBarBsRtMultiplier
+    double multiplier = inChromiumAddressBar() ? kAddrBarBsRtMultiplier
                                                   : kBsRtMultiplier;
     uint64_t minDelay = inChromiumAddressBar() ? kAddrBarCommitDelayMinUsec
                                                 : kCommitDelayMinUsec;
-    uint64_t delayUsec = std::max(bsRtEwma_ * multiplier, minDelay);
+    uint64_t delayUsec = std::max(
+        static_cast<uint64_t>(bsRtEwma_ * multiplier), minDelay);
     SKEY_DEBUG() << "Uinput: all BS passed, RT " << (elapsed / 1000)
                  << "ms (ewma " << (bsRtEwma_ / 1000)
                  << "ms), commit '" << commitText << "' in "

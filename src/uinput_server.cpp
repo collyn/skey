@@ -25,10 +25,10 @@ namespace {
 
 // Timing tunables (microseconds) — adjust if input is lost or laggy
 constexpr useconds_t UINPUT_INIT_WAIT_US = 1000000;
-constexpr useconds_t KEY_EVENT_DELAY_US = 100;
+constexpr useconds_t KEY_EVENT_DELAY_US = 300;
 constexpr useconds_t UNICODE_COMPOSE_US = 1500;
-constexpr useconds_t BACKSPACE_GAP_US = 200;
-constexpr useconds_t BACKSPACE_SETTLE_US = 300;
+constexpr useconds_t BACKSPACE_GAP_US = 400;
+constexpr useconds_t BACKSPACE_SETTLE_US = 500;
 
 std::atomic<bool> running{true};
 
