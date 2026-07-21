@@ -408,12 +408,6 @@ static void fixEnvironmentFiles() {
     setenv("SDL_IM_MODULE", "fcitx", 1);
     setenv("GLFW_IM_MODULE", "ibus", 1);
 
-    // Restart Dolphin so file-manager-launched AppImages get the new env.
-    // kquitapp5 sends a graceful quit via D-Bus; Dolphin restarts below.
-    // If dolphin isn't running or kquitapp5 fails, this is harmless.
-    QProcess::startDetached("kquitapp5", {"dolphin"});
-    QThread::msleep(800);
-    QProcess::startDetached("dolphin", {});
 }
 
 // ── Reload / Restart fcitx5 ─────────────────────────────────────────────
@@ -450,16 +444,44 @@ bool restartFcitx5() {
         QString desktop = env.value("XDG_CURRENT_DESKTOP");
         if (desktop == "KDE" || desktop == "kde" ||
             desktop == "KDE-Plasma" || desktop == "plasma") {
-            // KWin: re-apply InputMethod to force reconnect
-            QProcess::startDetached("kwriteconfig5",
+            // KWin: toggle InputMethod to force compositor to tear
+            // down and re-establish the zwp_input_method_v2 connection.
+            // Writing the same value won't trigger a reconnect — we
+            // must briefly clear it so KWin sees a real change.
+            const char *kwrite = "kwriteconfig6";
+            QProcess which;
+            which.start("which", {kwrite});
+            if (which.waitForFinished(2000) && which.exitCode() != 0) {
+                kwrite = "kwriteconfig5";  // fallback for Plasma 5
+            }
+
+            // 1. Clear InputMethod → KWin drops the IM connection
+            QProcess kw1;
+            kw1.start(kwrite,
+                {"--file", "kwinrc",
+                 "--group", "Wayland",
+                 "--key", "InputMethod", ""});
+            kw1.waitForFinished(3000);
+
+            // 2. Signal KWin to reload (now with empty IM)
+            QProcess::startDetached("dbus-send",
+                {"--type=method_call", "--dest=org.kde.KWin",
+                 "/KWin", "org.kde.KWin.reconfigure"});
+            QThread::msleep(600);
+
+            // 3. Restore fcitx5 Wayland launcher → KWin reconnects
+            QProcess kw2;
+            kw2.start(kwrite,
                 {"--file", "kwinrc",
                  "--group", "Wayland",
                  "--key", "InputMethod",
                  "/usr/share/applications/fcitx5-wayland-launcher.desktop"});
-            // Notify KWin to reload (only works on 5.27+)
+            kw2.waitForFinished(3000);
+
+            // 4. Signal KWin again to pick up the restored IM
             QProcess::startDetached("dbus-send",
-                {"--type=signal", "/KWin",
-                 "org.kde.KWin.reloadConfig"});
+                {"--type=method_call", "--dest=org.kde.KWin",
+                 "/KWin", "org.kde.KWin.reconfigure"});
         } else if (desktop == "GNOME" || desktop == "gnome" ||
                    desktop == "GNOME-Classic") {
             // GNOME Shell: toggle input sources to force reconnect

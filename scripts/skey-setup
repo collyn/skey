@@ -143,11 +143,23 @@ if pidof fcitx5 > /dev/null 2>&1; then
     if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
         case "${XDG_CURRENT_DESKTOP:-}" in
             KDE|kde|KDE-Plasma|plasma)
-                # KWin: re-apply InputMethod setting to force reconnect
-                kwriteconfig5 --file kwinrc --group Wayland \
+                # KWin: toggle InputMethod to force compositor to tear
+                # down and re-establish the zwp_input_method_v2 connection.
+                # Writing the same value won't trigger a reconnect — we
+                # must briefly clear it so KWin sees a real change.
+                if command -v kwriteconfig6 >/dev/null 2>&1; then
+                    KWRITE=kwriteconfig6
+                else
+                    KWRITE=kwriteconfig5
+                fi
+                # 1. Clear InputMethod → KWin drops the IM connection
+                $KWRITE --file kwinrc --group Wayland --key InputMethod "" 2>/dev/null || true
+                dbus-send --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure 2>/dev/null || true
+                sleep 0.6
+                # 2. Restore fcitx5 Wayland launcher → KWin reconnects
+                $KWRITE --file kwinrc --group Wayland \
                     --key InputMethod /usr/share/applications/fcitx5-wayland-launcher.desktop 2>/dev/null || true
-                # Notify KWin to reload (KWin's D-Bus reloadConfig only available in 5.27+)
-                dbus-send --type=signal /KWin org.kde.KWin.reloadConfig 2>/dev/null || true
+                dbus-send --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure 2>/dev/null || true
                 echo "✓ KWin virtual keyboard reconnected to fcitx5"
                 ;;
             GNOME|gnome|GNOME-Classic)
