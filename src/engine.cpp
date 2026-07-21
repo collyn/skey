@@ -116,11 +116,12 @@ namespace fcitx {
 static constexpr double kBsRtEwmaAlpha = 0.3;  // weight for new sample
 static constexpr uint64_t kBsRtInitialUsec = 8000;  // seed before first sample
 // Multiplier: commit delay = EWMA * multiplier.  The EWMA measures the
-// full BS round-trip; 2x gives one extra round-trip of headroom for
-// Chrome/Electron to finish processing BS before commitString arrives.
-static constexpr double kBsRtMultiplier = 2.0;
-// Address bar: same multiplier — omnibox has similar processing speed.
-static constexpr double kAddrBarBsRtMultiplier = 2.0;
+// BS round-trip through fcitx5, but Chrome/Electron need additional time
+// to process BS internally (DOM update, layout).  3x provides 2 extra
+// round-trips of headroom — enough for both Chrome and Electron apps.
+static constexpr double kBsRtMultiplier = 3.0;
+// Address bar: same multiplier.
+static constexpr double kAddrBarBsRtMultiplier = 3.0;
 // Absolute floors to prevent racing on extremely fast machines
 static constexpr uint64_t kCommitDelayMinUsec = 10000;
 static constexpr uint64_t kAddrBarCommitDelayMinUsec = 10000;
@@ -133,6 +134,10 @@ static constexpr uint64_t dbusDeferredMinUsec = 10000;
 static constexpr uint64_t kUinputPassthroughMinUsec = 35000;
 // Per-character overhead estimate for Ctrl+Shift+U hex typing (usec)
 static constexpr uint64_t kUinputPerCharUsec = 10000;
+// Safety timeout: if BS events don't arrive back within this window,
+// force-commit and unstick the engine.  Prevents indefinite freeze
+// when Chrome/Electron drops or delays BS processing.
+static constexpr uint64_t kUinputSafetyTimeoutUsec = 150000; // 150ms
 
 static bool isUtf8ContinuationByte(char ch) {
   return (static_cast<unsigned char>(ch) & 0xC0) == 0x80;
@@ -908,6 +913,8 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
                << expectedUinputBackspaces_;
 
   if (seenUinputBackspaces_ >= expectedUinputBackspaces_) {
+    // All BS events passed through — cancel safety timeout.
+    uinputSafetyTimer_.reset();
     // All BS events passed through the IM module — the app has
     // received them.  But D-Bus commitString may still race with
     // kernel event processing in the app's event loop.  Small
@@ -947,6 +954,7 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
         CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + delayUsec, 0,
         [this, cText = commitText](EventSourceTime *, uint64_t) {
           uinputCommitTimer_.reset();
+          uinputSafetyTimer_.reset();
           uinputDeleting_ = false;
           if (!cText.empty()) {
             this->commitText(cText);
@@ -1105,6 +1113,7 @@ void SKeyState::deactivate() {
   lastBsRoundTrip_ = 0;
   bsRtEwma_ = kBsRtInitialUsec;
   uinputCommitTimer_.reset();
+  uinputSafetyTimer_.reset();
   uinputDeleting_ = false;
 
   if (!viet_.getComposed().empty() && !useSurroundingText()) {
@@ -1127,6 +1136,7 @@ void SKeyState::reset() {
   viet_.reset();
   bufferedUinputKeys_.clear();
   uinputCommitTimer_.reset();
+  uinputSafetyTimer_.reset();
   uinputDeleting_ = false;
   if (!hasDeferredCommitPending()) {
     committedLen_ = 0;
@@ -1605,6 +1615,22 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               seenUinputBackspaces_ = 0;
               pendingUinputCommit_ = addPart;
               uinputDeleting_ = true;
+              // Safety: force-commit if BS events are lost
+              uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+                  CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + kUinputSafetyTimeoutUsec, 0,
+                  [this](EventSourceTime *, uint64_t) {
+                    SKEY_DEBUG() << "Uinput: safety timeout, force commit";
+                    uinputSafetyTimer_.reset();
+                    uinputCommitTimer_.reset();
+                    std::string text = std::move(pendingUinputCommit_);
+                    pendingUinputCommit_.clear();
+                    expectedUinputBackspaces_ = 0;
+                    seenUinputBackspaces_ = 0;
+                    uinputDeleting_ = false;
+                    if (!text.empty()) this->commitText(text);
+                    if (!bufferedUinputKeys_.empty()) replayBufferedUinputKeys();
+                    return true;
+                  });
             } else if (!addPart.empty()) {
               SKEY_DEBUG() << "Uinput: consume '" << keyUtf8 << "' commit '"
                            << addPart << "'";
@@ -1720,6 +1746,22 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
     seenUinputBackspaces_ = 0;
     pendingUinputCommit_ = commitText;
     uinputDeleting_ = true;
+    // Safety: force-commit if BS events are lost
+    uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + kUinputSafetyTimeoutUsec, 0,
+        [this](EventSourceTime *, uint64_t) {
+          SKEY_DEBUG() << "Uinput: safety timeout, force commit";
+          uinputSafetyTimer_.reset();
+          uinputCommitTimer_.reset();
+          std::string text = std::move(pendingUinputCommit_);
+          pendingUinputCommit_.clear();
+          expectedUinputBackspaces_ = 0;
+          seenUinputBackspaces_ = 0;
+          uinputDeleting_ = false;
+          if (!text.empty()) this->commitText(text);
+          if (!bufferedUinputKeys_.empty()) replayBufferedUinputKeys();
+          return true;
+        });
   } else if (!text.empty()) {
     this->commitText(text);
   }
@@ -1931,6 +1973,22 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           seenUinputBackspaces_ = 0;
           pendingUinputCommit_ = addedPart;
           uinputDeleting_ = true;
+          // Safety: force-commit if BS events are lost
+          uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+              CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + kUinputSafetyTimeoutUsec, 0,
+              [this](EventSourceTime *, uint64_t) {
+                SKEY_DEBUG() << "Uinput: safety timeout, force commit";
+                uinputSafetyTimer_.reset();
+                uinputCommitTimer_.reset();
+                std::string text = std::move(pendingUinputCommit_);
+                pendingUinputCommit_.clear();
+                expectedUinputBackspaces_ = 0;
+                seenUinputBackspaces_ = 0;
+                uinputDeleting_ = false;
+                if (!text.empty()) this->commitText(text);
+                if (!bufferedUinputKeys_.empty()) replayBufferedUinputKeys();
+                return true;
+              });
           committedLen_ = newLen;
           return;
         }

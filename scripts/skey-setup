@@ -72,34 +72,41 @@ XPROFILE="$HOME/.xprofile"
 ENVDIR="$HOME/.config/environment.d"
 ENVFILE="$ENVDIR/fcitx5-skey.conf"
 
-ENV_BLOCK="# fcitx5-skey: required for input method to work in all applications
-export GTK_IM_MODULE=fcitx5
+# Shell-style (export KEY=VALUE) — for .xprofile and sourcing in current shell
+ENV_BLOCK_SHELL="# fcitx5-skey: required for input method to work in all applications
+export GTK_IM_MODULE=fcitx
 # QT_IM_MODULE=ibus: uses IBus D-Bus protocol (fcitx5 provides org.freedesktop.IBus).
 # This works even for AppImages that bundle their own Qt without fcitx5 plugin,
 # because IBus plugin (libibusplatforminputcontextplugin.so) is included in
 # standard Qt builds and most AppImage bundles (e.g. Viber).
 export QT_IM_MODULE=ibus
 export XMODIFIERS=@im=fcitx
-export SDL_IM_MODULE=fcitx5
+export SDL_IM_MODULE=fcitx
 export GLFW_IM_MODULE=ibus"
+
+# systemd environment.d format (KEY=VALUE, no 'export' keyword)
+# See: https://www.freedesktop.org/software/systemd/man/latest/environment.d.html
+ENV_BLOCK_ENVD="# fcitx5-skey
+GTK_IM_MODULE=fcitx
+QT_IM_MODULE=ibus
+XMODIFIERS=@im=fcitx
+SDL_IM_MODULE=fcitx
+GLFW_IM_MODULE=ibus"
 
 # Wayland: systemd environment.d (respected by KDE, GNOME, etc.)
 mkdir -p "$ENVDIR"
-if [ -f "$ENVFILE" ]; then
-    sed -i '/fcitx5-skey/d' "$ENVFILE"
-fi
-echo "$ENV_BLOCK" > "$ENVFILE"
+echo "$ENV_BLOCK_ENVD" > "$ENVFILE"
 echo "✓ Wayland environment: $ENVFILE"
 
 # X11: ~/.xprofile (sourced by display managers)
-echo "$ENV_BLOCK" > "$XPROFILE"
+echo "$ENV_BLOCK_SHELL" > "$XPROFILE"
 echo "✓ X11 environment: $XPROFILE"
 
 # Source immediately for current session
-export GTK_IM_MODULE=fcitx5
+export GTK_IM_MODULE=fcitx
 export QT_IM_MODULE=ibus
 export XMODIFIERS=@im=fcitx
-export SDL_IM_MODULE=fcitx5
+export SDL_IM_MODULE=fcitx
 export GLFW_IM_MODULE=ibus
 
 # ── Wayland: disable classicui (XEmbed tray broken on Wayland) ──

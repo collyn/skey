@@ -280,6 +280,21 @@ void VietnameseEngine::recompose() {
             composed_ = rawInput_;
         }
         // else: only đ/Đ present (ddFreeStyle) → keep composed_
+
+        // Also restore when bamboo produced a shorter or different
+        // all-ASCII result — this happens when Telex modifier keys
+        // (like "ss") destructively rewrite an English word.
+        // E.g. "address" → bamboo yields "addes" (ss = undo tone).
+        if (!hasVietnameseVowel && composed_ != rawInput_) {
+            // Check if composed_ is all ASCII
+            bool composedAllAscii = true;
+            for (unsigned char c : composed_) {
+                if (c > 127) { composedAllAscii = false; break; }
+            }
+            if (composedAllAscii) {
+                composed_ = rawInput_;
+            }
+        }
     }
 }
 

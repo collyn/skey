@@ -350,8 +350,11 @@ static void writeEnvBlock(const char *path, const char *block) {
 
 static const char kEnvBlock[] =
     "# fcitx5-skey: required for IM to work in all apps (esp. AppImages)\n"
+    "export GTK_IM_MODULE=fcitx\n"
     "export QT_IM_MODULE=ibus\n"
     "export XMODIFIERS=@im=fcitx\n"
+    "export SDL_IM_MODULE=fcitx\n"
+    "export GLFW_IM_MODULE=ibus\n"
     "# fcitx5-skey\n";
 
 static void fixEnvironmentFiles() {
@@ -371,8 +374,14 @@ static void fixEnvironmentFiles() {
     writeEnvBlock((homeStr + "/.profile").c_str(), kEnvBlock);
 
     // systemd environment.d (read by environment-d-generator at login)
+    // NB: environment.d uses KEY=VALUE format without 'export'
     writeEnvBlock((homeStr + "/.config/environment.d/fcitx5-skey.conf").c_str(),
-                  "QT_IM_MODULE=ibus\nXMODIFIERS=@im=fcitx\n");
+                  "# fcitx5-skey\n"
+                  "GTK_IM_MODULE=fcitx\n"
+                  "QT_IM_MODULE=ibus\n"
+                  "XMODIFIERS=@im=fcitx\n"
+                  "SDL_IM_MODULE=fcitx\n"
+                  "GLFW_IM_MODULE=ibus\n");
 
     // Also update the running session environment (not just files).
     // systemctl set-environment: propagates to subsequently launched
@@ -380,16 +389,24 @@ static void fixEnvironmentFiles() {
     // dbus-update-activation-environment: syncs D-Bus session bus
     //   so D-Bus activated services see the new vars
     QProcess::startDetached("systemctl",
-        {"--user", "set-environment", "QT_IM_MODULE=ibus"});
-    QProcess::startDetached("systemctl",
-        {"--user", "set-environment", "XMODIFIERS=@im=fcitx"});
+        {"--user", "set-environment",
+         "GTK_IM_MODULE=fcitx",
+         "QT_IM_MODULE=ibus",
+         "XMODIFIERS=@im=fcitx",
+         "SDL_IM_MODULE=fcitx",
+         "GLFW_IM_MODULE=ibus"});
     QProcess::startDetached("dbus-update-activation-environment",
-        {"--systemd", "QT_IM_MODULE", "XMODIFIERS"});
+        {"--systemd",
+         "GTK_IM_MODULE", "QT_IM_MODULE", "XMODIFIERS",
+         "SDL_IM_MODULE", "GLFW_IM_MODULE"});
 
-    // Also update QT_IM_MODULE for the current process' environment
+    // Also update IM vars for the current process' environment
     // so child processes launched by the settings app inherit the fix
+    setenv("GTK_IM_MODULE", "fcitx", 1);
     setenv("QT_IM_MODULE", "ibus", 1);
     setenv("XMODIFIERS", "@im=fcitx", 1);
+    setenv("SDL_IM_MODULE", "fcitx", 1);
+    setenv("GLFW_IM_MODULE", "ibus", 1);
 
     // Restart Dolphin so file-manager-launched AppImages get the new env.
     // kquitapp5 sends a graceful quit via D-Bus; Dolphin restarts below.

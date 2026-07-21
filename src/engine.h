@@ -101,6 +101,7 @@ private:
     // Uinput replacement state (Lotus-style simple flow)
     bool uinputDeleting_ = false;
     std::unique_ptr<EventSourceTime> uinputCommitTimer_;
+    std::unique_ptr<EventSourceTime> uinputSafetyTimer_;
     int expectedUinputBackspaces_ = 0;
     int seenUinputBackspaces_ = 0;
     // Address bar deferred replacement state
