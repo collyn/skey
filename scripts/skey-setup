@@ -129,11 +129,11 @@ fi
 
 # ── Restart fcitx5 if running ──
 # On Wayland, the compositor (KWin/Mutter) connects directly to fcitx5 via
-# zwp_input_method_v1.  When fcitx5 restarts, the compositor does NOT
+# zwp_input_method_v2.  When fcitx5 restarts, the compositor does NOT
 # automatically reconnect — the virtual keyboard silently falls back to
 # "None", breaking Vietnamese input until the user manually re-selects
-# fcitx5 in system settings.  We fix this by re-applying the compositor's
-# input method preference after restart, which forces a reconnect.
+# fcitx5 in system settings.  We fix this by toggling KWin's VirtualKeyboard
+# enabled property via D-Bus, which forces a protocol reconnect.
 if pidof fcitx5 > /dev/null 2>&1; then
     fcitx5 -r -d 2>/dev/null &
     sleep 1  # give fcitx5 time to start and accept D-Bus connections
@@ -143,25 +143,18 @@ if pidof fcitx5 > /dev/null 2>&1; then
     if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
         case "${XDG_CURRENT_DESKTOP:-}" in
             KDE|kde|KDE-Plasma|plasma)
-                # KWin: toggle InputMethod to force compositor to tear
-                # down and re-establish the zwp_input_method_v2 connection.
-                # Writing the same value won't trigger a reconnect — we
-                # must briefly clear it so KWin sees a real change.
-                if command -v kwriteconfig6 >/dev/null 2>&1; then
-                    KWRITE=kwriteconfig6
-                else
-                    KWRITE=kwriteconfig5
+                # KWin: toggle VirtualKeyboard enabled via D-Bus to force
+                # compositor to tear down and re-establish the
+                # zwp_input_method_v2 connection to the new fcitx5 process.
+                QDBUS="qdbus6"
+                if ! command -v qdbus6 >/dev/null 2>&1; then
+                    QDBUS="qdbus"  # fallback for Plasma 5
                 fi
-                # 1. Clear InputMethod → KWin drops the IM connection
-                $KWRITE --file kwinrc --group Wayland --key InputMethod "" 2>/dev/null || true
-                dbus-send --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure 2>/dev/null || true
-                dbus-send --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reloadConfig 2>/dev/null || true
+                $QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set \
+                    org.kde.kwin.VirtualKeyboard enabled false 2>/dev/null || true
                 sleep 0.6
-                # 2. Restore fcitx5 Wayland launcher → KWin reconnects
-                $KWRITE --file kwinrc --group Wayland \
-                    --key InputMethod /usr/share/applications/fcitx5-wayland-launcher.desktop 2>/dev/null || true
-                dbus-send --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure 2>/dev/null || true
-                dbus-send --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reloadConfig 2>/dev/null || true
+                $QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set \
+                    org.kde.kwin.VirtualKeyboard enabled true 2>/dev/null || true
                 echo "✓ KWin virtual keyboard reconnected to fcitx5"
                 ;;
             GNOME|gnome|GNOME-Classic)

@@ -1,17 +1,12 @@
 #include "config_io.h"
 
-#include <cstdlib>
 #include <fstream>
-#include <sstream>
-#include <unistd.h>
 
-#include <QDBusConnection>
-#include <QDBusMessage>
 #include <QDir>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QString>
-#include <QThread>
+
 
 // ── Path resolution ────────────────────────────────────────────────────
 
@@ -300,118 +295,6 @@ SKeyConfig defaultConfig() {
     return SKeyConfig{};   // struct initializers are the defaults
 }
 
-// ── Environment fix ─────────────────────────────────────────────────────
-
-/// Write a block of env exports to a file, ensuring it exists and
-/// contains the correct values.  Works both for env-file style (key=value)
-/// and shell-rc style (export KEY=VALUE).
-/// If the block marker "# fcitx5-skey" is found, replace everything between
-/// the marker lines.  Otherwise append the block at the end.
-static void writeEnvBlock(const char *path, const char *block) {
-    std::string content;
-    {
-        std::ifstream in(path);
-        if (in.is_open()) {
-            std::stringstream ss;
-            ss << in.rdbuf();
-            content = ss.str();
-        }
-    }
-
-    const char *marker = "# fcitx5-skey";
-    auto markerPos = content.find(marker);
-    if (markerPos != std::string::npos) {
-        // Replace existing block: from marker to end of block
-        auto endMarker = content.find(marker, markerPos + 1);
-        if (endMarker != std::string::npos) {
-            content.replace(markerPos, endMarker - markerPos, block);
-        } else {
-            // Only one marker — replace from marker to end of file
-            content.replace(markerPos, content.size() - markerPos, block);
-        }
-    } else {
-        // No existing block — append
-        if (!content.empty() && content.back() != '\n') {
-            content += '\n';
-        }
-        content += block;
-    }
-
-    // Ensure parent directory exists
-    std::string pathStr(path);
-    auto slash = pathStr.rfind('/');
-    if (slash != std::string::npos) {
-        QDir().mkpath(QString::fromStdString(pathStr.substr(0, slash)));
-    }
-
-    std::ofstream out(path);
-    if (out.is_open()) {
-        out << content;
-    }
-}
-
-static const char kEnvBlock[] =
-    "# fcitx5-skey: required for IM to work in all apps (esp. AppImages)\n"
-    "export GTK_IM_MODULE=fcitx\n"
-    "export QT_IM_MODULE=ibus\n"
-    "export XMODIFIERS=@im=fcitx\n"
-    "export SDL_IM_MODULE=fcitx\n"
-    "export GLFW_IM_MODULE=ibus\n"
-    "# fcitx5-skey\n";
-
-static void fixEnvironmentFiles() {
-    const char *home = getenv("HOME");
-    if (!home) return;
-
-    std::string homeStr(home);
-
-    // Files that need the env block
-    writeEnvBlock((homeStr + "/.xprofile").c_str(), kEnvBlock);
-
-    // KDE Plasma startup scripts (sourced at login)
-    writeEnvBlock((homeStr + "/.config/plasma-workspace/env/skey.sh").c_str(), kEnvBlock);
-
-    // Shell rc — ensures new terminals pick up correct env immediately
-    writeEnvBlock((homeStr + "/.zshenv").c_str(), kEnvBlock);
-    writeEnvBlock((homeStr + "/.profile").c_str(), kEnvBlock);
-
-    // systemd environment.d (read by environment-d-generator at login)
-    // NB: environment.d uses KEY=VALUE format without 'export'
-    writeEnvBlock((homeStr + "/.config/environment.d/fcitx5-skey.conf").c_str(),
-                  "# fcitx5-skey\n"
-                  "GTK_IM_MODULE=fcitx\n"
-                  "QT_IM_MODULE=ibus\n"
-                  "XMODIFIERS=@im=fcitx\n"
-                  "SDL_IM_MODULE=fcitx\n"
-                  "GLFW_IM_MODULE=ibus\n");
-
-    // Also update the running session environment (not just files).
-    // systemctl set-environment: propagates to subsequently launched
-    //   processes within the user slice (KDE launcher, etc.)
-    // dbus-update-activation-environment: syncs D-Bus session bus
-    //   so D-Bus activated services see the new vars
-    QProcess::startDetached("systemctl",
-        {"--user", "set-environment",
-         "GTK_IM_MODULE=fcitx",
-         "QT_IM_MODULE=ibus",
-         "XMODIFIERS=@im=fcitx",
-         "SDL_IM_MODULE=fcitx",
-         "GLFW_IM_MODULE=ibus"});
-    QProcess::startDetached("dbus-update-activation-environment",
-        {"--systemd",
-         "GTK_IM_MODULE", "QT_IM_MODULE", "XMODIFIERS",
-         "SDL_IM_MODULE", "GLFW_IM_MODULE"});
-
-    // Also update IM vars for the current process' environment
-    // so child processes launched by the settings app inherit the fix
-    setenv("GTK_IM_MODULE", "fcitx", 1);
-    setenv("QT_IM_MODULE", "ibus", 1);
-    setenv("XMODIFIERS", "@im=fcitx", 1);
-    setenv("SDL_IM_MODULE", "fcitx", 1);
-    setenv("GLFW_IM_MODULE", "ibus", 1);
-
-}
-
 // ── Reload / Restart fcitx5 ─────────────────────────────────────────────
 
 bool reloadFcitx5() {
@@ -419,100 +302,11 @@ bool reloadFcitx5() {
 }
 
 bool restartFcitx5() {
-    // 0. Fix IM environment files so AppImages (Viber, etc.) can connect.
-    //    Uses IBus protocol because fcitx5 exports org.freedesktop.IBus on D-Bus,
-    //    and IBus plugin is bundled in Qt AppImages.
-    fixEnvironmentFiles();
-
-    // Hard-restart: kill and re-launch fcitx5, then reconnect Wayland
-    // compositor so virtual keyboard doesn't silently fall back to "None".
-    QProcess proc;
-
-    // 1. Restart the daemon
-    proc.start("fcitx5", {"-r", "-d"});
-    if (!proc.waitForFinished(5000)) {
-        // didn't finish in time — may still be OK
-        proc.terminate();
-    }
-
-    // 2. Give fcitx5 time to start and accept D-Bus connections
-    QThread::sleep(1);
-
-    // 3. Wayland: re-trigger compositor virtual keyboard binding
-    //    When fcitx5 restarts, the compositor does NOT automatically
-    //    reconnect — we must re-apply the InputMethod preference.
-    auto env = QProcessEnvironment::systemEnvironment();
-    if (env.value("XDG_SESSION_TYPE") == "wayland") {
-        QString desktop = env.value("XDG_CURRENT_DESKTOP");
-        if (desktop == "KDE" || desktop == "kde" ||
-            desktop == "KDE-Plasma" || desktop == "plasma") {
-            // KWin: toggle InputMethod to force compositor to tear
-            // down and re-establish the zwp_input_method_v2 connection.
-            // Writing the same value won't trigger a reconnect — we
-            // must briefly clear it so KWin sees a real change.
-            const char *kwrite = "kwriteconfig6";
-            QProcess which;
-            which.start("which", {kwrite});
-            if (which.waitForFinished(2000) && which.exitCode() != 0) {
-                kwrite = "kwriteconfig5";  // fallback for Plasma 5
-            }
-
-            // Helper: call a KWin D-Bus method (Q_NOREPLY, fire-and-forget).
-            // Tries reconfigure first, then reloadConfig for older Plasma.
-            auto callKWin = [](const char *method) {
-                QDBusMessage msg = QDBusMessage::createMethodCall(
-                    QStringLiteral("org.kde.KWin"),
-                    QStringLiteral("/KWin"),
-                    QStringLiteral("org.kde.KWin"),
-                    QString::fromUtf8(method));
-                QDBusConnection::sessionBus().call(msg, QDBus::NoBlock);
-            };
-
-            // 1. Clear InputMethod → KWin drops the IM connection
-            QProcess kw1;
-            kw1.start(kwrite,
-                {"--file", "kwinrc",
-                 "--group", "Wayland",
-                 "--key", "InputMethod", ""});
-            kw1.waitForFinished(3000);
-
-            // 2. Tell KWin to reload (now with empty IM)
-            callKWin("reconfigure");
-            callKWin("reloadConfig");
-            QThread::msleep(600);
-
-            // 3. Restore fcitx5 Wayland launcher → KWin reconnects
-            QProcess kw2;
-            kw2.start(kwrite,
-                {"--file", "kwinrc",
-                 "--group", "Wayland",
-                 "--key", "InputMethod",
-                 "/usr/share/applications/fcitx5-wayland-launcher.desktop"});
-            kw2.waitForFinished(3000);
-
-            // 4. Tell KWin again to pick up the restored IM
-            callKWin("reconfigure");
-            callKWin("reloadConfig");
-        } else if (desktop == "GNOME" || desktop == "gnome" ||
-                   desktop == "GNOME-Classic") {
-            // GNOME Shell: toggle input sources to force reconnect
-            QProcess gs;
-            gs.start("gsettings", {"get",
-                "org.gnome.desktop.input-sources", "sources"});
-            if (gs.waitForFinished(3000)) {
-                QString sources = QString::fromUtf8(gs.readAllStandardOutput()).trimmed();
-                if (!sources.isEmpty() && sources != "@as []") {
-                    QProcess::startDetached("gsettings",
-                        {"set", "org.gnome.desktop.input-sources",
-                         "sources", "[]"});
-                    QThread::msleep(500);
-                    QProcess::startDetached("gsettings",
-                        {"set", "org.gnome.desktop.input-sources",
-                         "sources", sources});
-                }
-            }
-        }
-    }
-
-    return true;
+    // Delegate to skey-setup which handles:
+    // 1. Environment variable fix for AppImages
+    // 2. fcitx5 restart (-r -d)
+    // 3. Wayland compositor virtual keyboard reconnection (D-Bus toggle)
+    // All operations are idempotent.
+    return QProcess::startDetached(
+        "/bin/sh", {"-c", "skey-setup > /dev/null 2>&1"});
 }
