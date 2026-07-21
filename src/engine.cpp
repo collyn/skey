@@ -114,16 +114,17 @@ namespace fcitx {
 // and automatically adjusts the commit delay — faster machines get
 // lower latency, loaded machines get more safety margin.
 static constexpr double kBsRtEwmaAlpha = 0.3;  // weight for new sample
-static constexpr uint64_t kBsRtInitialUsec = 10000;  // seed before first sample
-// Multiplier: commit delay = EWMA * multiplier.  Gives Chrome a full
-// processing window equal to (multiplier-1) additional round-trips to
-// finish post-BS work (text buffer update, omnibox refresh).
-static constexpr uint64_t kBsRtMultiplier = 3;
-// Address bar: higher multiplier for omnibox autocomplete processing
-static constexpr uint64_t kAddrBarBsRtMultiplier = 4;
+static constexpr uint64_t kBsRtInitialUsec = 8000;  // seed before first sample
+// Multiplier: commit delay = EWMA * multiplier.  One extra round-trip
+// of headroom (~10-15ms ≈ one 60fps frame) for Chrome to finish
+// processing BS before commitString arrives.
+static constexpr uint64_t kBsRtMultiplier = 2;
+// Address bar: same multiplier — full-word replacement already
+// compensates for autocomplete BS consumption.
+static constexpr uint64_t kAddrBarBsRtMultiplier = 2;
 // Absolute floors to prevent racing on extremely fast machines
-static constexpr uint64_t kCommitDelayMinUsec = 10000;
-static constexpr uint64_t kAddrBarCommitDelayMinUsec = 15000;
+static constexpr uint64_t kCommitDelayMinUsec = 8000;
+static constexpr uint64_t kAddrBarCommitDelayMinUsec = 8000;
 // dbusDeferredDefaultUsec: default delay for surrounding-text deferred commit
 static constexpr uint64_t dbusDeferredDefaultUsec = 15000;
 // dbusDeferredMinUsec: floor for adaptive deferred commit delay
@@ -1595,7 +1596,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 committedLen_ = static_cast<int>(utf8::length(newComposed));
                 scheduleAddrBarReplacement(deleteLen, addPart,
                                            static_cast<int>(utf8::length(oldComposed)),
-                                           static_cast<int>(sym));
+                                           static_cast<int>(sym),
+                                           newComposed);
                 return;
               }
               sendBackspaceUinput(deleteLen);
@@ -1686,8 +1688,9 @@ void SKeyState::commitBuffer() {
 }
 
 void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
-                                             int /*oldComposedLen*/,
-                                             int triggerKeySym) {
+                                             int oldComposedLen,
+                                             int triggerKeySym,
+                                             const std::string &fullComposed) {
   // Use uinput BS + adaptive EWMA timer delay before D-Bus commitString.
   // uinput BS goes through kernel → Chrome processes it as a real keystroke
   // (omnibox update, autocomplete dismissal).  The EWMA-based delay adapts
@@ -1697,18 +1700,28 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
   addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 200000;
   if (bs > 0) {
     int totalBs = bs;
-    if (addrBarIsFirstWord_) {
-      ++totalBs;
-      addrBarIsFirstWord_ = false;
-      SKEY_DEBUG() << "AddrBar: extra BS (first word), total=" << totalBs;
+    std::string commitText = text;
+    if (addrBarIsFirstWord_ && oldComposedLen > 0 && !fullComposed.empty()) {
+      // First word in address bar: Chrome's inline autocomplete may consume
+      // the first BS (dismissing a suggestion instead of deleting a char).
+      // Delete the ENTIRE old word + 1 extra BS, and commit the FULL new
+      // composed text.  This way:
+      //   - autocomplete eats 1 BS → remaining BS delete old word → correct
+      //   - no autocomplete → old word deleted + 1 harmless BS on empty → correct
+      // Safe because there is no prior text to damage.
+      totalBs = oldComposedLen + 1;
+      commitText = fullComposed;
+      SKEY_DEBUG() << "AddrBar: first word, fullReplace BS=" << totalBs
+                   << " commit='" << commitText << "'";
     }
+    addrBarIsFirstWord_ = false;
     sendBackspaceUinput(totalBs);
     expectedUinputBackspaces_ = totalBs;
     seenUinputBackspaces_ = 0;
-    pendingUinputCommit_ = text;
+    pendingUinputCommit_ = commitText;
     uinputDeleting_ = true;
   } else if (!text.empty()) {
-    commitText(text);
+    this->commitText(text);
   }
 }
 
@@ -1908,7 +1921,8 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         if (inChromiumAddressBar()) {
           committedLen_ = newLen;
           scheduleAddrBarReplacement(deleteLen, addedPart,
-                                     static_cast<int>(utf8::length(oldComposed)));
+                                     static_cast<int>(utf8::length(oldComposed)),
+                                     0, newComposed);
           return;
         }
         if (useUinputMode()) {

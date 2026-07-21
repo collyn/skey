@@ -74,7 +74,8 @@ private:
     void flushAddrBarReplacement();
     void scheduleAddrBarReplacement(int bs, const std::string &text,
                                      int oldComposedLen = 0,
-                                     int triggerKeySym = 0);
+                                     int triggerKeySym = 0,
+                                     const std::string &fullComposed = {});
 
     SKeyEngine *engine_;
     InputContext *ic_;

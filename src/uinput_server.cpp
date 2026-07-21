@@ -25,10 +25,10 @@ namespace {
 
 // Timing tunables (microseconds) — adjust if input is lost or laggy
 constexpr useconds_t UINPUT_INIT_WAIT_US = 1000000;
-constexpr useconds_t KEY_EVENT_DELAY_US = 500;
-constexpr useconds_t UNICODE_COMPOSE_US = 2000;
-constexpr useconds_t BACKSPACE_GAP_US = 500;
-constexpr useconds_t BACKSPACE_SETTLE_US = 500;
+constexpr useconds_t KEY_EVENT_DELAY_US = 100;
+constexpr useconds_t UNICODE_COMPOSE_US = 1500;
+constexpr useconds_t BACKSPACE_GAP_US = 200;
+constexpr useconds_t BACKSPACE_SETTLE_US = 300;
 
 std::atomic<bool> running{true};
 
@@ -130,10 +130,11 @@ public:
       return false;
     }
     const int keys[] = {
-        KEY_BACKSPACE, KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_U, KEY_ENTER, KEY_0,
-        KEY_1,         KEY_2,        KEY_3,         KEY_4, KEY_5,     KEY_6,
-        KEY_7,         KEY_8,        KEY_9,         KEY_A, KEY_B,     KEY_C,
-        KEY_D,         KEY_E,        KEY_F};
+        KEY_BACKSPACE, KEY_ESC,       KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_U,
+        KEY_ENTER,     KEY_0,         KEY_1,        KEY_2,         KEY_3,
+        KEY_4,         KEY_5,         KEY_6,        KEY_7,         KEY_8,
+        KEY_9,         KEY_A,         KEY_B,        KEY_C,         KEY_D,
+        KEY_E,         KEY_F};
     for (int key : keys) {
       if (ioctl(fd_.get(), UI_SET_KEYBIT, key) < 0) {
         std::cerr << "configure key failed: " << strerror(errno) << "\n";
@@ -158,8 +159,11 @@ public:
   void key(int code, int value) const {
     input_event ev[2]{};
     ev[0].type = EV_KEY;
-    ev[0].code = code;
+    ev[0].code = static_cast<unsigned short>(code);
     ev[0].value = value;
+    ev[1].type = EV_SYN;
+    ev[1].code = SYN_REPORT;
+    ev[1].value = 0;
     ssize_t ignored = write(fd_.get(), ev, sizeof(ev));
     (void)ignored;
     usleep(KEY_EVENT_DELAY_US);
