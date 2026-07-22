@@ -1369,9 +1369,41 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
-  // BS when engine is idle: pass through to app (deletes separator like
-  // space), but KEEP lastRawInput_ and enable retroactive reclaim.
+  // BS when engine is idle: use surrounding-text API for deletion on
+  // Wayland (pass-through raw keys are unreliable).  Only skip for
+  // Chromium address bar where raw BS pass-through works correctly.
   if (key.check(FcitxKey_BackSpace) && viet_.getRawInput().empty()) {
+    if (useNativeSurroundingApi() && !inChromiumAddressBar()) {
+      if (committedLen_ > 0) {
+        surroundingBackspace();
+        keyEvent.filterAndAccept();
+        return;
+      }
+      // No committed text — delete one character before cursor via
+      // surrounding-text API.  If we have a saved previous word, the
+      // first call deletes the separator; enable one-shot reclaim so
+      // the user can retype a tone key to edit the previous word.
+      // Subsequent calls delete chars from the previous word itself.
+      if (!lastRawInput_.empty()) {
+        if (committedLen_ == 0) {
+          // First call: deleting the separator
+          reclaimReady_ = true;
+          committedLen_ = -1; // sentinel: separator already deleted
+        } else if (committedLen_ == -1) {
+          // Second+ call: deleting into the previous word
+          reclaimReady_ = false;
+        }
+        // else committedLen_ > 0: shouldn't reach here (handled above)
+      }
+      ic_->deleteSurroundingText(-1, 1);
+      if (ic_->surroundingText().isValid()) {
+        ic_->surroundingText().deleteText(-1, 1);
+      }
+      SKEY_DEBUG() << "SurrBS: delete 1 via surrounding text";
+      keyEvent.filterAndAccept();
+      return;
+    }
+    // Non-native-surrounding path: pass through.
     if (!lastRawInput_.empty()) {
       reclaimReady_ = true;
     }
