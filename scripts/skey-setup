@@ -119,6 +119,39 @@ else
     ENV_VARS="GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx GLFW_IM_MODULE=ibus"
 fi
 
+# ── Helper: safely update a shell config file ──
+# Inserts or replaces a guarded block so existing user config is preserved.
+# Arguments: $1 = file path, $2 = content (multi-line, with export prefix).
+upsert_shell_env() {
+    local file="$1"
+    local content="$2"
+    local begin_marker="# >>> fcitx5-skey >>>"
+    local end_marker="# <<< fcitx5-skey <<<"
+
+    if [ -f "$file" ] && grep -qF "$begin_marker" "$file" 2>/dev/null; then
+        # Update existing block: replace everything between markers.
+        local tmpfile
+        tmpfile=$(mktemp)
+        awk -v begin="$begin_marker" -v end="$end_marker" -v repl="$content" '
+            BEGIN { skip=0; replaced=0 }
+            $0 == begin { print; print repl; skip=1; replaced=1; next }
+            $0 == end   { skip=0 }
+            !skip { print }
+        ' "$file" > "$tmpfile"
+        mv "$tmpfile" "$file"
+    else
+        # Append new block at the end.
+        {
+            [ -f "$file" ] && cat "$file"
+            echo ""
+            echo "$begin_marker"
+            printf '%s\n' "$content"
+            echo "$end_marker"
+        } > "${file}.skey-tmp"
+        mv "${file}.skey-tmp" "$file"
+    fi
+}
+
 # ── Write environment files ──
 ENVDIR="$HOME/.config/environment.d"
 ENVFILE="$ENVDIR/fcitx5-skey.conf"
@@ -132,39 +165,36 @@ mkdir -p "$ENVDIR"
 } > "$ENVFILE"
 echo "✓ systemd environment.d: $ENVFILE"
 
-# Shell config file
+# Build export lines for shell configs
+EXPORT_LINES=""
+for var in $ENV_VARS; do
+    EXPORT_LINES="${EXPORT_LINES}export $var
+"
+done
+
+# Shell config and .profile — use upsert to preserve existing content
 case "$USER_SHELL" in
     bash)
-        PROFILE_FILE="$HOME/.bash_profile"
-        {
-            echo "# fcitx5-skey"
-            for var in $ENV_VARS; do echo "export $var"; done
-        } > "$PROFILE_FILE"
-        echo "✓ Shell config: $PROFILE_FILE"
+        upsert_shell_env "$HOME/.bash_profile" "$EXPORT_LINES"
+        echo "✓ Shell config: $HOME/.bash_profile"
         ;;
     zsh)
-        PROFILE_FILE="$HOME/.zprofile"
-        {
-            echo "# fcitx5-skey"
-            for var in $ENV_VARS; do echo "export $var"; done
-        } > "$PROFILE_FILE"
-        echo "✓ Shell config: $PROFILE_FILE"
+        upsert_shell_env "$HOME/.zprofile" "$EXPORT_LINES"
+        echo "✓ Shell config: $HOME/.zprofile"
         ;;
     fish)
         FISH_CONF="$HOME/.config/fish/config.fish"
         mkdir -p "$(dirname "$FISH_CONF")"
-        # Fish universal variables: set once, persist across sessions.
-        # Also write to config.fish for non-login shells.
-        {
-            echo "# fcitx5-skey"
-            echo "if status is-login"
-            for var in $ENV_VARS; do
-                name="${var%%=*}"
-                value="${var#*=}"
-                echo "    set -Ux $name $value"
-            done
-            echo "end"
-        } > "$FISH_CONF"
+        FISH_LINES="if status is-login"
+        for var in $ENV_VARS; do
+            name="${var%%=*}"
+            value="${var#*=}"
+            FISH_LINES="${FISH_LINES}
+    set -Ux $name $value"
+        done
+        FISH_LINES="${FISH_LINES}
+end"
+        upsert_shell_env "$FISH_CONF" "$FISH_LINES"
         echo "✓ Shell config: $FISH_CONF"
         ;;
 esac
@@ -172,15 +202,12 @@ esac
 # ~/.profile — sourced by most display managers (SDDM, GDM, LightDM) and
 # login shells.  Shell-specific configs (.bash_profile, .zprofile) take
 # precedence for interactive shells, but DMs often only read .profile.
-LOGIN_PROFILE="$HOME/.profile"
-{
-    echo "# fcitx5-skey"
-    for var in $ENV_VARS; do echo "export $var"; done
-} > "$LOGIN_PROFILE"
-echo "✓ Login profile: $LOGIN_PROFILE"
+upsert_shell_env "$HOME/.profile" "$EXPORT_LINES"
+echo "✓ Login profile: $HOME/.profile"
 
 # KDE Plasma: session startup scripts — the canonical place for per-session
 # env vars on KDE.  Sourced by startplasma before launching kwin and apps.
+# This is a dedicated file owned by skey — safe to overwrite.
 if [ "$USER_DE" = "KDE Plasma" ]; then
     KDE_ENVDIR="$HOME/.config/plasma-workspace/env"
     mkdir -p "$KDE_ENVDIR"
@@ -194,12 +221,8 @@ if [ "$USER_DE" = "KDE Plasma" ]; then
 fi
 
 # Also write .xprofile for X11 display managers and legacy support
-XPROFILE="$HOME/.xprofile"
-{
-    echo "# fcitx5-skey"
-    for var in $ENV_VARS; do echo "export $var"; done
-} > "$XPROFILE"
-echo "✓ X11 fallback: $XPROFILE"
+upsert_shell_env "$HOME/.xprofile" "$EXPORT_LINES"
+echo "✓ X11 fallback: $HOME/.xprofile"
 
 # Source immediately for current session
 for var in $ENV_VARS; do
