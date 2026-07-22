@@ -169,6 +169,30 @@ case "$USER_SHELL" in
         ;;
 esac
 
+# ~/.profile — sourced by most display managers (SDDM, GDM, LightDM) and
+# login shells.  Shell-specific configs (.bash_profile, .zprofile) take
+# precedence for interactive shells, but DMs often only read .profile.
+PROFILE="$HOME/.profile"
+{
+    echo "# fcitx5-skey"
+    for var in $ENV_VARS; do echo "export $var"; done
+} > "$PROFILE"
+echo "✓ Login profile: $PROFILE"
+
+# KDE Plasma: session startup scripts — the canonical place for per-session
+# env vars on KDE.  Sourced by startplasma before launching kwin and apps.
+if [ "$USER_DE" = "KDE Plasma" ]; then
+    KDE_ENVDIR="$HOME/.config/plasma-workspace/env"
+    mkdir -p "$KDE_ENVDIR"
+    KDE_ENVFILE="$KDE_ENVDIR/fcitx5-skey.sh"
+    {
+        echo "# fcitx5-skey"
+        for var in $ENV_VARS; do echo "export $var"; done
+    } > "$KDE_ENVFILE"
+    chmod +x "$KDE_ENVFILE"
+    echo "✓ KDE session env: $KDE_ENVFILE"
+fi
+
 # Also write .xprofile for X11 display managers and legacy support
 XPROFILE="$HOME/.xprofile"
 {
