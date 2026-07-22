@@ -174,11 +174,13 @@ done
 case "$USER_SHELL" in
     bash)
         upsert_shell_env "$HOME/.bash_profile" "$EXPORT_LINES"
-        echo "✓ Shell config: $HOME/.bash_profile"
+        upsert_shell_env "$HOME/.bashrc" "$EXPORT_LINES"
+        echo "✓ Shell config: $HOME/.bash_profile + .bashrc"
         ;;
     zsh)
         upsert_shell_env "$HOME/.zprofile" "$EXPORT_LINES"
-        echo "✓ Shell config: $HOME/.zprofile"
+        upsert_shell_env "$HOME/.zshrc" "$EXPORT_LINES"
+        echo "✓ Shell config: $HOME/.zprofile + .zshrc"
         ;;
     fish)
         FISH_CONF="$HOME/.config/fish/config.fish"
@@ -238,6 +240,20 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/d
         systemctl --user set-environment "$name=$value" 2>/dev/null || true
     done
     echo "✓ systemd user environment set"
+fi
+
+# D-Bus activation environment — pushes vars into the session D-Bus so GUI
+# apps (launched by KWin, GNOME Shell, etc.) inherit them immediately
+# without needing logout/login.  dbus-update-activation-environment is
+# part of dbus-user-session (installed by default on KDE/GNOME).
+if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+    for var in $ENV_VARS; do
+        name="${var%%=*}"
+        value="${var#*=}"
+        export "$name=$value"
+    done
+    dbus-update-activation-environment --systemd $ENV_VARS 2>/dev/null || true
+    echo "✓ D-Bus activation environment updated"
 fi
 
 # ── Wayland: disable classicui (XEmbed tray broken on Wayland) ──
