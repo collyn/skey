@@ -97,26 +97,24 @@ SESSION_TYPE="${XDG_SESSION_TYPE:-x11}"
 echo "  Shell: $USER_SHELL  DE: $USER_DE  Session: $SESSION_TYPE"
 
 # ── Determine required environment variables ──
-# Logic adapted from Lotus input method installer.
-# KDE Plasma on Wayland: KWin uses zwp_input_method_v2 natively for GTK/Qt
-#   → XMODIFIERS + QT_IM_MODULE + GLFW_IM_MODULE needed.
-# GNOME / Sway on Wayland: GTK uses text-input natively, Qt needs IM module
-#   → XMODIFIERS + QT_IM_MODULE + GLFW_IM_MODULE (+ QT_IM_MODULES for Qt6).
-# X11 / others: full set needed for all toolkits.
+# KDE Plasma on Wayland: KWin handles GTK/Qt natively via zwp_input_method_v2,
+# but many apps (AppImages, flatpaks, Qt apps without wayland plugin) still
+# need the full set.  GNOME/Sway: GTK uses text-input natively, Qt needs
+# IM module + QT_IM_MODULES for Qt6.  X11/others: full set.
 if [ "$SESSION_TYPE" = "wayland" ]; then
     case "$USER_DE" in
         "KDE Plasma")
-            ENV_VARS="XMODIFIERS=@im=fcitx QT_IM_MODULE=fcitx GLFW_IM_MODULE=ibus"
+            ENV_VARS="GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx GLFW_IM_MODULE=ibus"
             ;;
         GNOME|Sway)
-            ENV_VARS="XMODIFIERS=@im=fcitx QT_IM_MODULE=fcitx QT_IM_MODULES=wayland;fcitx GLFW_IM_MODULE=ibus"
+            ENV_VARS="XMODIFIERS=@im=fcitx QT_IM_MODULE=fcitx5 QT_IM_MODULES=wayland;fcitx GLFW_IM_MODULE=ibus"
             ;;
         *)
-            ENV_VARS="GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx GLFW_IM_MODULE=ibus"
+            ENV_VARS="GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx GLFW_IM_MODULE=ibus"
             ;;
     esac
 else
-    ENV_VARS="GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx GLFW_IM_MODULE=ibus"
+    ENV_VARS="GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx GLFW_IM_MODULE=ibus"
 fi
 
 # ── Helper: safely update a shell config file ──
@@ -229,6 +227,18 @@ for var in $ENV_VARS; do
     export "${var%%=*}=${var#*=}"
 done
 echo "✓ Env vars sourced for current session"
+
+# systemd user session — the most reliable method for systemd-based
+# compositors (KDE, GNOME, Sway).  Survives logout/login and is picked
+# up by all apps launched via the session, including flatpaks and AppImages.
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    for var in $ENV_VARS; do
+        name="${var%%=*}"
+        value="${var#*=}"
+        systemctl --user set-environment "$name=$value" 2>/dev/null || true
+    done
+    echo "✓ systemd user environment set"
+fi
 
 # ── Wayland: disable classicui (XEmbed tray broken on Wayland) ──
 if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
