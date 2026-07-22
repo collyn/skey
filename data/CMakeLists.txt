@@ -4,7 +4,6 @@ install(FILES icons/fcitx-skey.svg
     DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps")
 
 # status/ — KDE system tray (system tray uses 'status' icon context, not 'apps')
-# Note: Lotus installs to breeze/status/ — we follow the same pattern
 # Hicolor fallback (works for all themes)
 install(FILES icons/fcitx-skey.svg
     DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/status"

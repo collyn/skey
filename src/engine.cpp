@@ -1379,27 +1379,38 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         keyEvent.filterAndAccept();
         return;
       }
-      // No committed text — delete one character before cursor via
-      // surrounding-text API.  If we have a saved previous word, the
-      // first call deletes the separator; enable one-shot reclaim so
-      // the user can retype a tone key to edit the previous word.
-      // Subsequent calls delete chars from the previous word itself.
+      // No committed text — the character before the cursor may be the
+      // separator (space) between the last word and the previous one.
+      //
+      // First BS at committedLen_ == 0: DO NOT delete yet.  Just enable
+      // reclaim so a subsequent tone key can trigger tone editing (which
+      // will delete the separator as part of the reclaim operation).
+      //
+      // Subsequent BS (committedLen_ == -1): delete into the previous
+      // word — the user is intentionally removing characters.
       if (!lastRawInput_.empty()) {
         if (committedLen_ == 0) {
-          // First call: deleting the separator
+          // First call: defer separator deletion, enable reclaim
           reclaimReady_ = true;
-          committedLen_ = -1; // sentinel: separator already deleted
+          committedLen_ = -1; // sentinel: ready for reclaim or deletion
         } else if (committedLen_ == -1) {
           // Second+ call: deleting into the previous word
           reclaimReady_ = false;
+          ic_->deleteSurroundingText(-1, 1);
+          if (ic_->surroundingText().isValid()) {
+            ic_->surroundingText().deleteText(-1, 1);
+          }
+          SKEY_DEBUG() << "SurrBS: delete 1 via surrounding text";
         }
-        // else committedLen_ > 0: shouldn't reach here (handled above)
+        // else committedLen_ > 0: handled above (surroundingBackspace)
+      } else {
+        // No saved previous word — just delete the character.
+        ic_->deleteSurroundingText(-1, 1);
+        if (ic_->surroundingText().isValid()) {
+          ic_->surroundingText().deleteText(-1, 1);
+        }
+        SKEY_DEBUG() << "SurrBS: delete 1 via surrounding text";
       }
-      ic_->deleteSurroundingText(-1, 1);
-      if (ic_->surroundingText().isValid()) {
-        ic_->surroundingText().deleteText(-1, 1);
-      }
-      SKEY_DEBUG() << "SurrBS: delete 1 via surrounding text";
       keyEvent.filterAndAccept();
       return;
     }
@@ -1516,6 +1527,12 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           isToneKey = (ch >= '0' && ch <= '5');
         }
         if (isToneKey) {
+          // Delete the separator (deferred from idle BS handler),
+          // then reclaim the previous word for tone editing.
+          ic_->deleteSurroundingText(-1, 1);
+          if (ic_->surroundingText().isValid()) {
+            ic_->surroundingText().deleteText(-1, 1);
+          }
           reclaimLastWord();
           didReclaim = true;
         }
@@ -1563,6 +1580,13 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           if (isChromiumBrowser(ic_->program()) && !oldComposed.empty()) {
             addrBarLastTriggerKey_ = static_cast<int>(sym);
             addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 200000;
+          }
+          // Save the finalized word so reclaim can restore the correct
+          // word when the user later backspaces through its separator.
+          // Must be called before surroundingCommit which updates
+          // committedLen_ to the new value.
+          if (!committed.empty()) {
+            saveLastWord();
           }
           std::string fullNew = committed + newComposed;
           if (!fullNew.empty()) {
@@ -2039,7 +2063,13 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         }
       };
 
-      if (useNativeSurroundingApi()) {
+      // Chromium address bar: use uinput BS + adaptive timer
+      // (scheduleAddrBarReplacement) instead of the native surrounding-text
+      // API.  Chrome's autocomplete can modify text between delete and
+      // commit, causing corruption when deleteSurroundingText races with
+      // omnibox updates.  The uinput BS approach lets Chrome process the
+      // deletion as real keystrokes before we commit the replacement.
+      if (useNativeSurroundingApi() && !inChromiumAddressBar()) {
         const auto &surrounding = ic_->surroundingText();
         if (!surrounding.isValid() ||
             surrounding.cursor() < static_cast<unsigned int>(deleteLen)) {

@@ -67,47 +67,121 @@ EOF
     echo "✓ Config created with skey defaults"
 fi
 
-# ── Export environment variables for X11 and Wayland ──
-XPROFILE="$HOME/.xprofile"
+# ── Auto-detect environment ──
+detect_shell() {
+    local sh
+    sh=$(basename "${SHELL:-/bin/bash}")
+    case "$sh" in
+        zsh)  echo "zsh" ;;
+        fish) echo "fish" ;;
+        *)    echo "bash" ;;
+    esac
+}
+
+detect_de() {
+    # Hyprland, Sway, Niri: detected by their compositor socket
+    if [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then echo "Hyprland"; return; fi
+    if [ -n "${SWAYSOCK:-}" ]; then echo "Sway"; return; fi
+    if [ -n "${NIRI_SOCKET:-}" ]; then echo "Niri"; return; fi
+    case "${XDG_CURRENT_DESKTOP:-}" in
+        KDE|kde|KDE-Plasma|plasma) echo "KDE Plasma" ;;
+        GNOME|gnome|GNOME-Classic) echo "GNOME" ;;
+        *) echo "${XDG_CURRENT_DESKTOP:-unknown}" ;;
+    esac
+}
+
+USER_SHELL=$(detect_shell)
+USER_DE=$(detect_de)
+SESSION_TYPE="${XDG_SESSION_TYPE:-x11}"
+
+echo "  Shell: $USER_SHELL  DE: $USER_DE  Session: $SESSION_TYPE"
+
+# ── Determine required environment variables ──
+# Logic adapted from Lotus input method installer.
+# KDE Plasma on Wayland: KWin uses zwp_input_method_v2 natively for GTK/Qt
+#   → only XMODIFIERS + GLFW_IM_MODULE needed.
+# GNOME / Sway on Wayland: GTK uses text-input natively, Qt needs IM module
+#   → XMODIFIERS + QT_IM_MODULE + GLFW_IM_MODULE (+ QT_IM_MODULES for Qt6).
+# X11 / others: full set needed for all toolkits.
+if [ "$SESSION_TYPE" = "wayland" ]; then
+    case "$USER_DE" in
+        "KDE Plasma")
+            ENV_VARS="XMODIFIERS=@im=fcitx GLFW_IM_MODULE=ibus"
+            ;;
+        GNOME|Sway)
+            ENV_VARS="XMODIFIERS=@im=fcitx QT_IM_MODULE=fcitx QT_IM_MODULES=wayland;fcitx GLFW_IM_MODULE=ibus"
+            ;;
+        *)
+            ENV_VARS="GTK_IM_MODULE=fcitx QT_IM_MODULE=ibus XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx GLFW_IM_MODULE=ibus"
+            ;;
+    esac
+else
+    ENV_VARS="GTK_IM_MODULE=fcitx QT_IM_MODULE=ibus XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx GLFW_IM_MODULE=ibus"
+fi
+
+# ── Write environment files ──
 ENVDIR="$HOME/.config/environment.d"
 ENVFILE="$ENVDIR/fcitx5-skey.conf"
 
-# Shell-style (export KEY=VALUE) — for .xprofile and sourcing in current shell
-ENV_BLOCK_SHELL="# fcitx5-skey: required for input method to work in all applications
-export GTK_IM_MODULE=fcitx
-# QT_IM_MODULE=ibus: uses IBus D-Bus protocol (fcitx5 provides org.freedesktop.IBus).
-# This works even for AppImages that bundle their own Qt without fcitx5 plugin,
-# because IBus plugin (libibusplatforminputcontextplugin.so) is included in
-# standard Qt builds and most AppImage bundles (e.g. Viber).
-export QT_IM_MODULE=ibus
-export XMODIFIERS=@im=fcitx
-export SDL_IM_MODULE=fcitx
-export GLFW_IM_MODULE=ibus"
-
-# systemd environment.d format (KEY=VALUE, no 'export' keyword)
-# See: https://www.freedesktop.org/software/systemd/man/latest/environment.d.html
-ENV_BLOCK_ENVD="# fcitx5-skey
-GTK_IM_MODULE=fcitx
-QT_IM_MODULE=ibus
-XMODIFIERS=@im=fcitx
-SDL_IM_MODULE=fcitx
-GLFW_IM_MODULE=ibus"
-
-# Wayland: systemd environment.d (respected by KDE, GNOME, etc.)
+# systemd environment.d (KEY=VALUE format, no export).
+# Respected by KDE, GNOME, Sway, and most systemd-based Wayland compositors.
 mkdir -p "$ENVDIR"
-echo "$ENV_BLOCK_ENVD" > "$ENVFILE"
-echo "✓ Wayland environment: $ENVFILE"
+{
+    echo "# fcitx5-skey"
+    for var in $ENV_VARS; do echo "$var"; done
+} > "$ENVFILE"
+echo "✓ systemd environment.d: $ENVFILE"
 
-# X11: ~/.xprofile (sourced by display managers)
-echo "$ENV_BLOCK_SHELL" > "$XPROFILE"
-echo "✓ X11 environment: $XPROFILE"
+# Shell config file
+case "$USER_SHELL" in
+    bash)
+        PROFILE_FILE="$HOME/.bash_profile"
+        {
+            echo "# fcitx5-skey"
+            for var in $ENV_VARS; do echo "export $var"; done
+        } > "$PROFILE_FILE"
+        echo "✓ Shell config: $PROFILE_FILE"
+        ;;
+    zsh)
+        PROFILE_FILE="$HOME/.zprofile"
+        {
+            echo "# fcitx5-skey"
+            for var in $ENV_VARS; do echo "export $var"; done
+        } > "$PROFILE_FILE"
+        echo "✓ Shell config: $PROFILE_FILE"
+        ;;
+    fish)
+        FISH_CONF="$HOME/.config/fish/config.fish"
+        mkdir -p "$(dirname "$FISH_CONF")"
+        # Fish universal variables: set once, persist across sessions.
+        # Also write to config.fish for non-login shells.
+        {
+            echo "# fcitx5-skey"
+            echo "if status is-login"
+            for var in $ENV_VARS; do
+                name="${var%%=*}"
+                value="${var#*=}"
+                echo "    set -Ux $name $value"
+            done
+            echo "end"
+        } > "$FISH_CONF"
+        echo "✓ Shell config: $FISH_CONF"
+        ;;
+esac
+
+# Also write .xprofile for X11 display managers and legacy support
+XPROFILE="$HOME/.xprofile"
+{
+    echo "# fcitx5-skey"
+    for var in $ENV_VARS; do echo "export $var"; done
+} > "$XPROFILE"
+echo "✓ X11 fallback: $XPROFILE"
 
 # Source immediately for current session
-export GTK_IM_MODULE=fcitx
-export QT_IM_MODULE=ibus
-export XMODIFIERS=@im=fcitx
-export SDL_IM_MODULE=fcitx
-export GLFW_IM_MODULE=ibus
+for var in $ENV_VARS; do
+    export "${var%%=*}=${var#*=}"
+done
+echo "✓ Env vars sourced for current session"
 
 # ── Wayland: disable classicui (XEmbed tray broken on Wayland) ──
 if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
