@@ -172,12 +172,12 @@ esac
 # ~/.profile — sourced by most display managers (SDDM, GDM, LightDM) and
 # login shells.  Shell-specific configs (.bash_profile, .zprofile) take
 # precedence for interactive shells, but DMs often only read .profile.
-PROFILE="$HOME/.profile"
+LOGIN_PROFILE="$HOME/.profile"
 {
     echo "# fcitx5-skey"
     for var in $ENV_VARS; do echo "export $var"; done
-} > "$PROFILE"
-echo "✓ Login profile: $PROFILE"
+} > "$LOGIN_PROFILE"
+echo "✓ Login profile: $LOGIN_PROFILE"
 
 # KDE Plasma: session startup scripts — the canonical place for per-session
 # env vars on KDE.  Sourced by startplasma before launching kwin and apps.
