@@ -732,14 +732,18 @@ bool SKeyState::useUinputMode() const {
 }
 
 SKeyOutputMode SKeyState::detectAutoMode() const {
-  // Terminal apps (Tabby, Alacritty, Konsole, etc.) work better with
-  // raw key pass-through (Uinput) than with the SurroundingText API.
-  if (ic_->capabilityFlags().test(CapabilityFlag::Terminal)) {
+  auto caps = ic_->capabilityFlags();
+
+  // Terminal apps (Konsole, Alacritty, etc.) work better with raw key
+  // pass-through (Uinput) than with the SurroundingText API.
+  if (caps.test(CapabilityFlag::Terminal)) {
     return SKeyOutputMode::Uinput;
   }
-  if (ic_->capabilityFlags().test(CapabilityFlag::SurroundingText)) {
+
+  if (caps.test(CapabilityFlag::SurroundingText)) {
     return SKeyOutputMode::SurroundingText;
   }
+
   return SKeyOutputMode::Uinput;
 }
 
