@@ -1432,12 +1432,20 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       // word — the user is intentionally removing characters.
       if (!lastRawInput_.empty()) {
         if (committedLen_ == 0) {
-          // First call: defer separator deletion, enable reclaim
+          // Delete the separator immediately AND enable reclaim for
+          // potential retroactive tone editing on the next keystroke.
+          ic_->deleteSurroundingText(-1, 1);
+          if (ic_->surroundingText().isValid()) {
+            ic_->surroundingText().deleteText(-1, 1);
+          }
           reclaimReady_ = true;
+          sepAlreadyDeleted_ = true;
           committedLen_ = -1; // sentinel: ready for reclaim or deletion
+          SKEY_DEBUG() << "SurrBS: delete 1 (sep) + reclaim ready";
         } else if (committedLen_ == -1) {
           // Second+ call: deleting into the previous word
           reclaimReady_ = false;
+          sepAlreadyDeleted_ = false;
           ic_->deleteSurroundingText(-1, 1);
           if (ic_->surroundingText().isValid()) {
             ic_->surroundingText().deleteText(-1, 1);
@@ -1569,16 +1577,19 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           isToneKey = (ch >= '0' && ch <= '5');
         }
         if (isToneKey) {
-          // Delete the separator (deferred from idle BS handler),
-          // then reclaim the previous word for tone editing.
-          ic_->deleteSurroundingText(-1, 1);
-          if (ic_->surroundingText().isValid()) {
-            ic_->surroundingText().deleteText(-1, 1);
+          // Delete the separator if not already deleted by the idle
+          // BS handler, then reclaim the previous word for tone editing.
+          if (!sepAlreadyDeleted_) {
+            ic_->deleteSurroundingText(-1, 1);
+            if (ic_->surroundingText().isValid()) {
+              ic_->surroundingText().deleteText(-1, 1);
+            }
           }
           reclaimLastWord();
           didReclaim = true;
         }
         reclaimReady_ = false;
+        sepAlreadyDeleted_ = false;
       }
 
       // Flush any pending address bar replacement before processing
@@ -2181,6 +2192,7 @@ void SKeyState::clearLastWord() {
   lastComposed_.clear();
   lastCommittedLen_ = 0;
   reclaimReady_ = false;
+  sepAlreadyDeleted_ = false;
 }
 
 void SKeyState::reclaimLastWord() {

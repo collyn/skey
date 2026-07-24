@@ -136,6 +136,7 @@ private:
     std::string lastComposed_;      // Composed text of last committed word
     int lastCommittedLen_ = 0;      // UTF-8 char count of last committed word
     bool reclaimReady_ = false;     // True after BS pressed while idle
+    bool sepAlreadyDeleted_ = false; // Separator already deleted by first BS
 };
 
 /// Main fcitx5 engine class.
