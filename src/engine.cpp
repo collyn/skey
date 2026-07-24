@@ -208,6 +208,7 @@ static bool isChromiumBrowser(const std::string &prog) {
   static const char *const patterns[] = {
       "chrome",  "chromium",       "google-chrome", "brave",
       "vivaldi", "microsoft-edge", "opera",         "electron",
+      "tabby",   // Electron-based terminal
   };
   for (const char *p : patterns) {
     if (prog.find(p) != std::string::npos) {
@@ -741,6 +742,19 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   }
 
   if (caps.test(CapabilityFlag::SurroundingText)) {
+    // Chromium-based apps: SpellCheck reliably distinguishes real text
+    // inputs (Chrome/Firefox <input>/<textarea>/contenteditable) from
+    // Electron terminal views (Tabby) which advertise SurroundingText
+    // but never send it.  Without SpellCheck, SurroundingText mode
+    // degrades to forwardKey on every operation.
+    if (isChromiumBrowser(ic_->program()) &&
+        !caps.test(CapabilityFlag::SpellCheck)) {
+      SKEY_DEBUG() << "Auto: Chromium without SpellCheck,"
+                   << " fallback to Uinput";
+      return SKeyOutputMode::Uinput;
+    }
+    // Non-Chromium native apps (Antigravity, Telegram) or Chromium
+    // web content: trust SurroundingText if capability is set.
     return SKeyOutputMode::SurroundingText;
   }
 
@@ -1225,27 +1239,6 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
-  // Lazy auto-mode downgrade: when Auto selected SurroundingText but the
-  // surrounding text never arrives (Electron-based terminals etc.), fall
-  // back to Uinput after a few keystrokes.  By key 3 the surrounding text
-  // should have arrived for any app that genuinely supports it.
-  if (autoDowngradeKeysLeft_ > 0) {
-    autoDowngradeKeysLeft_--;
-    if (autoDowngradeKeysLeft_ == 0) {
-      auto configured = hasAppModeOverride_
-                            ? appModeOverride_
-                            : engine_->config().outputMode.value();
-      if (configured == SKeyOutputMode::Auto &&
-          effectiveMode() == SKeyOutputMode::SurroundingText) {
-        const auto &surrounding = ic_->surroundingText();
-        if (!surrounding.isValid() || surrounding.text().empty()) {
-          SKEY_DEBUG() << "Auto: no useful surrounding text after 3 keys,"
-                       << " downgrade to Uinput";
-          autoDetectedMode_ = SKeyOutputMode::Uinput;
-        }
-      }
-    }
-  }
 
   // Drop re-delivered trigger key after address bar replacement.
   // Chrome's spurious focus cycles cause X11 to re-send the key that
@@ -2104,6 +2097,22 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
                                   const std::string &newComposed) {
   if (newComposed.empty())
     return;
+
+  // Lazy auto-mode downgrade: when Auto selected SurroundingText but
+  // the surrounding text never arrives, fall back to Uinput.  We check
+  // here (after text is committed) because only a commit can trigger
+  // the app to send surrounding text — idle keys like arrows don't.
+  if (autoDowngradeKeysLeft_ > 0) {
+    autoDowngradeKeysLeft_--;
+    if (autoDowngradeKeysLeft_ == 0) {
+      const auto &surrounding = ic_->surroundingText();
+      if (!surrounding.isValid() || surrounding.text().empty()) {
+        SKEY_DEBUG() << "Auto: no useful surrounding text after commits,"
+                     << " downgrade to Uinput";
+        autoDetectedMode_ = SKeyOutputMode::Uinput;
+      }
+    }
+  }
 
   int newLen = static_cast<int>(utf8::length(newComposed));
 
