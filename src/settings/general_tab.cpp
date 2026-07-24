@@ -34,6 +34,7 @@ void GeneralTab::setupUI() {
     enumLayout->addRow(QString::fromUtf8("Kiểu gõ:"), inputMethodCombo_);
 
     outputModeCombo_ = new QComboBox(enumFrame);
+    outputModeCombo_->addItem("Auto",              "Auto");
     outputModeCombo_->addItem("Uinput",            "Uinput");
     outputModeCombo_->addItem("Surrounding Text",  "Surrounding Text");
     outputModeCombo_->addItem("Preedit",           "Preedit");
@@ -98,6 +99,7 @@ void GeneralTab::setupUI() {
     addrBarLayout->setContentsMargins(12, 12, 12, 12);
 
     addrBarModeCombo_ = new QComboBox(addrBarGroup);
+    addrBarModeCombo_->addItem("Auto", "Auto");
     addrBarModeCombo_->addItem("Uinput", "Uinput");
     addrBarModeCombo_->addItem("Surrounding Text", "Surrounding Text");
     addrBarModeCombo_->addItem("Preedit", "Preedit");

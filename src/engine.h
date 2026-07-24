@@ -48,6 +48,7 @@ private:
     bool useNativeSurroundingApi() const;
     bool useHiddenComposition() const;
     bool useUinputMode() const;
+    SKeyOutputMode detectAutoMode() const;
     bool connectUinputServer();
     void sendBackspaceUinput(int count, const std::string &text = "",
                               uint32_t flags = 0);
@@ -82,6 +83,8 @@ private:
     skey::VietnameseEngine viet_;
     skey::Charset charset_ = skey::Charset::Unicode;
     int committedLen_ = 0;
+    SKeyOutputMode autoDetectedMode_ = SKeyOutputMode::Auto; // sentinel: not evaluated yet
+    int autoDowngradeKeysLeft_ = 0; // countdown: 0 = done, >0 = pending
 
     /// Commit text to the app, converting to the configured charset.
     void commitText(const std::string &utf8);
@@ -195,6 +198,7 @@ private:
     SimpleAction omSurrounding_;
     SimpleAction omPreedit_;
     SimpleAction omUinput_;
+    SimpleAction omAuto_;
 
     // Tray menu: Launch settings app
     SimpleAction settingsAction_;

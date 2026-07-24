@@ -24,7 +24,7 @@ struct SKeyConfig {
 /// Per-application mode overrides (maps to skey-app-modes.conf)
 struct AppModesConfig {
     /// Ordered list of (programName, mode) pairs.
-    /// mode values: "Uinput", "SurroundingText", "Preedit", "Excluded"
+    /// mode values: "Auto", "Uinput", "SurroundingText", "Preedit", "Excluded"
     std::vector<std::pair<std::string, std::string>> entries;
 };
 

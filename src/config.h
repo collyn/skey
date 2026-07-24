@@ -12,16 +12,18 @@ enum class SKeyInputMethod { Telex, VNI };
 FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyInputMethod, N_("Telex"), N_("VNI"));
 
 // Output mode
-enum class SKeyOutputMode { Uinput, SurroundingText, Preedit };
+enum class SKeyOutputMode { Uinput, SurroundingText, Preedit, Auto };
 FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyOutputMode, N_("Uinput"),
                                  N_("Surrounding Text"),
-                                 N_("Preedit"));
+                                 N_("Preedit"),
+                                 N_("Auto"));
 
 // Output mode used only in Chromium-family browser address bars.
 enum class SKeyChromiumAddressBarMode {
-    Uinput, SurroundingText, Preedit, NoVietnamese
+    Auto, Uinput, SurroundingText, Preedit, NoVietnamese
 };
-FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyChromiumAddressBarMode, N_("Uinput"),
+FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyChromiumAddressBarMode, N_("Auto"),
+                                 N_("Uinput"),
                                  N_("Surrounding Text"),
                                  N_("Preedit"),
                                  N_("No Vietnamese"));
@@ -47,7 +49,7 @@ FCITX_CONFIGURATION(
                                 SKeyCharset::Unicode};
     // Output mode: uinput (default), surrounding text, or preedit
     Option<SKeyOutputMode> outputMode{this, "OutputMode", _("Output Mode"),
-                                      SKeyOutputMode::Uinput};
+                                      SKeyOutputMode::Auto};
     // Allow free tone/mark placement
     Option<bool> freeMarking{this, "FreeMarking", _("Free marking"), false};
     // Auto restore non-Vietnamese text
@@ -58,7 +60,7 @@ FCITX_CONFIGURATION(
     // Output mode used in Chromium-family browser address bars
     Option<SKeyChromiumAddressBarMode> chromiumAddressBarMode{
         this, "ChromiumAddressBarMode",
-        _("Chromium address bar"), SKeyChromiumAddressBarMode::Preedit};
+        _("Chromium address bar"), SKeyChromiumAddressBarMode::Auto};
     // Enable debug logging
     Option<bool> debug{this, "Debug", _("Enable debug logging"), false};);
 

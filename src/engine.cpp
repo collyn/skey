@@ -167,6 +167,8 @@ static std::string outputModeName(SKeyOutputMode mode) {
     return "Preedit";
   case SKeyOutputMode::Uinput:
     return "Uinput";
+  case SKeyOutputMode::Auto:
+    return "Auto";
   }
   return "SurroundingText";
 }
@@ -328,6 +330,9 @@ void SKeyEngine::setupTrayMenu() {
   });
 
   // ── Output Mode menu ──
+  omAuto_.setShortText(_("Auto"));
+  omAuto_.setCheckable(true);
+  omAuto_.registerAction("skey-om-auto", &uiManager);
   omUinput_.setShortText(_("Uinput"));
   omUinput_.setCheckable(true);
   omUinput_.registerAction("skey-om-uinput", &uiManager);
@@ -338,6 +343,7 @@ void SKeyEngine::setupTrayMenu() {
   omPreedit_.setCheckable(true);
   omPreedit_.registerAction("skey-om-preedit", &uiManager);
 
+  omMenu_.addAction(&omAuto_);
   omMenu_.addAction(&omUinput_);
   omMenu_.addAction(&omSurrounding_);
   omMenu_.addAction(&omPreedit_);
@@ -346,6 +352,10 @@ void SKeyEngine::setupTrayMenu() {
   omAction_.setMenu(&omMenu_);
   omAction_.registerAction("skey-output-mode", &uiManager);
 
+  omAuto_.connect<SimpleAction::Activated>([this](InputContext *ic) {
+    FCITX_UNUSED(ic);
+    setOutputMode(SKeyOutputMode::Auto);
+  });
   omSurrounding_.connect<SimpleAction::Activated>([this](InputContext *ic) {
     FCITX_UNUSED(ic);
     setOutputMode(SKeyOutputMode::SurroundingText);
@@ -463,11 +473,14 @@ void SKeyEngine::updateMenuActions() {
   }
 
   auto om = config_.outputMode.value();
+  omAuto_.setChecked(om == SKeyOutputMode::Auto);
   omSurrounding_.setChecked(om == SKeyOutputMode::SurroundingText);
   omPreedit_.setChecked(om == SKeyOutputMode::Preedit);
   omUinput_.setChecked(om == SKeyOutputMode::Uinput);
 
-  if (om == SKeyOutputMode::Preedit) {
+  if (om == SKeyOutputMode::Auto) {
+    omAction_.setShortText(_("Output Mode: Auto"));
+  } else if (om == SKeyOutputMode::Preedit) {
     omAction_.setShortText(_("Output Mode: Preedit"));
   } else if (om == SKeyOutputMode::Uinput) {
     omAction_.setShortText(_("Output Mode: Uinput"));
@@ -498,6 +511,8 @@ SKeyOutputMode SKeyEngine::loadAppMode(const std::string &app) const {
       return SKeyOutputMode::Uinput;
     if (*val == "SurroundingText")
       return SKeyOutputMode::SurroundingText;
+    if (*val == "Auto")
+      return SKeyOutputMode::Auto;
   }
   // Not found — return the configured default
   return config_.outputMode.value();
@@ -675,6 +690,8 @@ SKeyOutputMode SKeyState::effectiveMode() const {
   // NoVietnamese is handled as a pass-through in keyEvent().
   if (inChromiumAddressBar()) {
     switch (engine_->config().chromiumAddressBarMode.value()) {
+    case SKeyChromiumAddressBarMode::Auto:
+      break; // fall through to normal Auto detection below
     case SKeyChromiumAddressBarMode::Uinput:
       return SKeyOutputMode::Uinput;
     case SKeyChromiumAddressBarMode::SurroundingText:
@@ -686,9 +703,22 @@ SKeyOutputMode SKeyState::effectiveMode() const {
     }
   }
 
-  if (hasAppModeOverride_)
-    return appModeOverride_;
-  return engine_->config().outputMode.value();
+  auto resolved = hasAppModeOverride_
+                      ? appModeOverride_
+                      : engine_->config().outputMode.value();
+
+  if (resolved == SKeyOutputMode::Auto) {
+    // Evaluate once per activation and cache — surrounding text may
+    // arrive asynchronously, so the first call's decision must stick.
+    if (autoDetectedMode_ == SKeyOutputMode::Auto) {
+      const_cast<SKeyState *>(this)->autoDetectedMode_ = detectAutoMode();
+      if (autoDetectedMode_ == SKeyOutputMode::SurroundingText) {
+        const_cast<SKeyState *>(this)->autoDowngradeKeysLeft_ = 3;
+      }
+    }
+    return autoDetectedMode_;
+  }
+  return resolved;
 }
 
 bool SKeyState::useSurroundingText() const {
@@ -699,6 +729,18 @@ bool SKeyState::useSurroundingText() const {
 
 bool SKeyState::useUinputMode() const {
   return effectiveMode() == SKeyOutputMode::Uinput;
+}
+
+SKeyOutputMode SKeyState::detectAutoMode() const {
+  // Terminal apps (Tabby, Alacritty, Konsole, etc.) work better with
+  // raw key pass-through (Uinput) than with the SurroundingText API.
+  if (ic_->capabilityFlags().test(CapabilityFlag::Terminal)) {
+    return SKeyOutputMode::Uinput;
+  }
+  if (ic_->capabilityFlags().test(CapabilityFlag::SurroundingText)) {
+    return SKeyOutputMode::SurroundingText;
+  }
+  return SKeyOutputMode::Uinput;
 }
 
 bool SKeyState::canEditWithSurroundingText() const {
@@ -772,6 +814,8 @@ void SKeyState::activate() {
           savedMode = SKeyOutputMode::Uinput;
         else if (*val == "SurroundingText")
           savedMode = SKeyOutputMode::SurroundingText;
+        else if (*val == "Auto")
+          savedMode = SKeyOutputMode::Auto;
         appModeOverride_ = savedMode;
         hasAppModeOverride_ = true;
       }
@@ -1143,6 +1187,8 @@ void SKeyState::reset() {
   }
   clearLastWord();
   clearUI();
+  autoDetectedMode_ = SKeyOutputMode::Auto; // re-evaluate on next activation
+  autoDowngradeKeysLeft_ = 0;
 }
 
 void SKeyState::keyEvent(KeyEvent &keyEvent) {
@@ -1173,6 +1219,28 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
   if (handlePendingUinputBackspace(keyEvent)) {
     return;
+  }
+
+  // Lazy auto-mode downgrade: when Auto selected SurroundingText but the
+  // surrounding text never arrives (Electron-based terminals etc.), fall
+  // back to Uinput after a few keystrokes.  By key 3 the surrounding text
+  // should have arrived for any app that genuinely supports it.
+  if (autoDowngradeKeysLeft_ > 0) {
+    autoDowngradeKeysLeft_--;
+    if (autoDowngradeKeysLeft_ == 0) {
+      auto configured = hasAppModeOverride_
+                            ? appModeOverride_
+                            : engine_->config().outputMode.value();
+      if (configured == SKeyOutputMode::Auto &&
+          effectiveMode() == SKeyOutputMode::SurroundingText) {
+        const auto &surrounding = ic_->surroundingText();
+        if (!surrounding.isValid() || surrounding.text().empty()) {
+          SKEY_DEBUG() << "Auto: no useful surrounding text after 3 keys,"
+                       << " downgrade to Uinput";
+          autoDetectedMode_ = SKeyOutputMode::Uinput;
+        }
+      }
+    }
   }
 
   // Drop re-delivered trigger key after address bar replacement.
@@ -1247,16 +1315,19 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         keyEvent.filterAndAccept();
         return;
       }
-    } else if (choice > 0 && choice <= 3) {
+    } else if (choice > 0 && choice <= 4) {
       SKeyOutputMode newMode;
       switch (choice) {
       case 1:
-        newMode = SKeyOutputMode::Uinput;
+        newMode = SKeyOutputMode::Auto;
         break;
       case 2:
-        newMode = SKeyOutputMode::SurroundingText;
+        newMode = SKeyOutputMode::Uinput;
         break;
       case 3:
+        newMode = SKeyOutputMode::SurroundingText;
+        break;
+      case 4:
         newMode = SKeyOutputMode::Preedit;
         break;
       default:
@@ -1356,6 +1427,17 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       return; // pass raw BS through to Chrome
     }
     if (useSurroundingText()) {
+      if (useUinputMode()) {
+        // Uinput: let raw BS pass through to the app so Wayland
+        // key-repeat continues working.  Just sync local tracking.
+        if (committedLen_ > 0) {
+          SKEY_DEBUG() << "SurrBS: uinput pass-through, len="
+                       << committedLen_ << " -> " << (committedLen_ - 1);
+          committedLen_--;
+        }
+        viet_.reset();
+        return; // pass through raw BS (do NOT filter)
+      }
       surroundingBackspace();
     } else {
       viet_.backspace();
@@ -1471,6 +1553,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     // Re-arm cycle protection for address bar (see composing BS handler).
     if (inChromiumAddressBar()) {
       addrBarExpectCycle_ = true;
+    }
+    if (committedLen_ > 0) {
+      committedLen_--;
     }
     return; // pass through
   }
@@ -2308,44 +2393,59 @@ void SKeyState::clearUI() {
 void SKeyState::showModeMenu() {
   modeMenuActive_ = true;
   modeMenuForAddressBar_ = inChromiumAddressBar();
-  auto mode = effectiveMode();
 
   // Build candidate list for dropdown menu
   auto candList = std::make_unique<CommonCandidateList>();
-  candList->setPageSize(4);
+  candList->setPageSize(5);
   candList->setLayoutHint(CandidateLayoutHint::Vertical);
 
   int cursorIdx = 0;
   if (modeMenuForAddressBar_) {
     auto addressBarMode = engine_->config().chromiumAddressBarMode.value();
+    std::string autoLabel = "1. Auto (";
+    autoLabel += outputModeName(effectiveMode());
+    autoLabel += ")";
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
-        engine_, this, "1. Uinput", SKeyChromiumAddressBarMode::Uinput));
+        engine_, this, autoLabel, SKeyChromiumAddressBarMode::Auto));
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
-        engine_, this, "2. Surrounding Text",
+        engine_, this, "2. Uinput", SKeyChromiumAddressBarMode::Uinput));
+    candList->append(std::make_unique<AddressBarModeCandidateWord>(
+        engine_, this, "3. Surrounding Text",
         SKeyChromiumAddressBarMode::SurroundingText));
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
-        engine_, this, "3. Preedit", SKeyChromiumAddressBarMode::Preedit));
+        engine_, this, "4. Preedit", SKeyChromiumAddressBarMode::Preedit));
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
-        engine_, this, "4. Không gõ tiếng Việt",
+        engine_, this, "5. Không gõ tiếng Việt",
         SKeyChromiumAddressBarMode::NoVietnamese));
     cursorIdx = static_cast<int>(addressBarMode);
   } else {
+    auto configured = hasAppModeOverride_
+                          ? appModeOverride_
+                          : engine_->config().outputMode.value();
+    std::string autoLabel = "1. Auto (";
+    autoLabel += outputModeName(effectiveMode());
+    autoLabel += ")";
     candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, "1. Uinput", SKeyOutputMode::Uinput));
+        engine_, this, autoLabel, SKeyOutputMode::Auto));
     candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, "2. Surrounding Text", SKeyOutputMode::SurroundingText));
+        engine_, this, "2. Uinput", SKeyOutputMode::Uinput));
     candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, "3. Preedit", SKeyOutputMode::Preedit));
+        engine_, this, "3. Surrounding Text", SKeyOutputMode::SurroundingText));
+    candList->append(std::make_unique<ModeCandidateWord>(
+        engine_, this, "4. Preedit", SKeyOutputMode::Preedit));
 
     std::string excludeLabel =
-        appExcluded_ ? "4. ✓ Loại trừ ứng dụng" : "4. Loại trừ ứng dụng";
+        appExcluded_ ? "5. ✓ Loại trừ ứng dụng" : "5. Loại trừ ứng dụng";
     candList->append(
         std::make_unique<ExcludeCandidateWord>(engine_, this, excludeLabel));
 
-    cursorIdx = appExcluded_                                ? 3
-                : (mode == SKeyOutputMode::Uinput)          ? 0
-                : (mode == SKeyOutputMode::SurroundingText) ? 1
-                : (mode == SKeyOutputMode::Preedit)         ? 2
+    // When configured to Auto, cursor stays on Auto (0).
+    // Otherwise cursor follows the manually selected mode.
+    cursorIdx = appExcluded_                                ? 4
+                : (configured == SKeyOutputMode::Auto)      ? 0
+                : (configured == SKeyOutputMode::Uinput)    ? 1
+                : (configured == SKeyOutputMode::SurroundingText) ? 2
+                : (configured == SKeyOutputMode::Preedit)   ? 3
                                                             : 0;
   }
   candList->setGlobalCursorIndex(cursorIdx);

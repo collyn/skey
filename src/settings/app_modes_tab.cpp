@@ -14,7 +14,7 @@
 #include <QVBoxLayout>
 
 // ── Mode values as displayed in the per-app config ─────────────────────
-static const char *kAppModeValues[] = {"Uinput", "SurroundingText", "Preedit", "Excluded", nullptr};
+static const char *kAppModeValues[] = {"Auto", "Uinput", "SurroundingText", "Preedit", "Excluded", nullptr};
 
 AppModesTab::AppModesTab(QWidget *parent) : QWidget(parent) {
     setupUI();
