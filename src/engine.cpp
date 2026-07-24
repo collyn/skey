@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <fstream>
@@ -107,37 +108,72 @@ namespace fcitx {
 // Timing tunables for uinput backspace → commit coordination (microseconds)
 //
 // Adaptive delay via EWMA (exponentially weighted moving average) of
-// measured BackSpace round-trip times.  The round-trip covers:
-//   uinput → kernel → X11 → Chrome → X11 → fcitx5
-// Chrome's processing time varies with system load, tab count, and
-// omnibox autocomplete activity.  EWMA smooths out these variations
-// and automatically adjusts the commit delay — faster machines get
-// lower latency, loaded machines get more safety margin.
-static constexpr double kBsRtEwmaAlpha = 0.3;  // weight for new sample
-static constexpr uint64_t kBsRtInitialUsec = 8000;  // seed before first sample
-// Multiplier: commit delay = EWMA * multiplier.  The EWMA measures the
-// BS round-trip through fcitx5, but Chrome/Electron need additional time
-// to process BS internally (DOM update, layout).  3x provides 2 extra
-// round-trips of headroom — enough for both Chrome and Electron apps.
-static constexpr double kBsRtMultiplier = 3.0;
-// Address bar: same multiplier.
-static constexpr double kAddrBarBsRtMultiplier = 3.0;
-// Absolute floors to prevent racing on extremely fast machines
-static constexpr uint64_t kCommitDelayMinUsec = 10000;
-static constexpr uint64_t kAddrBarCommitDelayMinUsec = 10000;
-// dbusDeferredDefaultUsec: default delay for surrounding-text deferred commit
+// measured BackSpace round-trip times.  Chrome's processing time varies
+// with system load, tab count, and omnibox autocomplete activity.
+// EWMA smooths out these variations and automatically adjusts the commit
+// delay — faster machines get lower latency, loaded machines get more
+// safety margin.
+//
+// Separate values for X11 vs Wayland: Wayland has lower latency because
+// there is no X server in the path (uinput → kernel → compositor → app),
+// so the commit delay can be shorter than on X11 where the round-trip
+// includes X server serialization (uinput → kernel → X11 → app → X11 →
+// fcitx5).
+
+struct UinputTiming {
+    double bsRtEwmaAlpha;        // weight for new EWMA sample
+    uint64_t bsRtInitialUsec;    // seed before first sample
+    double bsRtMultiplier;       // commit delay = EWMA * multiplier
+    double addrBarBsRtMultiplier;// same, for address bar
+    uint64_t commitDelayMinUsec; // absolute floor
+    uint64_t addrBarCommitDelayMinUsec;
+    uint64_t commitDelayMaxUsec; // absolute ceiling (prevents lag on slow apps)
+    uint64_t addrBarCommitDelayMaxUsec;
+    double chromiumDelayFactor;  // extra multiplier for Chromium/Electron apps
+    uint64_t safetyTimeoutUsec;  // force-commit if BS events don't arrive
+    uint64_t passthroughBaseUsec;// base window for Ctrl+Shift+U passthrough
+    uint64_t passthroughMinUsec; // min Ctrl+Shift+U passthrough window
+    uint64_t perCharUsec;        // per-char overhead for Ctrl+Shift+U typing
+};
+
+// X11 defaults (current values, well-tested)
+static constexpr UinputTiming kUinputTimingX11 = {
+    0.3,     // bsRtEwmaAlpha
+    8000,    // bsRtInitialUsec
+    3.0,     // bsRtMultiplier
+    3.0,     // addrBarBsRtMultiplier
+    10000,   // commitDelayMinUsec
+    10000,   // addrBarCommitDelayMinUsec
+    50000,   // commitDelayMaxUsec (50ms cap)
+    50000,   // addrBarCommitDelayMaxUsec
+    1.0,     // chromiumDelayFactor
+    150000,  // safetyTimeoutUsec (150ms)
+    20000,   // passthroughBaseUsec
+    35000,   // passthroughMinUsec
+    10000,   // perCharUsec
+};
+
+// Wayland: clamp delay to [2ms, 12ms] for native apps.
+// Electron/Chromium apps get a 1.5× boost via chromiumDelayFactor.
+static constexpr UinputTiming kUinputTimingWayland = {
+    0.3,     // bsRtEwmaAlpha — moderate adaptation
+    3000,    // bsRtInitialUsec
+    0.5,     // bsRtMultiplier
+    0.5,     // addrBarBsRtMultiplier
+    2000,    // commitDelayMinUsec — 2ms floor (prevents char loss on Qt/GTK)
+    2000,    // addrBarCommitDelayMinUsec
+    12000,   // commitDelayMaxUsec — 12ms cap
+    12000,   // addrBarCommitDelayMaxUsec
+    1.5,     // chromiumDelayFactor — Electron multi-process needs 1.5×
+    80000,   // safetyTimeoutUsec (80ms)
+    500,     // passthroughBaseUsec
+    500,     // passthroughMinUsec
+    1500,    // perCharUsec
+};
+
+// Surr deferred commit timing (same mechanism, independent of uinput path)
 static constexpr uint64_t dbusDeferredDefaultUsec = 15000;
-// dbusDeferredMinUsec: floor for adaptive deferred commit delay
 static constexpr uint64_t dbusDeferredMinUsec = 10000;
-// kUinputPassthroughMinUsec: min window to suppress engine during Ctrl+Shift+U
-// typing
-static constexpr uint64_t kUinputPassthroughMinUsec = 35000;
-// Per-character overhead estimate for Ctrl+Shift+U hex typing (usec)
-static constexpr uint64_t kUinputPerCharUsec = 10000;
-// Safety timeout: if BS events don't arrive back within this window,
-// force-commit and unstick the engine.  Prevents indefinite freeze
-// when Chrome/Electron drops or delays BS processing.
-static constexpr uint64_t kUinputSafetyTimeoutUsec = 150000; // 150ms
 
 static bool isUtf8ContinuationByte(char ch) {
   return (static_cast<unsigned char>(ch) & 0xC0) == 0x80;
@@ -770,6 +806,31 @@ bool SKeyState::useNativeSurroundingApi() const {
   return !useUinputMode() && canEditWithSurroundingText();
 }
 
+bool SKeyState::isWayland() const {
+  // ic_->display() returns "wayland:" on native Wayland apps,
+  // "x11:" on X11 or XWayland apps.
+  const auto display = ic_->display();
+  if (display.find("wayland") != std::string::npos) {
+    return true;
+  }
+  const auto fe = ic_->frontendName();
+  if (fe.find("wayland") != std::string::npos) {
+    return true;
+  }
+  // XWayland apps report display="x11:" and frontend="xim", but they
+  // still run under a Wayland compositor with lower latency than real
+  // X11 (no hardware X server).  Detect the Wayland session via env.
+  static bool waylandSession = []() {
+    const char *env = getenv("WAYLAND_DISPLAY");
+    return env != nullptr && env[0] != '\0';
+  }();
+  return waylandSession;
+}
+
+const UinputTiming& SKeyState::uinputTiming() const {
+  return isWayland() ? kUinputTimingWayland : kUinputTimingX11;
+}
+
 bool SKeyState::useHiddenComposition() const { return false; }
 
 void SKeyState::activate() {
@@ -852,7 +913,8 @@ void SKeyState::activate() {
                << " preeditCap=" << caps.test(CapabilityFlag::Preedit)
                << " nativeSurrounding=" << useNativeSurroundingApi()
                << " frontend=" << ic_->frontendName()
-               << " display=" << ic_->display() << " app=" << ic_->program()
+               << " display=" << ic_->display()
+               << " wayland=" << isWayland() << " app=" << ic_->program()
                << " caps=0x" << std::hex
                << static_cast<uint64_t>(caps.toInteger()) << std::dec
                << " cursor=(" << ic_->cursorRect().left() << ","
@@ -932,10 +994,12 @@ void SKeyState::sendBackspaceUinput(int count, const std::string &text,
   // they reach the app unmodified.  Window is sized per character
   // (roughly 15ms per char for Ctrl+Shift+U typing + latency).
   if (textLen > 0) {
+    auto& timing = uinputTiming();
     uinputPassthroughUntil_ =
         now(CLOCK_MONOTONIC) +
-        std::max(kUinputPassthroughMinUsec,
-                 20000 + static_cast<uint64_t>(textLen) * kUinputPerCharUsec);
+        std::max(timing.passthroughMinUsec,
+                 timing.passthroughBaseUsec +
+                     static_cast<uint64_t>(textLen) * timing.perCharUsec);
   }
 }
 
@@ -994,23 +1058,38 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     // Smooths out Chrome processing time variations (system load,
     // tab count, omnibox autocomplete activity).  Faster machines
     // naturally converge to lower delays.
-    if (bsRtEwma_ == kBsRtInitialUsec || bsRtEwma_ == 0) {
+    auto& timing = uinputTiming();
+    if (bsRtEwma_ == timing.bsRtInitialUsec || bsRtEwma_ == 0) {
       bsRtEwma_ = elapsed;  // first sample — seed directly
     } else {
       bsRtEwma_ = static_cast<uint64_t>(
-          kBsRtEwmaAlpha * elapsed + (1.0 - kBsRtEwmaAlpha) * bsRtEwma_);
+          timing.bsRtEwmaAlpha * elapsed +
+          (1.0 - timing.bsRtEwmaAlpha) * bsRtEwma_);
     }
-    double multiplier = inChromiumAddressBar() ? kAddrBarBsRtMultiplier
-                                                  : kBsRtMultiplier;
-    uint64_t minDelay = inChromiumAddressBar() ? kAddrBarCommitDelayMinUsec
-                                                : kCommitDelayMinUsec;
-    uint64_t delayUsec = std::max(
-        static_cast<uint64_t>(bsRtEwma_ * multiplier), minDelay);
+    double multiplier = inChromiumAddressBar()
+                            ? timing.addrBarBsRtMultiplier
+                            : timing.bsRtMultiplier;
+    uint64_t minDelay = inChromiumAddressBar()
+                            ? timing.addrBarCommitDelayMinUsec
+                            : timing.commitDelayMinUsec;
+    uint64_t maxDelay = inChromiumAddressBar()
+                            ? timing.addrBarCommitDelayMaxUsec
+                            : timing.commitDelayMaxUsec;
+    // Chromium/Electron apps have multi-process architecture (renderer
+    // + main process + IPC) — they need extra time to process BS before
+    // commitString arrives.  Apply the configured delay factor.
+    if (!inChromiumAddressBar() && isChromiumBrowser(ic_->program())) {
+      minDelay = static_cast<uint64_t>(minDelay * timing.chromiumDelayFactor);
+      maxDelay = static_cast<uint64_t>(maxDelay * timing.chromiumDelayFactor);
+    }
+    uint64_t delayUsec = std::clamp(
+        static_cast<uint64_t>(bsRtEwma_ * multiplier), minDelay, maxDelay);
     SKEY_DEBUG() << "Uinput: all BS passed, RT " << (elapsed / 1000)
                  << "ms (ewma " << (bsRtEwma_ / 1000)
                  << "ms), commit '" << commitText << "' in "
                  << (delayUsec / 1000) << "ms"
-                 << (inChromiumAddressBar() ? " [addrbar]" : "");
+                 << (inChromiumAddressBar() ? " [addrbar]" : "")
+                 << (isChromiumBrowser(ic_->program()) ? " [chromium]" : "");
 
     uinputCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + delayUsec, 0,
@@ -1173,7 +1252,7 @@ void SKeyState::deactivate() {
   bufferedUinputKeys_.clear();
   bsSentAt_ = 0;
   lastBsRoundTrip_ = 0;
-  bsRtEwma_ = kBsRtInitialUsec;
+  bsRtEwma_ = uinputTiming().bsRtInitialUsec;
   uinputCommitTimer_.reset();
   uinputSafetyTimer_.reset();
   uinputDeleting_ = false;
@@ -1808,7 +1887,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               uinputDeleting_ = true;
               // Safety: force-commit if BS events are lost
               uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
-                  CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + kUinputSafetyTimeoutUsec, 0,
+                  CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec, 0,
                   [this](EventSourceTime *, uint64_t) {
                     SKEY_DEBUG() << "Uinput: safety timeout, force commit";
                     uinputSafetyTimer_.reset();
@@ -1939,7 +2018,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
     uinputDeleting_ = true;
     // Safety: force-commit if BS events are lost
     uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
-        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + kUinputSafetyTimeoutUsec, 0,
+        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec, 0,
         [this](EventSourceTime *, uint64_t) {
           SKEY_DEBUG() << "Uinput: safety timeout, force commit";
           uinputSafetyTimer_.reset();
@@ -2003,7 +2082,7 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
   // the timer via the deferred update path in surroundingCommit(), so
   // the commit only happens when the user pauses (natural word boundary).
   uint64_t delayUsec =
-      (bsRtEwma_ > 0 && bsRtEwma_ != kBsRtInitialUsec)
+      (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
           ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
           : dbusDeferredDefaultUsec;
 
@@ -2033,7 +2112,7 @@ void SKeyState::flushDeferredCommit() {
 
   // Enforce adaptive minimum delay between BackSpace and commit.
   uint64_t minGapUsec =
-      (bsRtEwma_ > 0 && bsRtEwma_ != kBsRtInitialUsec)
+      (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
           ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
           : dbusDeferredDefaultUsec;
   if (deferredBsSentAt_ > 0) {
@@ -2182,7 +2261,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           uinputDeleting_ = true;
           // Safety: force-commit if BS events are lost
           uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
-              CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + kUinputSafetyTimeoutUsec, 0,
+              CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec, 0,
               [this](EventSourceTime *, uint64_t) {
                 SKEY_DEBUG() << "Uinput: safety timeout, force commit";
                 uinputSafetyTimer_.reset();

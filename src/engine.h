@@ -23,6 +23,11 @@ namespace fcitx {
 
 class SKeyEngine;
 
+// Timing tunables for uinput backspace → commit coordination.
+// Split into X11 / Wayland variants because Wayland omits the X server
+// round-trip, yielding lower and more predictable latency.
+struct UinputTiming;
+
 /// Per-InputContext state: each window/app gets its own composition state.
 class SKeyState : public InputContextProperty {
 public:
@@ -46,6 +51,8 @@ private:
     bool useSurroundingText() const;
     bool canEditWithSurroundingText() const;
     bool useNativeSurroundingApi() const;
+    bool isWayland() const;
+    const struct UinputTiming& uinputTiming() const;
     bool useHiddenComposition() const;
     bool useUinputMode() const;
     SKeyOutputMode detectAutoMode() const;
