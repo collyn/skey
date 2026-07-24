@@ -1374,6 +1374,48 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // Chromium address bar where raw BS pass-through works correctly.
   if (key.check(FcitxKey_BackSpace) && viet_.getRawInput().empty()) {
     if (useNativeSurroundingApi() && !inChromiumAddressBar()) {
+      // If we have a valid surrounding text with a selection, delete the
+      // entire selection in one operation.
+      const auto &surrounding = ic_->surroundingText();
+      if (surrounding.isValid() &&
+          surrounding.anchor() != surrounding.cursor()) {
+        unsigned int selStart =
+            std::min(surrounding.anchor(), surrounding.cursor());
+        unsigned int selEnd =
+            std::max(surrounding.anchor(), surrounding.cursor());
+        unsigned int deleteSize = selEnd - selStart;
+        SKEY_DEBUG() << "SurrBS: delete selection size=" << deleteSize
+                     << " via forwardKey";
+        // Forward a raw Backspace key so the app handles selection
+        // deletion natively, then update local cache.
+        ic_->forwardKey(Key(FcitxKey_BackSpace));
+        if (ic_->surroundingText().isValid()) {
+          ic_->surroundingText().deleteText(
+              static_cast<int>(selStart) -
+                  static_cast<int>(surrounding.cursor()),
+              deleteSize);
+        }
+        committedLen_ = 0;
+        clearLastWord();
+        reclaimReady_ = false;
+        keyEvent.filterAndAccept();
+        return;
+      }
+      // When surrounding text cache is empty or has no cursor position
+      // info (app hasn't sent meaningful surrounding text), pass the
+      // raw Backspace through to the app so it can handle selection
+      // deletion natively.  deleteSurroundingText(-1, 1) only deletes 1
+      // character and cannot clear a multi-character selection.
+      if ((!surrounding.isValid() ||
+           surrounding.cursor() == 0) &&
+          committedLen_ <= 0) {
+        SKEY_DEBUG() << "SurrBS: forwardKey (valid="
+                     << surrounding.isValid()
+                     << " cursor=" << surrounding.cursor() << ")";
+        ic_->forwardKey(Key(FcitxKey_BackSpace));
+        keyEvent.filterAndAccept();
+        return;
+      }
       if (committedLen_ > 0) {
         surroundingBackspace();
         keyEvent.filterAndAccept();
