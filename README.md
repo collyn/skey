@@ -12,22 +12,25 @@
 
 </div>
 
-SKey (Simple Key) là bộ gõ Tiếng Việt cho Linux trên nền tảng [fcitx5](https://fcitx-im.org/), sử dụng engine [bamboo-core](https://github.com/nguyen10t2/bamboo_core) (Rust) qua FFI. Mặc định bộ gõ chạy monolithic không cần server; riêng chế độ Uinput đi kèm một server tùy chọn để tối ưu hóa việc xóa/thay thế chữ.
+SKey (Simple Key) là bộ gõ Tiếng Việt cho Linux trên nền tảng [fcitx5](https://fcitx-im.org/), sử dụng engine [bamboo-core](https://github.com/nguyen10t2/bamboo_core) (Rust) qua FFI. Mặc định chạy ở chế độ **Auto** — tự động chọn giữa Surrounding Text và Uinput dựa trên khả năng của ứng dụng. Bộ gõ chạy monolithic không cần server; riêng chế độ Uinput đi kèm một server tùy chọn để tối ưu hóa việc xóa/thay thế chữ.
 
 ---
 
 ## Tính năng
 
 - **Phương thức gõ:** Telex (tuỳ chọn w→ư, ][→ươ), VNI
-- **Surrounding Text** — gõ trực tiếp không gạch chân. Tự động chuyển đổi giữa chế độ nhanh (Qt/GTK) và trì hoãn tự thích ứng (Electron/D-Bus).
-- **Preedit** — hiển thị chữ gạch chân.
+- **Auto Mode (mặc định)** — tự động chọn giữa Surrounding Text và Uinput dựa trên capability flags của ứng dụng. Không cần cấu hình thủ công cho từng app.
+- **Surrounding Text** — gõ trực tiếp không gạch chân qua API fcitx5. Ổn định trên hầu hết ứng dụng native (Qt/GTK) và web (Chrome/Firefox).
+- **Uinput** — gửi phím Backspace qua kernel `/dev/uinput`. Phù hợp cho terminal app (Tabby, Konsole) và ứng dụng không hỗ trợ Surrounding Text API.
+- **Preedit** — hiển thị chữ gạch chân. Phù hợp cho thanh địa chỉ Chromium.
+- **Per-app Mode Override** — ghi đè chế độ gõ cho từng ứng dụng qua menu phím tắt `` ` `` hoặc Settings UI. Cài đặt được lưu vĩnh viễn.
 - **Loại trừ ứng dụng (App Exclusion)** — tắt gõ tiếng Việt cho từng ứng dụng qua menu phím tắt `` ` ``.
 - **Auto-restore** — tự động hoàn nguyên từ không hợp lệ (ví dụ: gõ `telegram` giữ nguyên `telegram` thay vì `tẻlegam`).
 - **Kiểm tra chính tả** — kiểm tra tính hợp lệ âm tiết theo thời gian thực.
 - **Vị trí dấu thanh:** Kiểu mới (hoà) hoặc kiểu cũ (hòa).
 - **Menu cấu hình** — chuyển đổi nhanh tùy chọn qua phím tắt `` ` `` và menu hệ thống.
 - **Nhẹ & Gọn** — mặc định là một thư viện liên kết động (.so), không chạy daemon ngầm trừ khi bật chế độ Uinput.
-- **Cấu hình** — thiết lập qua `fcitx5-configtool` hoặc menu hệ thống.
+- **Cấu hình** — thiết lập qua `fcitx5-skey-settings` (Qt6 GUI) hoặc `fcitx5-configtool`.
 
 ---
 
@@ -42,7 +45,27 @@ curl -fsSL https://collyn.github.io/skey/install.sh | sudo bash
 sudo apt install fcitx5-skey
 ```
 
-Package tự động chạy `skey-setup` để cấu hình fcitx5 — bộ gõ SKey sẵn sàng sử dụng ngay.
+Package tự động chạy `skey-setup` để cấu hình fcitx5, bật `ActiveByDefault` và `ShareInputState`, export biến môi trường (`GTK_IM_MODULE`, `QT_IM_MODULE`, `XMODIFIERS`) cho cả X11 và Wayland. Bộ gõ SKey sẵn sàng sử dụng ngay sau khi cài — chuyển đổi bằng **Ctrl+Space**.
+
+Để gõ tiếng Việt trên các ứng dụng AppImage hoặc ứng dụng chạy qua IBus frontend, thêm vào `~/.profile`:
+
+```bash
+export GTK_IM_MODULE=fcitx
+export QT_IM_MODULE=fcitx
+export XMODIFIERS=@im=fcitx
+export SDL_IM_MODULE=fcitx
+export GLFW_IM_MODULE=ibus
+```
+
+Trên KDE Wayland, thêm dòng sau vào `~/.config/environment.d/fcitx.conf` để systemd user session nhận biến môi trường:
+
+```
+GTK_IM_MODULE=fcitx
+QT_IM_MODULE=fcitx
+XMODIFIERS=@im=fcitx
+SDL_IM_MODULE=fcitx
+GLFW_IM_MODULE=ibus
+```
 
 ### Từ file .deb
 
@@ -57,30 +80,39 @@ sudo apt install -f  # cài dependencies nếu cần
 
 #### Yêu cầu
 
-- Linux với fcitx5
+- Linux với fcitx5 ≥ 5.0
 - CMake ≥ 3.16, Extra CMake Modules (ECM)
-- Fcitx5 development headers
-- Rust toolchain (cargo)
+- Fcitx5 development headers (`libfcitx5core-dev`)
+- Rust toolchain (cargo, rustc)
 - GCC/G++ (C++17)
+- Qt6 (cho Settings GUI, tùy chọn)
+- systemd (cho uinput server, tùy chọn)
 
 #### Cài dependencies
 
 **Ubuntu/Debian:**
 
 ```bash
-sudo apt install cmake extra-cmake-modules libfcitx5core-dev fcitx5
+sudo apt install cmake extra-cmake-modules libfcitx5core-dev \
+  libfcitx5utils-dev fcitx5 fcitx5-modules \
+  qt6-base-dev libqt6svg6-dev libgl1-mesa-dev \
+  curl rustc cargo
 ```
 
 **Fedora:**
 
 ```bash
-sudo dnf install cmake extra-cmake-modules fcitx5-devel fcitx5
+sudo dnf install cmake extra-cmake-modules fcitx5-devel fcitx5 \
+  qt6-qtbase-devel qt6-qtsvg-devel \
+  rust cargo gcc-c++
 ```
 
 **Arch Linux:**
 
 ```bash
-sudo pacman -S cmake extra-cmake-modules fcitx5
+sudo pacman -S cmake extra-cmake-modules fcitx5 \
+  qt6-base qt6-svg \
+  rust cargo gcc
 ```
 
 #### Build & Install
@@ -92,10 +124,23 @@ mkdir build && cd build
 cmake .. -DCMAKE_INSTALL_PREFIX=/usr
 make -j$(nproc)
 sudo make install
-skey-setup
 ```
 
-Script `skey-setup` sẽ cấu hình fcitx5 profile, bật `ActiveByDefault`, `ShareInputState`, export biến môi trường (`GTK_IM_MODULE`, `QT_IM_MODULE`, `XMODIFIERS`) cho cả X11 và Wayland, và tự động restart fcitx5. Trên Wayland + KDE/GNOME, script tự động reconnect compositor virtual keyboard để không cần logout/login.
+Sau khi build và install:
+
+```bash
+# Cấu hình fcitx5 profile và biến môi trường
+sudo skey-setup
+
+# Restart fcitx5
+fcitx5 -r -d
+```
+
+Script `skey-setup` sẽ:
+1. Thêm SKey vào fcitx5 profile (ActiveByDefault, ShareInputState)
+2. Export biến môi trường `GTK_IM_MODULE`, `QT_IM_MODULE`, `XMODIFIERS`, `SDL_IM_MODULE`, `GLFW_IM_MODULE`
+3. Trên Wayland + KDE/GNOME: tự động reconnect compositor virtual keyboard
+4. Inject biến môi trường fcitx vào systemd user session
 
 #### Build .deb
 
@@ -158,16 +203,15 @@ Ví dụ khi bật **Gõ ][ thành ư ơ**: gõ `dd][cj` → `được`, `ng][if
 
 ## Cấu hình
 
-Mở **fcitx5-configtool** hoặc sử dụng **menu tray** để thay đổi cài đặt:
+Mở **fcitx5-skey-settings** (khuyến nghị) hoặc **fcitx5-configtool** để thay đổi cài đặt:
 
 | Tùy chọn | Giá trị | Mô tả |
 |----------|---------|-------|
 | **Input Method** | Telex / VNI | Phương thức gõ |
 | **Gõ w thành ư** | true / false | Chỉ Telex: gõ w đơn lẻ ra ư |
 | **Gõ ][ thành ư ơ** | true / false | Chỉ Telex: gõ [ ra ơ, ] ra ư (giống UniKey) |
-| **Output Mode** | Surrounding Text / Preedit / Uinput | Chế độ hiển thị text đang gõ |
-| **Chromium Address Bar** | Uinput / Surrounding Text / Preedit / No Vietnamese | Chế độ gõ riêng cho thanh địa chỉ Chromium (Chrome, Edge, Brave...) |
-| **Tone Mark Position** | Modern (hoà) / Traditional (hòa) | Vị trí đặt dấu thanh |
+| **Output Mode** | **Auto** / Surrounding Text / Preedit / Uinput | Chế độ xuất. Mặc định Auto — tự động chọn giữa Surrounding Text và Uinput |
+| **Chromium Address Bar** | **Auto** / Uinput / Surrounding Text / Preedit / No Vietnamese | Chế độ gõ riêng cho thanh địa chỉ Chromium (Chrome, Edge, Brave...) |
 | **Free Marking** | true / false | Cho phép đặt dấu tự do |
 | **Auto Restore** | true / false | Tự động hoàn nguyên từ không phải tiếng Việt |
 | **Show Preedit** | true / false | Hiển thị text đang soạn |
@@ -179,33 +223,51 @@ File cấu hình lưu tại `~/.config/fcitx5/conf/skey.conf`. Thay đổi có h
 SKey đi kèm ứng dụng **fcitx5-skey-settings** (Qt6) để cấu hình trực quan:
 
 - **Tab Chung**: tất cả tùy chọn gõ (phương thức, chế độ output, bảng mã, dấu thanh...)
-- **Tab Ứng dụng**: cấu hình chế độ gõ riêng cho từng ứng dụng (App Modes)
+- **Tab Ứng dụng**: cấu hình chế độ gõ riêng cho từng ứng dụng (Auto / Uinput / Surrounding Text / Preedit / Excluded)
 - **Tab Info**: phiên bản, kiểm tra cập nhật (tự động tải + cài .deb từ GitHub Releases), **nút khởi động lại Fcitx5** (có xử lý Wayland reconnect)
 
 Mở từ menu ứng dụng hoặc terminal: `fcitx5-skey-settings`
 
+### Chế độ Auto (mặc định)
+
+Chế độ **Auto** tự động chọn giữa Surrounding Text và Uinput khi focus vào một ứng dụng, dựa trên các tín hiệu từ fcitx5 capability flags:
+
+| Điều kiện | Mode được chọn | Ví dụ app |
+|-----------|---------------|-----------|
+| Có `Terminal` flag | Uinput | Konsole, Alacritty |
+| Là Chromium + **không** có `SpellCheck` | Uinput | Tabby (Electron terminal) |
+| Có `SurroundingText` capability | Surrounding Text | Chrome, Firefox, Telegram, Antigravity |
+| Không có `SurroundingText` capability | Uinput | App X11 cũ |
+
+Nếu Auto chọn Surrounding Text nhưng surrounding text không thực sự hoạt động (cache rỗng sau vài lần gõ), engine tự động hạ cấp xuống Uinput.
+
+Để ghi đè cho một ứng dụng cụ thể: bấm `` ` `` → chọn mode mong muốn. Cài đặt được lưu vĩnh viễn trong `~/.config/fcitx5/conf/skey-app-modes.conf`.
+
 ### Chế độ riêng cho thanh địa chỉ Chromium
 
-Trên X11, thanh địa chỉ Chrome/Chromium không hỗ trợ Surrounding Text API — việc xóa và thay thế văn bản qua D-Bus gây ra xung đột với autocomplete của omnibox, dẫn đến mất chữ hoặc gõ sai. SKey sử dụng AT-SPI2 để tự động phát hiện khi đang ở thanh địa chỉ Chromium và chuyển sang chế độ gõ được cấu hình riêng (mặc định: **Preedit**).
+Trên X11, thanh địa chỉ Chrome/Chromium không hỗ trợ Surrounding Text API — việc xóa và thay thế văn bản qua D-Bus gây ra xung đột với autocomplete của omnibox, dẫn đến mất chữ hoặc gõ sai. SKey sử dụng AT-SPI2 để tự động phát hiện khi đang ở thanh địa chỉ Chromium và chuyển sang chế độ gõ được cấu hình riêng (mặc định: **Auto**).
 
 | Chế độ | Phù hợp khi |
 |--------|------------|
-| **Preedit** (mặc định) | Ổn định nhất — hiển thị gạch chân, không xung đột với autocomplete |
-| **Surrounding Text** | Muốn gõ trực tiếp không gạch chân, chấp nhận đôi khi không ổn định |
+| **Auto** (mặc định) | Dùng chung logic tự động như web content |
+| **Preedit** | Ổn định nhất — hiển thị gạch chân, không xung đột với autocomplete |
+| **Surrounding Text** | Muốn gõ trực tiếp không gạch chân |
 | **Uinput** | Muốn gõ trực tiếp qua `/dev/uinput` (cần bật service uinput server) |
 | **No Vietnamese** | Tắt hoàn toàn tiếng Việt trong thanh địa chỉ, chỉ gõ trên web |
 
 Trên Wayland, Chrome hỗ trợ `CapabilityFlag::Url` nên việc phát hiện thanh địa chỉ là tức thời và chính xác.
 
 ### Chế độ Trì hoãn Tự Thích ứng (Adaptive Delay)
-Đối với chế độ **Surrounding Text** trên các ứng dụng D-Bus (như các phần mềm viết bằng Electron/Chromium như VS Code, Discord, Chrome), SKey không sử dụng độ trễ cố định (80ms). Thay vào đó:
-- Nó tự động tính toán thời gian phản hồi thực tế (Round-Trip Time) thông qua các lệnh xóa phím.
-- Sử dụng công thức tự thích ứng để giảm thời gian chờ xuống mức tối ưu nhất (thường chỉ khoảng ~10-15ms).
-- Nếu ứng dụng có hỗ trợ đầy đủ API Surrounding Text gốc (như Qt/GTK), SKey sẽ thực hiện xóa và commit ngay lập tức (0ms).
+
+Đối với chế độ **Surrounding Text** và **Uinput**, SKey sử dụng EWMA (Exponentially Weighted Moving Average) để đo thời gian round-trip thực tế của phím Backspace:
+- Tự động tính toán thời gian phản hồi qua các lệnh xóa phím
+- Sử dụng công thức tự thích ứng để giảm thời gian chờ xuống mức tối ưu nhất (thường chỉ khoảng ~10-15ms)
+- Nếu ứng dụng có hỗ trợ đầy đủ API Surrounding Text gốc (như Qt/GTK), SKey sẽ thực hiện xóa và commit ngay lập tức (0ms)
+- Có safety timeout 150ms để tránh freeze nếu BS events bị thất lạc
 
 ### Output mode Uinput
 
-Chế độ **Uinput** gửi yêu cầu Backspace trực tiếp đến trình điều khiển hệ thống qua dịch vụ `fcitx5-skey-uinput-server`. Phương pháp này giúp khắc phục lỗi mất chữ trên một số ứng dụng đặc thù hoặc game chặn phím ảo từ D-Bus/X11.
+Chế độ **Uinput** gửi yêu cầu Backspace trực tiếp đến trình điều khiển hệ thống qua service `fcitx5-skey-uinput-server`. Phương pháp này giúp khắc phục lỗi mất chữ trên một số ứng dụng đặc thù hoặc terminal app không hỗ trợ Surrounding Text.
 
 Bật service trước khi chọn chế độ Uinput:
 
@@ -213,7 +275,7 @@ Bật service trước khi chọn chế độ Uinput:
 sudo systemctl enable --now fcitx5-skey-uinput-server@$USER.service
 ```
 
-Dịch vụ chạy dưới quyền root để tương tác với `/dev/uinput`, nhưng nhận tên người dùng từ instance `@$USER` để mở socket đúng quyền người dùng chạy Fcitx5. Kiểm tra trạng thái:
+Service chạy dưới quyền root để tương tác với `/dev/uinput`, nhưng nhận tên người dùng từ instance `@$USER` để mở socket đúng quyền người dùng chạy Fcitx5. Kiểm tra trạng thái:
 
 ```bash
 systemctl status fcitx5-skey-uinput-server@$USER.service
