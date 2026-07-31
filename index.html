@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="vi" data-theme="dark">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Primary Meta Tags -->
+  <title>SKey - Bộ Gõ Tiếng Việt Không Gạch Chân Tốt Nhất Cho Ubuntu & Linux</title>
+  <meta name="title" content="SKey - Bộ Gõ Tiếng Việt Không Gạch Chân Tốt Nhất Cho Ubuntu & Linux">
+  <meta name="description"
+    content="SKey là bộ gõ tiếng Việt mượt mà trên Fcitx5 dành cho Ubuntu và Linux. Loại bỏ 100% nét gạch chân tạm thời (Zero-Underline), phản hồi tức thì 0ms như UniKey trên Windows.">
+  <meta name="keywords"
+    content="skey, bo go tieng viet linux, bo go tieng viet ubuntu, fcitx5-skey, unikey linux, evkey linux, khong gach chan, ubuntu tieng viet">
+  <meta name="author" content="Collyn (Nguyễn Tiến Huy)">
+  <link rel="canonical" href="https://collyn.github.io/skey/">
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://collyn.github.io/skey/">
+  <meta property="og:title" content="SKey - Bộ Gõ Tiếng Việt Không Gạch Chân Cho Ubuntu & Linux">
+  <meta property="og:description"
+    content="Gõ tiếng Việt mượt như UniKey/EVKey trên Windows. Không gạch chân, không giật lag, cài đặt 1-click cho Ubuntu.">
+  <meta property="og:image" content="https://collyn.github.io/skey/assets/images/skey-config-info.png">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="https://collyn.github.io/skey/">
+  <meta name="twitter:title" content="SKey - Bộ Gõ Tiếng Việt Cho Ubuntu & Linux">
+  <meta name="twitter:description"
+    content="Bộ gõ tiếng Việt hiện đại không gạch chân (Zero-Underline) cho Ubuntu & Linux. Phản hồi 0ms.">
+  <meta name="twitter:image" content="https://collyn.github.io/skey/assets/images/skey-config-info.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="skey-logo.svg">
+
+  <!-- JSON-LD Structured Data for SEO -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "SKey",
+    "operatingSystem": "Linux, Ubuntu",
+    "applicationCategory": "UtilitiesApplication",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    },
+    "description": "Bộ gõ tiếng Việt hiện đại, mượt mà và không nét gạch chân tạm thời dành cho Ubuntu & Linux dựa trên Fcitx5 và Bamboo Core.",
+    "url": "https://collyn.github.io/skey/",
+    "author": {
+      "@type": "Person",
+      "name": "Nguyễn Tiến Huy (Collyn)",
+      "url": "https://github.com/collyn"
+    },
+    "license": "https://github.com/collyn/skey/blob/main/LICENSE"
+  }
+  </script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Sau khi cài đặt xong trên Ubuntu nhưng chưa gõ được tiếng Việt?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Chạy lại 2 lệnh: sudo skey-setup && fcitx5 -r -d. Sau đó Logout và Login lại vào Ubuntu."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Làm sao để tắt gõ tiếng Việt khi mở Game (Steam / Proton)?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Bấm phím tắt ` cạnh số 1 hoặc dùng tính năng Exclude App trong menu Fcitx5."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Cách mở giao diện cấu hình SKey Qt6 Settings?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Mở Terminal gõ fcitx5-skey-settings hoặc tìm SKey Configuration trong menu ứng dụng Ubuntu."
+        }
+      }
+    ]
+  }
+  </script>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap"
+    rel="stylesheet">
+
+  <!-- Custom Styles -->
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+  <!-- Header & Navigation -->
+  <header class="header" id="mainHeader">
+    <div class="container nav-container">
+      <a href="#" class="logo" id="logoLink">
+        <img src="skey-logo.svg" alt="SKey Logo">
+        <span>SKey</span>
+      </a>
+
+      <ul class="nav-links" id="navLinks">
+        <li><a href="#hero">Trang chủ</a></li>
+        <li><a href="#features">Tính năng</a></li>
+        <li><a href="#comparison">Cơ chế Gõ Preedit</a></li>
+        <li><a href="#install">Cài đặt Ubuntu</a></li>
+        <li><a href="#keymap">Bảng gõ</a></li>
+        <li><a href="#faq">Hỏi đáp</a></li>
+      </ul>
+
+      <div class="nav-actions">
+        <a href="https://github.com/collyn/skey" target="_blank" rel="noopener" class="btn btn-secondary"
+          id="githubRepoBtn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path
+              d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
+          </svg>
+          GitHub
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Minimal Centered Hero Section -->
+  <section class="hero hero-centered" id="hero">
+    <div class="container">
+      <div class="hero-header-box">
+        <div class="hero-badge-container">
+          <span class="badge badge-ubuntu">✨ Tối ưu tốt nhất cho Ubuntu</span>
+          <span class="badge badge-feature">⚡ KHÔNG GẠCH CHÂN (Zero-Underline)</span>
+        </div>
+
+        <h1 class="hero-title">Bộ Gõ Tiếng Việt Mượt Như <span class="text-gradient">UniKey Trên Windows</span></h1>
+
+        <p class="hero-description">
+          Chuyển từ Windows sang Linux? <strong>SKey</strong> giúp bạn quên đi nỗi ám ảnh kẹt phím, đường gạch chân giật
+          lag. Trải nghiệm gõ tiếng Việt tức thì, chuẩn xác và mượt mà nhất trên Ubuntu.
+        </p>
+
+        <!-- Quick 1-Line Terminal Install Command Banner -->
+        <div class="quick-install-box">
+          <span class="quick-label">⚡ Lệnh Cài Đặt Nhanh (Ubuntu Terminal):</span>
+          <div class="code-box hero-code-box">
+            <code>curl -fsSL https://collyn.github.io/skey/install.sh | sudo bash && sudo apt install fcitx5-skey</code>
+            <button class="copy-btn">Chép Lệnh</button>
+          </div>
+        </div>
+
+        <div class="hero-ctas">
+          <a href="#install" class="btn btn-primary" id="heroInstallBtn">
+            🚀 Xem Hướng Dẫn Cài Đặt Chi Tiết
+          </a>
+          <a href="#features" class="btn btn-secondary" id="heroLearnMoreBtn">
+            Tìm Hiểu Tính Năng
+          </a>
+        </div>
+      </div>
+
+      <!-- Zero Underline Showcase Demo Panel (Centered Flat Strip) -->
+      <div class="showcase-panel" id="zeroUnderlineShowcase">
+        <div class="showcase-header">
+          <span class="showcase-title">Mô phỏng trải nghiệm gõ</span>
+          <div class="status-dot" title="SKey Active"></div>
+        </div>
+
+        <div class="input-comparison-grid">
+          <!-- Traditional Preedit Way -->
+          <div class="compare-box traditional">
+            <div class="compare-label">
+              <span>Bộ gõ thường (Preedit)</span>
+              <span class="badge-status danger">❌ Bị gạch chân</span>
+            </div>
+            <div class="compare-input">
+              <span>Tôi đang gõ </span>
+              <span class="underline-text">Tiếng Việt</span>
+            </div>
+          </div>
+
+          <!-- SKey No Preedit / Direct Input Way -->
+          <div class="compare-box skey-way">
+            <div class="compare-label">
+              <span>SKey (Direct Input)</span>
+              <span class="badge-status success">✨ Mượt như Windows</span>
+            </div>
+            <div class="compare-input">
+              <span>Tôi đang gõ </span>
+              <span class="clean-text">Tiếng Việt</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section class="section" id="features">
+    <div class="container">
+      <div class="section-header">
+        <h2 class="section-title">Tại Sao SKey Là Lựa Chọn Số 1 Cho <span class="text-gradient">Ubuntu</span>?</h2>
+        <p class="section-subtitle">Được thiết kế từ gốc bằng Rust & Fcitx5 nhằm đem lại trải nghiệm hoàn hảo cho người
+          dùng chuyển từ Windows sang Linux.</p>
+      </div>
+
+      <div class="features-grid">
+        <!-- Feature 1 -->
+        <div class="feature-card" id="featureZeroUnderline">
+          <div class="feature-icon">✨</div>
+          <h3>Không Nét Gạch Chân</h3>
+          <p>Loại bỏ hoàn toàn đường gạch chân giật lag tạm thời (preedit). Phím gõ ăn ngay lập tức vào trình duyệt, VS
+            Code, Discord và Terminal.</p>
+        </div>
+
+        <!-- Feature 2 -->
+        <div class="feature-card" id="featurePerApp">
+          <div class="feature-icon">🎮</div>
+          <h3>Per-App Mode Override</h3>
+          <p>Tự động ghi đè hoặc tắt gõ tiếng Việt cho từng ứng dụng riêng biệt. Tự tắt khi mở Game/Terminal, tự bật khi
+            mở Chrome/Discord.</p>
+        </div>
+
+        <!-- Feature 3 -->
+        <div class="feature-card" id="featureBambooEngine">
+          <div class="feature-icon">🚀</div>
+          <h3>Trái Tim Bamboo Core Engine</h3>
+          <p>Thuật toán biến đổi tiếng Việt tự do (Unikey-style). Cho phép viết tắt, gõ đổi dấu liên tục (`x→s→f→x`)
+            không lo mất chữ.</p>
+        </div>
+
+        <!-- Feature 4 -->
+        <div class="feature-card" id="featureUndoRestore">
+          <div class="feature-icon">↩️</div>
+          <h3>Double-Tone Undo</h3>
+          <p>Bấm cùng phím dấu 2 lần liên tiếp để trả về dạng phím thô (vd: `vãi` → bấm `x` → `vaix`). Tự khôi phục từ
+            thông minh khi gõ sai.</p>
+        </div>
+
+        <!-- Feature 5 -->
+        <div class="feature-card" id="featureWaylandNative">
+          <div class="feature-icon">🐧</div>
+          <h3>Tương Thích Wayland & X11</h3>
+          <p>Hoạt động mượt mà trên Ubuntu GNOME, KDE Plasma, Hyprland, Sway. Không cần mò mẫm cấu hình file hệ thống
+            bằng tay.</p>
+        </div>
+
+        <!-- Feature 6 -->
+        <div class="feature-card" id="featureQtGui">
+          <div class="feature-icon">⚙️</div>
+          <h3>Giao Diện Cấu Hình Qt6</h3>
+          <p>Đi kèm `fcitx5-skey-settings` đẹp mắt, hỗ trợ chỉnh vị trí dấu thanh (kiểu mới `hoà` / kiểu cũ `hòa`), quy
+            tắc gõ nhanh `w` → `ư` hoặc `][` → `ư ơ`.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SKey Settings Showcase Section -->
+  <section class="section config-showcase-section" id="config-showcase">
+    <div class="container">
+      <div class="section-header">
+        <h2 class="section-title">Giao Diện Cấu Hình <span class="text-gradient">SKey Qt6 Settings</span></h2>
+        <p class="section-subtitle">Tùy biến bộ gõ trực quan, dễ dàng quản lý chế độ xuất cho từng ứng dụng riêng
+          biệt.</p>
+      </div>
+
+      <div class="config-gallery">
+        <div class="config-tabs">
+          <button class="config-tab-btn active" data-target="imgGeneral">⚙️ Cấu Hình Chung</button>
+          <button class="config-tab-btn" data-target="imgApps">🎮 Tùy Chỉnh Ứng Dụng</button>
+          <button class="config-tab-btn" data-target="imgInfo">ℹ️ Thông Tin & Cập Nhật</button>
+        </div>
+
+        <div class="config-display">
+          <div class="config-item active" id="imgGeneral">
+            <img src="assets/images/skey-config-general.png" alt="SKey Tùy chỉnh - Thẻ Cấu hình chung" loading="lazy">
+            <div class="config-caption">
+              <h4>Cấu Hình Quy Tắc Gõ & Phím Tắt</h4>
+              <p>Tùy chọn kiểu gõ Telex, bảng mã Unicode, đặt phím tắt chuyển đổi bộ gõ, bật/tắt phím gõ nhanh
+                <code>w</code> → <code>ư</code>, <code>][</code> → <code>ư ơ</code> và tự động khôi phục từ.
+              </p>
+            </div>
+          </div>
+
+          <div class="config-item" id="imgApps">
+            <img src="assets/images/skey-config-apps.png" alt="SKey Tùy chỉnh - Thẻ Ứng dụng" loading="lazy">
+            <div class="config-caption">
+              <h4>Per-App Mode Override (Ghi Đè Chế Độ Xuất Cho Từng App)</h4>
+              <p>Dễ dàng thêm tên file thực thi (như <code>google-chrome-stable</code>,
+                <code>gnome-terminal-server</code>, <code>waveterm</code>, v.v.) và chỉ định chế độ gõ riêng biệt
+                (Uinput / Auto / Preedit) tùy nhu cầu.
+              </p>
+            </div>
+          </div>
+
+          <div class="config-item" id="imgInfo">
+            <img src="assets/images/skey-config-info.png" alt="SKey Tùy chỉnh - Thẻ Thông tin" loading="lazy">
+            <div class="config-caption">
+              <h4>Thông Tin Phiên Bản & Kiểm Tra Cập Nhật</h4>
+              <p>Xem phiên bản hiện tại, đường dẫn kho mã nguồn GitHub, tích hợp nút kiểm tra cập nhật mới và khởi
+                động lại Fcitx5 chỉ với 1-click.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Preedit vs Non-Preedit Comparison Matrix Section -->
+  <section class="section comparison-section" id="comparison">
+    <div class="container">
+      <div class="section-header">
+        <h2 class="section-title">So Sánh Cơ Chế: <span class="text-gradient">Gõ Preedit vs. Gõ Không Cần
+            Preedit</span>
+        </h2>
+        <p class="section-subtitle">Sự khác biệt cốt lõi giữa cơ chế hiển thị gạch chân tạm thời (Preedit) và cơ chế
+          đẩy
+          phím trực tiếp (Direct Commit / Anchoring) của SKey.</p>
+      </div>
+
+      <div class="comparison-table-wrapper">
+        <table class="comparison-table" id="comparisonTable">
+          <thead>
+            <tr>
+              <th>Đặc tính nhập liệu</th>
+              <th>Gõ Dùng Preedit (Gạch chân)</th>
+              <th>Gõ Không Cần Preedit (SKey Direct Commit)</th>
+              <th>Lợi ích thực tế</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Cơ chế hiển thị phím</strong></td>
+              <td>Hiện văn bản gạch chân tạm thời</td>
+              <td class="badge-skey">✨ Đẩy ký tự tiếng Việt trực tiếp, 0% nét gạch chân</td>
+              <td>Màn hình sạch sẽ, không rối mắt</td>
+            </tr>
+            <tr>
+              <td><strong>Độ trễ phản hồi (Input Lag)</strong></td>
+              <td>Chờ bấm Space/Enter mới commit từ vào ứng dụng</td>
+              <td class="badge-skey">⚡ Phản hồi tức thì 0ms theo thời gian thực</td>
+              <td>Nhịp gõ nhanh, mượt mà như UniKey</td>
+            </tr>
+            <tr>
+              <td><strong>Độ ổn định trên Browser/App</strong></td>
+              <td>Dễ nhảy con trỏ, rớt chữ ở thanh địa chỉ Chrome/VS Code</td>
+              <td class="badge-skey">🎯 Gõ chuẩn xác 100% ở mọi khung nhập văn bản</td>
+              <td>Không mất chữ hay kẹt phím bất ngờ</td>
+            </tr>
+            <tr>
+              <td><strong>Hiển thị trong Game / Fullscreen</strong></td>
+              <td>Popup khung preedit đè lên giao diện Game</td>
+              <td class="badge-skey">🎮 Không hề có popup, tích hợp Per-App Auto Disable</td>
+              <td>Chơi game & dùng ứng dụng toàn màn hình mượt mà</td>
+            </tr>
+            <tr>
+              <td><strong>Cảm giác gõ văn bản</strong></td>
+              <td>Gây gián đoạn thị giác khi gõ văn bản dài</td>
+              <td class="badge-skey">🚀 Tự nhiên, liền mạch, giữ trọn tập trung</td>
+              <td>Tăng tốc độ gõ văn bản và làm việc</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Detailed Installation Guide Section -->
+  <section class="section" id="install">
+    <div class="container">
+      <div class="section-header">
+        <h2 class="section-title">Hướng Dẫn Cài Đặt <span class="text-gradient">Chuẩn Ubuntu</span></h2>
+        <p class="section-subtitle">Chỉ với 3 bước đơn giản, SKey sẽ tự động sẵn sàng sử dụng trên hệ thống của bạn.
+        </p>
+      </div>
+
+      <div class="install-tabs-wrapper" id="installTabsWrapper">
+        <div class="tab-buttons">
+          <button class="tab-btn active" data-tab="tabApt" id="tabBtnApt">📦 Cách 1: Tự động qua APT (Khuyên
+            Dùng)</button>
+          <button class="tab-btn" data-tab="tabDeb" id="tabBtnDeb">📄 Cách 2: File .deb Direct Download</button>
+          <button class="tab-btn" data-tab="tabSource" id="tabBtnSource">🛠️ Cách 3: Build từ Source Code</button>
+        </div>
+
+        <div class="tab-content">
+          <!-- Tab 1: APT Repository -->
+          <div class="tab-pane active" id="tabApt">
+            <div class="step-list">
+              <!-- Step 1 -->
+              <div class="step-item">
+                <div class="step-number">1</div>
+                <div class="step-details">
+                  <h4>Thêm Kho APT Repository & Cài Đặt SKey</h4>
+                  <p>Mở Terminal (bấm <code>Ctrl + Alt + T</code> trên Ubuntu) và dán lệnh sau:</p>
+                  <div class="code-box">
+                    <code>curl -fsSL https://collyn.github.io/skey/install.sh | sudo bash && sudo apt install fcitx5-skey</code>
+                    <button class="copy-btn">Chép Lệnh</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Step 2 -->
+              <div class="step-item">
+                <div class="step-number">2</div>
+                <div class="step-details">
+                  <h4>Tự Động Cấu Hình Hệ Thống Fcitx5</h4>
+                  <p>Lệnh <code>skey-setup</code> sẽ tự động thêm SKey vào Fcitx5 profile, export các biến môi trường
+                    (GTK, QT, XMODIFIERS) và khởi tạo daemon ngầm:</p>
+                  <div class="code-box">
+                    <code>sudo skey-setup && fcitx5 -r -d</code>
+                    <button class="copy-btn">Chép Lệnh</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Step 3 -->
+              <div class="step-item">
+                <div class="step-number">3</div>
+                <div class="step-details">
+                  <h4>Lưu Ý Cho Người Dùng Ubuntu Wayland (GNOME / KDE)</h4>
+                  <p>Vào <strong>System Settings</strong> → <strong>Keyboard</strong> (hoặc Input Devices) → tại mục
+                    <strong>Virtual Keyboard</strong> chọn <strong>Fcitx 5</strong>. Bây giờ bạn có thể bấm
+                    <code>Ctrl + Space</code> để gõ tiếng Việt mượt mà!
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab 2: DEB Package -->
+          <div class="tab-pane" id="tabDeb">
+            <div class="step-list">
+              <div class="step-item">
+                <div class="step-number">1</div>
+                <div class="step-details">
+                  <h4>Tải File .deb Mới Nhất</h4>
+                  <p id="latestDebInfo">Đang tải thông tin bản phát hành từ GitHub...</p>
+                </div>
+              </div>
+
+              <div class="step-item">
+                <div class="step-number">2</div>
+                <div class="step-details">
+                  <h4>Cài Đặt Và Khởi Chạy</h4>
+                  <div class="code-box">
+                    <code>sudo dpkg -i fcitx5-skey_*.deb && sudo apt install -f && sudo skey-setup && fcitx5 -r -d</code>
+                    <button class="copy-btn">Chép Lệnh</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab 3: Build from Source -->
+          <div class="tab-pane" id="tabSource">
+            <div class="step-list">
+              <div class="step-item">
+                <div class="step-number">1</div>
+                <div class="step-details">
+                  <h4>Cài Đặt Dependencies Cần Thiết (Ubuntu / Debian)</h4>
+                  <div class="code-box">
+                    <code>sudo apt install -y cmake extra-cmake-modules libfcitx5core-dev libfcitx5utils-dev fcitx5 fcitx5-modules qt6-base-dev libqt6svg6-dev libgl1-mesa-dev curl rustc cargo</code>
+                    <button class="copy-btn">Chép Lệnh</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="step-item">
+                <div class="step-number">2</div>
+                <div class="step-details">
+                  <h4>Clone Source & Biên Dịch CMake</h4>
+                  <div class="code-box">
+                    <code>git clone https://github.com/collyn/skey.git && cd skey && mkdir -p build && cd build && cmake .. -DCMAKE_INSTALL_PREFIX=/usr && make -j$(nproc) && sudo make install && sudo skey-setup && fcitx5 -r -d</code>
+                    <button class="copy-btn">Chép Lệnh</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Keymap Cheat Sheet Section -->
+  <section class="section" id="keymap">
+    <div class="container">
+      <div class="section-header">
+        <h2 class="section-title">Bảng Tra Cứu <span class="text-gradient">Kiểu Gõ</span></h2>
+        <p class="section-subtitle">Hỗ trợ đầy đủ Telex & VNI với các phím gõ nhanh tiện lợi tương tự EVKey / UniKey.
+        </p>
+      </div>
+
+      <div class="keymap-grid">
+        <!-- Telex Table -->
+        <div class="keymap-card" id="telexCard">
+          <h3>Bảng Gõ Telex</h3>
+          <table class="table-custom">
+            <thead>
+              <tr>
+                <th>Phím Gõ</th>
+                <th>Kết Quả</th>
+                <th>Mô Tả</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><kbd>aa</kbd> / <kbd>oo</kbd> / <kbd>ee</kbd></td>
+                <td>â, ô, ê</td>
+                <td>Dấu mũ (mọi vị trí)</td>
+              </tr>
+              <tr>
+                <td><kbd>uw</kbd> / <kbd>ww</kbd> / <kbd>ow</kbd></td>
+                <td>ư, ơ</td>
+                <td>Dấu móc (mọi vị trí)</td>
+              </tr>
+              <tr>
+                <td><kbd>aw</kbd></td>
+                <td>ă</td>
+                <td>Dấu trăng</td>
+              </tr>
+              <tr>
+                <td><kbd>dd</kbd></td>
+                <td>đ</td>
+                <td>Chữ đét đét (kể cả viết tắt)</td>
+              </tr>
+              <tr>
+                <td><kbd>s</kbd> / <kbd>f</kbd> / <kbd>r</kbd> / <kbd>x</kbd> / <kbd>j</kbd></td>
+                <td>á, à, ả, ã, ạ</td>
+                <td>Dấu thanh sắc, huyền, hỏi, ngã, nặng</td>
+              </tr>
+              <tr>
+                <td><kbd>z</kbd></td>
+                <td>Xóa dấu</td>
+                <td>Xóa dấu thanh đã gõ</td>
+              </tr>
+              <tr>
+                <td><kbd>w</kbd> (Tùy chọn)</td>
+                <td>ư</td>
+                <td>Gõ w đơn lẻ thành ư</td>
+              </tr>
+              <tr>
+                <td><kbd>][</kbd> (Tùy chọn)</td>
+                <td>ư, ơ</td>
+                <td>Gõ phím ngoặc vuông UniKey</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- VNI Table -->
+        <div class="keymap-card" id="vniCard">
+          <h3>Bảng Gõ VNI</h3>
+          <table class="table-custom">
+            <thead>
+              <tr>
+                <th>Phím Gõ</th>
+                <th>Kết Quả</th>
+                <th>Mô Tả</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><kbd>1</kbd> / <kbd>2</kbd></td>
+                <td>sắc, huyền</td>
+                <td>Dấu sắc và dấu huyền</td>
+              </tr>
+              <tr>
+                <td><kbd>3</kbd> / <kbd>4</kbd> / <kbd>5</kbd></td>
+                <td>hỏi, ngã, nặng</td>
+                <td>Dấu hỏi, ngã, nặng</td>
+              </tr>
+              <tr>
+                <td><kbd>6</kbd></td>
+                <td>â, ê, ô</td>
+                <td>Dấu mũ</td>
+              </tr>
+              <tr>
+                <td><kbd>7</kbd> / <kbd>8</kbd></td>
+                <td>ơ, ư / ă</td>
+                <td>Dấu móc và dấu trăng</td>
+              </tr>
+              <tr>
+                <td><kbd>9</kbd></td>
+                <td>đ</td>
+                <td>Chữ đét (đ)</td>
+              </tr>
+              <tr>
+                <td><kbd>0</kbd></td>
+                <td>Xóa dấu</td>
+                <td>Bỏ dấu thanh</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ / Troubleshooting Section -->
+  <section class="section" id="faq">
+    <div class="container">
+      <div class="section-header">
+        <h2 class="section-title">Giải Đáp & <span class="text-gradient">Khắc Phục Sự Cố</span></h2>
+        <p class="section-subtitle">Một số lưu ý nhanh giúp bạn xử lý ngay nếu gặp vấn đề khi vừa cài trên Ubuntu.</p>
+      </div>
+
+      <div class="faq-list">
+        <div class="faq-item">
+          <details open>
+            <summary>Sau khi cài đặt xong trên Ubuntu nhưng chưa gõ được tiếng Việt?</summary>
+            <div class="faq-answer">
+              <p>Chạy lại 2 lệnh sau trong Terminal để thiết lập lại môi trường Fcitx 5:</p>
+              <div class="code-box" style="margin-top: 10px;">
+                <code>sudo skey-setup && fcitx5 -r -d</code>
+                <button class="copy-btn">Chép Lệnh</button>
+              </div>
+              <p style="margin-top: 10px;">Sau đó thử Logout (Đăng xuất) và Login (Đăng nhập) lại vào Ubuntu để
+                session
+                nhận các biến môi trường mới.</p>
+            </div>
+          </details>
+        </div>
+
+        <div class="faq-item">
+          <details>
+            <summary>Làm sao để tắt gõ tiếng Việt khi mở Game (Steam / Proton)?</summary>
+            <div class="faq-answer">
+              <p>Bấm phím tắt <code>`</code> (dấu backtick cạnh số 1) hoặc mở menu Fcitx5 để chọn <strong>Exclude
+                  App</strong>. SKey sẽ tự động nhớ cài đặt và tắt gõ tiếng Việt mỗi khi bạn khởi chạy tựa game đó.
+              </p>
+            </div>
+          </details>
+        </div>
+
+        <div class="faq-item">
+          <details>
+            <summary>Cách mở giao diện cấu hình SKey Qt6 Settings?</summary>
+            <div class="faq-answer">
+              <p>Mở Terminal gõ <code>fcitx5-skey-settings</code> hoặc tìm kiếm "SKey Configuration" trong menu ứng
+                dụng
+                Ubuntu.</p>
+            </div>
+          </details>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <a href="#" class="logo">
+            <img src="skey-logo.svg" alt="SKey Logo">
+            <span>SKey</span>
+          </a>
+          <p>Bộ gõ tiếng Việt hiện đại, mượt mà và không nét gạch chân dành cho Ubuntu & Linux. Được phát triển dựa
+            trên
+            Fcitx5 & Bamboo Core.</p>
+        </div>
+
+        <div class="footer-links">
+          <h4>Liên Kết Hữu Ích</h4>
+          <ul>
+            <li><a href="https://github.com/collyn/skey" target="_blank" rel="noopener">GitHub Repository</a></li>
+            <li><a href="https://github.com/collyn/skey/releases" target="_blank" rel="noopener">Releases & Releases
+                DEB</a></li>
+            <li><a href="https://github.com/collyn/skey/issues" target="_blank" rel="noopener">Báo lỗi (Issues)</a>
+            </li>
+
+          </ul>
+        </div>
+
+        <div class="footer-links">
+          <h4>Giấy Phép & Tác Giả</h4>
+          <ul>
+            <li>Giấy phép: <a href="https://github.com/collyn/skey/blob/main/LICENSE" target="_blank"
+                rel="noopener">GPL-3.0 License</a></li>
+            <li>Tác giả: <b><a href="https://github.com/collyn" target="_blank" rel="noopener">Collyn (Nguyễn Tiến
+                  Huy)</a></b> & Cộng đồng</li>
+            <li>Tester: <a href="https://github.com/VoidThrumVoidThrum" target="_blank" rel="noopener">VoidThrum</a> -
+              <a href="https://tinhmenhdo.com" target="_blank" rel="noopener">Tinh Mệnh
+                Đồ</a></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="footer-bottom">
+        <p>© 2026 SKey Input Method. All rights reserved.</p>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Main JavaScript -->
+  <script src="app.js"></script>
+</body>
+
+</html>
