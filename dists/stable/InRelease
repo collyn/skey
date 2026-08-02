@@ -1,0 +1,44 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Sun, 02 Aug 2026 06:22:39 +0000
+Description: Vietnamese SKey input method addon for Fcitx5
+Label: fcitx5-skey
+Origin: fcitx5-skey
+Suite: stable
+MD5Sum:
+ a4d8370043e2dcdabb09ab70f178f5e2              205 Release
+ a864761594e2799d7f399f3227f400f6              617 main/binary-amd64/Packages
+ f23763e68fa6b9d00678dbcb77b1cbd0              448 main/binary-amd64/Packages.gz
+SHA1:
+ d7359a094a54861f8d91467703ad7036a3e35a64              205 Release
+ 6b55f9bd4e3545d0d2a61c900592722f1b8492ec              617 main/binary-amd64/Packages
+ 105151fd701a0207078bca3e67a87290da0bd2d0              448 main/binary-amd64/Packages.gz
+SHA256:
+ 5edeba3406838e07b24caed37ccfd14e8a9b25d54da095a2b02af0427c2aeabe              205 Release
+ c6fbc84bbfbea0e956be9832ec6e37d007685c8de1a335708e85ebc59e040bc9              617 main/binary-amd64/Packages
+ c4bb798a9abe7a5a719236b8115d3f1e0532480103a2dc18a3a20cdd3e2891f1              448 main/binary-amd64/Packages.gz
+SHA512:
+ 409a94f6ecee1c444b8b152298002898a106f5868cc303453b1489f18312659d9173d389e7e36cdcabcdc23a15ba89a7c25b614f81bd0ced4158446ed0627d9c              205 Release
+ f99d9a94be78506822581848dfd614070344b8e2f94bf3d165e4d02481c6bd38c49eaeb0073e8a7cc4a3a6215ba39e955e768a39916c638f30594a2c818251bf              617 main/binary-amd64/Packages
+ 8c936188d1c7948116ba3bc1acc8670db6bff32ea8e9bdf4817ad63b95e00cd38e8ca2203cbc0943b03d35f09ae3aec6de3b657b5be30219ece9b2a51f2430ab              448 main/binary-amd64/Packages.gz
+-----BEGIN PGP SIGNATURE-----
+
+iQJIBAEBCgAyFiEEV9IGoVl2ekUJmC5+KaCOQ0c97jIFAmpu4i8UHGNvbGx5bjA5
+NEBnbWFpbC5jb20ACgkQKaCOQ0c97jISxA//Z3Pffb75BQXtUkaNbuSkcXqt7Eji
+7k2FLFxsR8rX8AYrayxP68NjT7oJ1sDN05jiFZVyQXPR+PIntfimeZ5B86FUozEz
+A+jEfa36efsWKAgAncvaScsTBZ4tzS6vZRQRhU9NE1alAFcoD/1psGoBc/nQDOhL
+whrRXZyKoB4AnL0DEjXKci2D+JrPsDoSlZ1Ql/ZYYM5eizehJ7QvaE6GIu7jJFeB
+FQ/8997X/0Vcy4QRn1uQyunFxa8OyZXI/OEgyXS3rPgyxfETmYfTc57C5inK5W9X
+sKHhS3e/+uIGEsN/wuOFBlO3v+f9BgHYhs4qG6kipPZnVjT0xkTaUGFO8bvi+cmW
+oAaj6FhNqqBgrlN0dqMJK7icKwXseA1ATv7uWzdzwCy7SrjYgy4RKV6sXrMZPB2s
+na0yJ0zUjW169ODD5BhZfyHn2B7RMrPkndl9Eb6cvK8w4sFpFKXAdnIjIKenrYku
+GdwoQoKmemU4O0XqpQndaRoPWLF+bwjdIKJtWTJOjyuCb+q7k+86JEHVv5jiZt/z
+tJJvxfwgs7+3Ac10r0S1P8kpSPVyXppNNiWCKpqug0Oa2aUTwdCFqPksPbzn6nc3
+QyH6TFPalpXiJP+xYXPbqyxY5DLMxf/7jzoyd5/bCZgqC4rjCgYCSHjIa0rvySna
+prYwl9gGRGqhXZg=
+=ldlu
+-----END PGP SIGNATURE-----
