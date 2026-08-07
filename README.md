@@ -12,7 +12,9 @@
 
 </div>
 
-SKey (Simple Key) là bộ gõ Tiếng Việt cho Linux trên nền tảng [fcitx5](https://fcitx-im.org/), sử dụng engine [bamboo-core](https://github.com/nguyen10t2/bamboo_core) (Rust) qua FFI. Mặc định chạy ở chế độ **Auto** — tự động chọn giữa Surrounding Text và Uinput dựa trên khả năng của ứng dụng. Gõ **tự do như UniKey**: double-letter transform (dd→đ, oo→ô...) hoạt động ở mọi vị trí, đổi dấu thanh liên tục không lỗi, viết tắt thoải mái. Bộ gõ chạy monolithic không cần server; riêng chế độ Uinput đi kèm một server tùy chọn để tối ưu hóa việc xóa/thay thế chữ.
+SKey (Simple Key) là bộ gõ Tiếng Việt cho Linux trên nền tảng [fcitx5](https://fcitx-im.org/), sử dụng engine [skey-engine](https://github.com/collyn/skey-engine) (Rust) qua FFI. Mặc định chạy ở chế độ **Auto** — tự động chọn giữa Surrounding Text và Uinput dựa trên khả năng của ứng dụng. Gõ **tự do như UniKey**: double-letter transform (dd→đ, oo→ô...) hoạt động ở mọi vị trí, đổi dấu thanh liên tục không lỗi, viết tắt thoải mái. Bộ gõ chạy monolithic không cần server; riêng chế độ Uinput đi kèm một server tùy chọn để tối ưu hóa việc xóa/thay thế chữ.
+
+> **v0.5.4:** Engine xử lý tiếng Việt đã chuyển từ bamboo-core sang [skey-engine](https://github.com/collyn/skey-engine) — một Rust engine được fork và tối ưu riêng cho SKey, hỗ trợ cú pháp C ABI trực tiếp không cần wrapper.
 
 ---
 
@@ -28,7 +30,7 @@ SKey (Simple Key) là bộ gõ Tiếng Việt cho Linux trên nền tảng [fcit
 - **Gõ tự do (Unikey-style)** — transform hoạt động ở mọi vị trí: `dd→đ`, `oo→ô`, `aa→â`, `ee→ê`, `aw→ă`, `ow→ơ`, `ww/uw→ư`. Viết tắt (`vcđ`, `nđm`, `NĐ`), gõ chữ không dấu rồi thêm dấu sau, đổi dấu liên tục (`x→s→f→x`) đều hoạt động.
 - **Double-tone undo** — bấm cùng phím dấu 2 lần liên tiếp để hiện raw form (vd: `vãi` → `x` → `vaix`).
 - **Auto-restore** — tự động hoàn nguyên từ không phải tiếng Việt. Hai cơ chế: real-time (all-ASCII, giữa chừng) và commit-time (khi kết thúc từ bằng space/enter/tab/punctuation). Mặc định bật.
-- **Kiểm tra chính tả** — kiểm tra tính hợp lệ âm tiết theo thời gian thực qua bamboo-core.
+- **Kiểm tra chính tả** — kiểm tra tính hợp lệ âm tiết theo thời gian thực qua skey-engine.
 - **Free marking** — cho phép đặt dấu tự do, không bó buộc vị trí.
 - **Vị trí dấu thanh:** Kiểu mới (hoà) hoặc kiểu cũ (hòa).
 - **Menu cấu hình** — chuyển đổi nhanh tùy chọn qua phím tắt `` ` `` và menu hệ thống.
@@ -119,7 +121,7 @@ sudo pacman -S fcitx5-gtk fcitx5-qt
 |-----------|----------|---------|
 | CMake ≥ 3.16, ECM, pkg-config | ✅ | Hệ thống build |
 | GCC/G++ (C++17) + make | ✅ | Biên dịch C++ |
-| Rust toolchain (rustc, cargo) | ✅ | Build bamboo-core engine |
+| Rust toolchain (rustc, cargo) | ✅ | Build skey-engine (Rust static library) |
 | Fcitx5 development headers | ✅ | `Fcitx5::Core`, `fcitx-utils` |
 | dbus-1 development headers | ✅ | AT-SPI2 (phát hiện thanh địa chỉ Chromium) |
 | gettext | ✅ | i18n |
@@ -204,7 +206,7 @@ sudo zypper install rsvg-convert
 > curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 > source "$HOME/.cargo/env"
 > ```
-> Rust ≥ 1.70 được khuyến nghị để build bamboo-core.
+> Rust ≥ 1.70 được khuyến nghị để build skey-engine.
 
 #### Build & Install
 
@@ -278,7 +280,7 @@ Sau khi cài đặt + chạy `skey-setup`, SKey là bộ gõ mặc định. Chuy
 
 ### Bảng gõ Telex
 
-Các transform **hoạt động ở mọi vị trí** (đầu, giữa, cuối từ), không giới hạn như bamboo-core gốc:
+Các transform **hoạt động ở mọi vị trí** (đầu, giữa, cuối từ):
 
 | Gõ | Kết quả | Mô tả |
 |----|---------|-------|
@@ -453,7 +455,7 @@ Khi server không hoạt động hoặc gặp sự cố mở `/dev/uinput`, SKey
 
 ## Gõ tự do & Auto-restore
 
-SKey hỗ trợ gõ tự do kiểu UniKey: tất cả double-letter transform (`dd→đ`, `oo→ô`, `aa→â`, `ee→ê`, `aw→ă`, `ow→ơ`, `ww/uw→ư`) hoạt động ở **mọi vị trí** trong từ, không giới hạn ở đầu âm tiết như bamboo-core gốc.
+SKey hỗ trợ gõ tự do kiểu UniKey: tất cả double-letter transform (`dd→đ`, `oo→ô`, `aa→â`, `ee→ê`, `aw→ă`, `ow→ơ`, `ww/uw→ư`) hoạt động ở **mọi vị trí** trong từ, không giới hạn ở đầu âm tiết.
 
 ### Gõ viết tắt & tự do dấu
 
@@ -474,11 +476,11 @@ Auto-restore có **hai cơ chế** hoạt động song song, tuân theo triết 
 
 #### 1. Real-time (all-ASCII, giữa chừng)
 
-Chạy sau mỗi phím gõ trong `maybeAutoRestoreRealTime`. Chỉ kích hoạt khi kết quả **toàn ASCII** — tức bamboo tự undo một transform trước đó (vd: tone-key undo). Các ký tự tiếng Việt (ô, â, ê, đ...) được **giữ nguyên** giữa chừng, vì có thể người dùng đang gõ dở một từ tiếng Việt.
+Chạy sau mỗi phím gõ trong `maybeAutoRestoreRealTime`. Chỉ kích hoạt khi kết quả **toàn ASCII** — tức engine tự undo một transform trước đó (vd: tone-key undo). Các ký tự tiếng Việt (ô, â, ê, đ...) được **giữ nguyên** giữa chừng, vì có thể người dùng đang gõ dở một từ tiếng Việt.
 
 | Người dùng gõ | Kết quả giữa chừng | Lý do |
 |--------------|---------|-------|
-| `address` + `ss` | address | Bamboo undo sắc → `addres` (all-ASCII) → restore ngay |
+| `address` + `ss` | address | Engine undo sắc → `addres` (all-ASCII) → restore ngay |
 | `ook` | ôk | `ô` là ký tự Việt → giữ, chưa restore |
 | `vaai` | vâi | `â` là ký tự Việt → giữ |
 | `ddc` | đc | `đ` là ký tự Việt → giữ |
@@ -486,7 +488,7 @@ Chạy sau mỗi phím gõ trong `maybeAutoRestoreRealTime`. Chỉ kích hoạt 
 
 #### 2. Commit-time (khi kết thúc từ)
 
-Chạy khi người dùng ấn **Space, Enter, Tab, dấu câu, hoặc phím modifier**. Gọi `autoRestore()` — kiểm tra toàn bộ từ đã gõ xong. Nếu từ **không hợp lệ trong tiếng Việt** (theo bamboo `is_valid()`), hoàn nguyên về raw form, **kể cả khi có ký tự Việt**.
+Chạy khi người dùng ấn **Space, Enter, Tab, dấu câu, hoặc phím modifier**. Gọi `autoRestore()` — kiểm tra toàn bộ từ đã gõ xong. Nếu từ **không hợp lệ trong tiếng Việt** (theo `skey_engine_is_valid()`), hoàn nguyên về raw form, **kể cả khi có ký tự Việt**.
 
 | Gõ | Kết quả khi gõ | Sau Space | Lý do |
 |----|---------------|-----------|-------|
@@ -555,7 +557,7 @@ Undo hoạt động ở mọi vị trí, không phụ thuộc vào auto-restore.
 │      │  - double-tone undo (xx → raw form)     │
 │      │  - auto-restore (real-time + commit-time)│
 │      ▼                                          │
-│  bamboo-core (Rust FFI)                         │
+│  skey-engine (Rust FFI)                         │
 │  ┌─────────────────────────────────────────┐    │
 │  │ skey_engine_process_string()            │    │
 │  │ skey_engine_is_valid()                  │    │
@@ -590,6 +592,6 @@ Phát hành theo giấy phép [MIT](LICENSE).
 
 Xin chân thành cảm ơn:
 
-- **[bamboo-core](https://github.com/nguyen10t2/bamboo_core)** — engine xử lý tiếng Việt (Rust) là trái tim của SKey. Toàn bộ logic biến đổi Telex/VNI, kiểm tra âm tiết và khôi phục từ đều dựa trên bamboo-core. Cảm ơn tác giả đã xây dựng và chia sẻ một engine gõ tiếng Việt mạnh mẽ và mã nguồn mở.
+- **[skey-engine](https://github.com/collyn/skey-engine)** — engine xử lý tiếng Việt (Rust) là trái tim của SKey. Toàn bộ logic biến đổi Telex/VNI, kiểm tra âm tiết và khôi phục từ đều dựa trên skey-engine. Engine được viết và tối ưu riêng cho SKey với C ABI trực tiếp, không cần wrapper trung gian.
+- **[bamboo-core](https://github.com/nguyen10t2/bamboo_core)** — engine gốc ban đầu. Cảm ơn tác giả đã xây dựng và chia sẻ một engine gõ tiếng Việt mạnh mẽ và mã nguồn mở. Từ v0.5.4, SKey chuyển sang dùng skey-engine.
 - **[fcitx5](https://fcitx-im.org/)** — input method framework cho Linux.
-
