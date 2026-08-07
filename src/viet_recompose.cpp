@@ -8,9 +8,9 @@
  *   R2  findFirstVowel       – vowel-boundary detection (see viet_util.h)
  *   R3  deduplicateToneKeys  – tone-key dedup (see viet_util.h)
  *   R4  runBamboo             – core FFI call to bamboo-core
- *   R5  maybeAutoRestoreRealTime – auto-restore (see viet_restore.cpp)
  *
- * Steps R1–R3 are pure (no state mutation); R4–R5 write composed_.
+ * Steps R1–R3 are pure (no state mutation); R4 writes composed_.
+ * R5 (maybeAutoRestoreRealTime) is called after P6 in processKey().
  */
 
 #include "vietnamese.h"
@@ -94,7 +94,8 @@ void VietnameseEngine::recompose() {
     size_t firstVowel = detail::findFirstVowel(bambooInput);       // R2
     std::string deduped = deduplicateToneKeys(bambooInput, firstVowel); // R3
     runBamboo(deduped);                                             // R4
-    maybeAutoRestoreRealTime();                                     // R5
+    // R5 (maybeAutoRestoreRealTime) is called in processKey() after
+    // applyFallbackPairSubstitution, so is_valid() sees the final state.
 }
 
 } // namespace skey

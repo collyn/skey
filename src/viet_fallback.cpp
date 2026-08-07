@@ -8,12 +8,16 @@
  * This module provides Unikey-like free typing: when bamboo produced no
  * Vietnamese chars at all (composed_ == rawInput_), substitute every
  * untransformed pair from a static lookup table.
+ *
+ * After substitution, the engine state is rebuilt from the modified
+ * composed_ so that is_valid() sees the final transformed characters.
  */
 
 #include "vietnamese.h"
 
 #include <string>
 
+#include "bamboo_ffi.h"
 #include "viet_util.h"
 
 namespace skey {
@@ -89,7 +93,17 @@ void VietnameseEngine::applyFallbackPairSubstitution() {
             ++i;
         }
     }
+    if (fixed == composed_) return;  // no changes
+
     composed_ = fixed;
+
+    // Rebuild engine state from the modified composed_ so that
+    // is_valid() (called by maybeAutoRestoreRealTime after P6)
+    // evaluates the final transformed string, not the original
+    // bamboo output.
+    skey_engine_reset(handle_);
+    char *result = skey_engine_process_string(handle_, composed_.c_str());
+    if (result) bamboo_free_string(result);
 }
 
 } // namespace skey

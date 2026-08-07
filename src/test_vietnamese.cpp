@@ -599,90 +599,88 @@ int main(int argc, char **argv) {
         std::cout << CYAN << "── " << cat << " ──" << RESET << std::endl;
 
         // English words — in Telex mode, tone keys (r,s,f,x,j) apply.
-        // This is correct: 'r' after vowel = hỏi tone.
+        // The all-ASCII guard and is_valid() keep non-ASCII results.
+        // TODO: bamboo-core 0.3.12 is_valid() is too lenient; "wôd", "rebôt"
+        // pass validation even though they are not valid Vietnamese syllables.
+        // Upstream fix needed for lotus-style real-time fallback.
         runTest({cat, "hello → hello (no tone keys)",
                  skey::InputMethod::Telex, "hello", "hello"});
-        runTest({cat, "world → wỏld (r = hỏi tone after o)",
-                 skey::InputMethod::Telex, "world", "wỏld",
-                 "in Telex, r after vowel is hỏi, not consonant"});
-        runTest({cat, "computer → computẻ (r = hỏi tone after e)",
-                 skey::InputMethod::Telex, "computer", "computẻ",
-                 "in Telex, r after vowel is hỏi, not consonant"});
+        runTest({cat, "world → world (real-time restore)",
+                 skey::InputMethod::Telex, "world", "world",
+                 "r=hỏi on o → invalid → real-time restore"});
+        runTest({cat, "computer → computer (real-time restore)",
+                 skey::InputMethod::Telex, "computer", "computer",
+                 "r=hỏi on e → invalid → real-time restore"});
 
-        // Words where transform creates invalid Vietnamese → should restore
-        // "wood" → w + o + o = wô (oo→ô), but "wôd" is invalid → restore to "wood"
-        runTest({cat, "wood → wôd (oo→ô at non-start)",
-                 skey::InputMethod::Telex, "wood", "wôd",
-                 "oo→ô at non-start position via general fix"});
+        // English word with oo → ô transform — now restored in real-time
+        runTest({cat, "wood → wood (real-time restore)",
+                 skey::InputMethod::Telex, "wood", "wood",
+                 "P6: wood→wôd → invalid → real-time restore"});
 
-        // đc abbreviation should stay as đc (not restored)
-        runTest({cat, "ddc → đc (abbrev, keep đ)",
+        // đc abbreviation — ddFreeStyle protected (no vowel, has đ)
+        runTest({cat, "ddc → đc (ddFreeStyle: no vowel, has đ)",
                  skey::InputMethod::Telex, "ddc", "đc",
-                 "đc is not valid but only has đ non-ASCII → keep"});
+                 "ddFreeStyle protects: no vowel + has đ → keep"});
 
-        // vcdd → vcđ: dd at end after consonants
-        runTest({cat, "vcdd → vcđ (abbrev, keep đ)",
+        // vcdd → vcđ: ddFreeStyle protected
+        runTest({cat, "vcdd → vcđ (ddFreeStyle: no vowel, has đ)",
                  skey::InputMethod::Telex, "vcdd", "vcđ",
-                 "vcđ is not valid but only has đ non-ASCII → keep"});
+                 "ddFreeStyle protects: no vowel + has đ → keep"});
 
-        // cdd → cđ: dd at end after one consonant
-        runTest({cat, "cdd → cđ (abbrev, keep đ)",
+        // cdd → cđ: ddFreeStyle protected
+        runTest({cat, "cdd → cđ (ddFreeStyle: no vowel, has đ)",
                  skey::InputMethod::Telex, "cdd", "cđ",
-                 "cđ is not valid but only has đ non-ASCII → keep"});
+                 "ddFreeStyle protects: no vowel + has đ → keep"});
 
-        // bcdd → bcđ: dd at end after multiple consonants
-        runTest({cat, "bcdd → bcđ (abbrev, keep đ)",
+        // bcdd → bcđ: ddFreeStyle protected
+        runTest({cat, "bcdd → bcđ (ddFreeStyle: no vowel, has đ)",
                  skey::InputMethod::Telex, "bcdd", "bcđ",
-                 "bcđ is not valid but only has đ non-ASCII → keep"});
+                 "ddFreeStyle protects: no vowel + has đ → keep"});
 
-        // avcdd: dd after vowel+consonants
-        runTest({cat, "avcdd → avcđ (abbrev, keep đ)",
-                 skey::InputMethod::Telex, "avcdd", "avcđ",
-                 "avcđ is not valid but only has đ non-ASCII → keep"});
+        // avcdd: has vowel 'a' → ddFreeStyle does NOT protect → restored.
+        // Same behavior as lotus: words with vowels get restored.
+        runTest({cat, "avcdd → avcdd (has vowel a, restored)",
+                 skey::InputMethod::Telex, "avcdd", "avcdd",
+                 "has vowel 'a' → ddFreeStyle skip → real-time restore"});
 
-        // add: dd after vowel only
-        runTest({cat, "add → ađ (dd after vowel)",
-                 skey::InputMethod::Telex, "add", "ađ",
-                 "ađ is not valid but only has đ non-ASCII → keep"});
+        // add: has vowel 'a' → ddFreeStyle does NOT protect → restored.
+        runTest({cat, "add → add (has vowel a, restored)",
+                 skey::InputMethod::Telex, "add", "add",
+                 "has vowel 'a' → ddFreeStyle skip → real-time restore"});
 
-        // addr: dd→đ fix works, but 'r' = hỏi tone after 'a'.
-        // Known limitation: tone keys after manual dd→đ are treated
-        // as tone marks, not letters.
-        runTest({cat, "addr → ảdd (r = hỏi tone on a)",
-                 skey::InputMethod::Telex, "addr", "ảdd",
-                 "dd→đ lost because r was consumed as tone"});
+        // addr: dd→đ fix works, then 'r' = hỏi tone → ảdd.
+        // "ảdd" is invalid → real-time restore to "addr".
+        runTest({cat, "addr → addr (real-time restore)",
+                 skey::InputMethod::Telex, "addr", "addr",
+                 "ảdd invalid → real-time restore"});
 
-        // nđm: multi-char abbreviation
-        runTest({cat, "nddm → nđm (multi-char abbrev)",
+        // nđm: ddFreeStyle protected (no vowel, has đ)
+        runTest({cat, "nddm → nđm (ddFreeStyle: no vowel, has đ)",
                  skey::InputMethod::Telex, "nddm", "nđm",
-                 "ndd + m: đ re-applied since composed==raw"});
+                 "ddFreeStyle protects: no vowel + has đ → keep"});
 
-        // Intermediate typing: oo → ô should NOT be restored mid-word
-        runTest({cat, "ook → ôk (keep ô mid-word)",
-                 skey::InputMethod::Telex, "ook", "ôk",
-                 "oo→ô is valid Telex, should not be restored"});
-
-        // Intermediate typing: aa → â should NOT be restored mid-word
-        runTest({cat, "vaai → vâi (keep â mid-word)",
-                 skey::InputMethod::Telex, "vaai", "vâi",
-                 "aa→â is valid Telex, should not be restored"});
-
-        // Non-start double-letter transforms (Unikey-like free typing)
-        runTest({cat, "aloo → alô (oo after consonant)",
-                 skey::InputMethod::Telex, "aloo", "alô",
-                 "oo→ô at non-start position"});
-        runTest({cat, "baa → bâ (aa after consonant)",
+        // Lotus-style: intermediate transforms restored when invalid.
+        runTest({cat, "ook → ook (real-time restore)",
+                 skey::InputMethod::Telex, "ook", "ook",
+                 "ook→ôk invalid → real-time restore (lotus-compatible)"});
+        runTest({cat, "vaai → vaai (real-time restore)",
+                 skey::InputMethod::Telex, "vaai", "vaai",
+                 "vaai→vâi invalid → real-time restore"});
+        runTest({cat, "aloo → aloo (real-time restore)",
+                 skey::InputMethod::Telex, "aloo", "aloo",
+                 "aloo→alô invalid → real-time restore"});
+        runTest({cat, "baa → bâ (valid syllable, keep)",
                  skey::InputMethod::Telex, "baa", "bâ",
-                 "aa→â at non-start position"});
-        runTest({cat, "mee → mê (ee after consonant)",
+                 "bâ is valid Vietnamese → is_valid=true → keep"});
+        runTest({cat, "mee → mê (valid syllable, keep)",
                  skey::InputMethod::Telex, "mee", "mê",
-                 "ee→ê at non-start position"});
-        runTest({cat, "caw → că (aw after consonant)",
+                 "mê is valid Vietnamese → is_valid=true → keep"});
+        runTest({cat, "caw → că (valid syllable, keep)",
                  skey::InputMethod::Telex, "caw", "că",
-                 "aw→ă at non-start position"});
-        runTest({cat, "mow → mơ (ow after consonant)",
+                 "că is valid Vietnamese → is_valid=true → keep"});
+        runTest({cat, "mow → mơ (valid syllable, keep)",
                  skey::InputMethod::Telex, "mow", "mơ",
-                 "ow→ơ at non-start position"});
+                 "mơ is valid Vietnamese → is_valid=true → keep"});
 
         // Uppercase D: NDD → NĐ
         runTest({cat, "NDD → NĐ (uppercase D)",
@@ -715,6 +713,24 @@ int main(int argc, char **argv) {
         runTest({cat, "abc123 → abc123 (ignored)",
                  skey::InputMethod::Telex, "abc123", "abc",
                  "digits are ignored unless VNI mode; 'abc' stays, 123 ignored individually"});
+
+        // New: "address" — real-time restore now works correctly.
+        runTest({cat, "address → address (real-time restore)",
+                 skey::InputMethod::Telex, "address", "address",
+                 "real-time restore after engine rebuild"});
+
+        // New: "reboot" — oo→ô transform, real-time restore works.
+        runTest({cat, "reboot → reboot (real-time restore)",
+                 skey::InputMethod::Telex, "reboot", "reboot",
+                 "P6: reboot→rebôt, invalid → real-time restore"});
+
+        // New: ddFreeStyle — abbreviations with đ but no vowels stay protected
+        runTest({cat, "ddc → đc (ddFreeStyle: no vowel + has đ → keep)",
+                 skey::InputMethod::Telex, "ddc", "đc",
+                 "ddFreeStyle protection at commit time"});
+        runTest({cat, "vcdd → vcđ (ddFreeStyle: no vowel + has đ → keep)",
+                 skey::InputMethod::Telex, "vcdd", "vcđ",
+                 "ddFreeStyle protection at commit time"});
 
         std::cout << std::endl;
     }

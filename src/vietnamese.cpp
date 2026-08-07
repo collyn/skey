@@ -145,6 +145,7 @@ ProcessResult VietnameseEngine::processKey(char ch) {
         return ProcessResult::Committed;
 
     applyFallbackPairSubstitution();                                 // P6
+    maybeAutoRestoreRealTime();                                      // R5 — after P6 so is_valid() sees final state
 
     return ProcessResult::Consumed;
 }

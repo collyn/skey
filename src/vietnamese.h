@@ -74,6 +74,7 @@ public:
 
     /// Auto-restore: if current composition is not valid Vietnamese,
     /// replace composed text with raw input. Call before committing.
+    /// Uses the same unified predicate as maybeAutoRestoreRealTime().
     void autoRestore();
 
     /// Whether the engine is in English bypass mode (after undo detected).
@@ -159,12 +160,15 @@ private:
     /// Prevents Telex modifier keys from destructively rewriting English
     /// words (e.g. "address" → bamboo yields "addres" when ss = undo tone).
     /// Only restores when composed_ is all-ASCII.
+    /// Abbreviations with đ but no vowels are protected by ddFreeStyle.
     void maybeAutoRestoreRealTime();
 
     /// Shared predicate: should composed_ be restored to rawInput_?
     /// When requireAllAscii is true (real-time path), only restores
     /// all-ASCII results — Vietnamese transforms like oo→ô are preserved.
     /// When false (commit-time path), restores any invalid result.
+    /// ddFreeStyle guard: words with đ but no vowels (vcđ, đc, nđm)
+    /// are never restored.
     bool shouldRestoreToRaw(bool requireAllAscii) const;
 
     BambooEngine *handle_ = nullptr;

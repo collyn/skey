@@ -93,6 +93,30 @@ inline std::string deduplicateToneKeys(const std::string &input,
     return result;
 }
 
+/// True when `s` contains any ASCII vowel (a, e, i, o, u, y, case-insensitive).
+/// Used by ddFreeStyle: words without vowels that contain đ are abbreviations.
+inline bool hasAsciiVowel(const std::string &s) {
+    for (unsigned char c : s) {
+        if (c > 127) continue;  // skip multi-byte UTF-8 continuation bytes
+        char lc = toLowerASCII(static_cast<char>(c));
+        if (lc == 'a' || lc == 'e' || lc == 'i' ||
+            lc == 'o' || lc == 'u' || lc == 'y')
+            return true;
+    }
+    return false;
+}
+
+/// True when `s` contains 'đ' (U+0111, \xC4\x91) or 'Đ' (U+0110, \xC4\x90).
+inline bool containsD(const std::string &s) {
+    for (size_t i = 0; i + 1 < s.size(); ++i) {
+        if ((static_cast<unsigned char>(s[i]) == 0xC4) &&
+            (static_cast<unsigned char>(s[i + 1]) == 0x91 ||
+             static_cast<unsigned char>(s[i + 1]) == 0x90))
+            return true;
+    }
+    return false;
+}
+
 } // namespace detail
 } // namespace skey
 
