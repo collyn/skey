@@ -160,11 +160,13 @@ if [ "$SESSION_TYPE" = "wayland" ]; then
             ;;
     esac
 else
-    ENV_VARS="GTK_IM_MODULE=fcitx5 QT_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx5 GLFW_IM_MODULE=ibus QT_IM_MODULES=wayland;fcitx"
+    ENV_VARS="GTK_IM_MODULE=fcitx5 QT_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx5 GLFW_IM_MODULE=ibus"
 fi
 
 # ── Helper: safely update a shell config file ──
-# Inserts or replaces a guarded block so existing user config is preserved.
+# Strips ALL existing fcitx5-skey blocks (dedup), then appends one fresh block.
+# This guarantees exactly one block with current content, regardless of how many
+# times the script runs or whether a buggy older version left duplicates.
 # Arguments: $1 = file path, $2 = content (multi-line, with export prefix).
 upsert_shell_env() {
     local file="$1"
@@ -172,27 +174,28 @@ upsert_shell_env() {
     local begin_marker="# >>> fcitx5-skey >>>"
     local end_marker="# <<< fcitx5-skey <<<"
 
-    if [ -f "$file" ] && grep -qF "$begin_marker" "$file" 2>/dev/null; then
-        # Update existing block: replace everything between markers.
+    if [ -f "$file" ]; then
+        # Remove ALL existing guarded blocks (handles duplicates from any source).
         local tmpfile
         tmpfile=$(mktemp)
-        awk -v begin="$begin_marker" -v end="$end_marker" -v repl="$content" '
-            BEGIN { skip=0; replaced=0 }
-            $0 == begin { print; print repl; skip=1; replaced=1; next }
-            $0 == end   { skip=0 }
+        awk -v begin="$begin_marker" -v end="$end_marker" '
+            $0 == begin { skip=1; next }
+            $0 == end   { skip=0; next }
             !skip { print }
         ' "$file" > "$tmpfile"
+        # Append exactly one fresh block with current content.
+        echo "" >> "$tmpfile"
+        echo "$begin_marker" >> "$tmpfile"
+        printf '%s\n' "$content" >> "$tmpfile"
+        echo "$end_marker" >> "$tmpfile"
         mv "$tmpfile" "$file"
     else
-        # Append new block at the end.
+        # Create new file with just the block.
         {
-            [ -f "$file" ] && cat "$file"
-            echo ""
             echo "$begin_marker"
             printf '%s\n' "$content"
             echo "$end_marker"
-        } > "${file}.skey-tmp"
-        mv "${file}.skey-tmp" "$file"
+        } > "$file"
     fi
 }
 

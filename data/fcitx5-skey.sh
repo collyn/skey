@@ -6,4 +6,3 @@ export QT_IM_MODULE=fcitx5
 export XMODIFIERS=@im=fcitx
 export SDL_IM_MODULE=fcitx5
 export GLFW_IM_MODULE=ibus
-export QT_IM_MODULES=wayland;fcitx
