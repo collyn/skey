@@ -1853,12 +1853,19 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
   // Password fields & lock/login screens (incl. sudo password prompts
   // in terminals): pass keys through unmodified.
-  // Three detection paths:
+  // Four detection paths:
   //   1. CapabilityFlag::PasswordOrSensitive (Wayland)
-  //   2. AT-SPI2 accessibility monitor (X11, GTK/Qt password fields)
-  //   3. Lock screen program name (kscreenlocker_greet, i3lock, etc.)
+  //   2. CapabilityFlag::Password (X11, GTK/Qt password fields)
+  //   3. AT-SPI2 accessibility monitor (X11 fallback)
+  //   4. Lock screen program name (kscreenlocker_greet, i3lock, etc.)
+  //
+  // Terminal password prompts (sudo, ssh, passwd) on X11 cannot be
+  // detected automatically — the terminal emulator does not change
+  // capability flags when the shell reads a password.  Toggle fcitx5
+  // off (Ctrl+Space) before typing passwords in terminals on X11.
   if (!modeMenuActive_ &&
       (ic_->capabilityFlags().test(CapabilityFlag::PasswordOrSensitive) ||
+       ic_->capabilityFlags().test(CapabilityFlag::Password) ||
        (engine_->a11yMonitor() &&
         engine_->a11yMonitor()->isPasswordFocused()) ||
        programIsLockScreen(ic_->program()))) {
