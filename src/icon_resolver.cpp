@@ -59,7 +59,19 @@ std::string resolveIconPath(const std::string &iconTheme,
         }
     }
 
-    // 4. Fallback — the compile-time default, always valid
+    // 4. Fallback — the compile-time default.
+    if (fileReadable(paths.fallback)) return paths.fallback;
+
+    // 5. Last resort: probe system dirs for original icon in any format.
+    //    Covers missing PNG after rpmbuild without rsvg-convert.
+    for (const auto &dir : paths.systemDirs) {
+        for (const char *ext : {".png", ".svg"}) {
+            std::string p = joinPath(dir, std::string(presetIconBaseName(kIconThemeDefault)) + ext);
+            if (fileReadable(p)) return p;
+        }
+    }
+
+    // 6. Nothing found — return fallback path anyway (caller handles null QIcon).
     return paths.fallback;
 }
 

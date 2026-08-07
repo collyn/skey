@@ -33,9 +33,11 @@ BuildRequires:  pkgconfig(dbus-1)
 %if 0%{?suse_version}
 BuildRequires:  qt6-base-devel
 BuildRequires:  rsvg-convert
+Requires:       qt6-svg
 %else
 BuildRequires:  qt6-qtbase-devel
 BuildRequires:  librsvg2-tools
+Requires:       qt6-qtsvg
 %endif
 
 Requires:       fcitx5
