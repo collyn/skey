@@ -143,20 +143,20 @@ DISTRO=$(detect_distro)
 echo "  Shell: $USER_SHELL  DE: $USER_DE  Session: $SESSION_TYPE  Distro: $DISTRO"
 
 # ── Determine required environment variables ──
-# KDE Plasma on Wayland: KWin handles GTK/Qt natively via zwp_input_method_v2,
-# but many apps (AppImages, flatpaks, Qt apps without wayland plugin) still
-# need the full set.  GNOME/Sway: GTK uses text-input natively, Qt needs
-# IM module + QT_IM_MODULES for Qt6.  X11/others: full set.
+# QT_IM_MODULES is deliberately NOT set. Setting it to "wayland;fcitx"
+# breaks Vietnamese input in Qt apps immediately after skey-setup
+# because the wayland IM module overrides the fcitx5 module.
+#
+# On KDE Plasma Wayland, QT_IM_MODULE is also omitted — KWin handles
+# Qt input natively via zwp_input_method_v2, and forcing QT_IM_MODULE=fcitx5
+# bypasses KWin's IM handling, breaking Vietnamese input entirely.
 if [ "$SESSION_TYPE" = "wayland" ]; then
     case "$USER_DE" in
         "KDE Plasma")
-            ENV_VARS="GTK_IM_MODULE=fcitx5 QT_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx5 GLFW_IM_MODULE=ibus QT_IM_MODULES=wayland;fcitx"
-            ;;
-        GNOME|Sway)
-            ENV_VARS="GTK_IM_MODULE=fcitx5 QT_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx5 GLFW_IM_MODULE=ibus QT_IM_MODULES=wayland;fcitx"
+            ENV_VARS="GTK_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx5 GLFW_IM_MODULE=ibus"
             ;;
         *)
-            ENV_VARS="GTK_IM_MODULE=fcitx5 QT_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx5 GLFW_IM_MODULE=ibus QT_IM_MODULES=wayland;fcitx"
+            ENV_VARS="GTK_IM_MODULE=fcitx5 QT_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx5 GLFW_IM_MODULE=ibus"
             ;;
     esac
 else
@@ -183,17 +183,21 @@ upsert_shell_env() {
             $0 == end   { skip=0; next }
             !skip { print }
         ' "$file" > "$tmpfile"
-        # Append exactly one fresh block with current content.
-        echo "" >> "$tmpfile"
+        # Strip trailing blank lines to prevent accumulation across runs,
+        # then append exactly one fresh block.
+        sed -i -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' "$tmpfile" 2>/dev/null || true
+        if [ -s "$tmpfile" ]; then
+            echo "" >> "$tmpfile"
+        fi
         echo "$begin_marker" >> "$tmpfile"
-        printf '%s\n' "$content" >> "$tmpfile"
+        printf '%s' "$content" >> "$tmpfile"
         echo "$end_marker" >> "$tmpfile"
         mv "$tmpfile" "$file"
     else
         # Create new file with just the block.
         {
             echo "$begin_marker"
-            printf '%s\n' "$content"
+            printf '%s' "$content"
             echo "$end_marker"
         } > "$file"
     fi
@@ -213,9 +217,13 @@ mkdir -p "$ENVDIR"
 echo "✓ systemd environment.d: $ENVFILE"
 
 # Build export lines for shell configs
+# Quote values containing shell metacharacters (e.g. QT_IM_MODULES=wayland;fcitx)
+# so that ; is not interpreted as a command separator when sourced.
 EXPORT_LINES=""
 for var in $ENV_VARS; do
-    EXPORT_LINES="${EXPORT_LINES}export $var
+    name="${var%%=*}"
+    value="${var#*=}"
+    EXPORT_LINES="${EXPORT_LINES}export $name=\"$value\"
 "
 done
 
@@ -263,7 +271,11 @@ if [ "$USER_DE" = "KDE Plasma" ]; then
     KDE_ENVFILE="$KDE_ENVDIR/fcitx5-skey.sh"
     {
         echo "# fcitx5-skey"
-        for var in $ENV_VARS; do echo "export $var"; done
+        for var in $ENV_VARS; do
+            name="${var%%=*}"
+            value="${var#*=}"
+            echo "export $name=\"$value\""
+        done
     } > "$KDE_ENVFILE"
     chmod +x "$KDE_ENVFILE"
     # Remove stale file from older skey-setup versions
@@ -542,4 +554,8 @@ echo ""
 if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
     echo "⚠  Wayland note: If some apps still don't work after this,"
     echo "   log out and back in to fully refresh the session."
+    echo ""
+    echo "   The currently-focused app (e.g. this terminal) may not"
+    echo "   accept Vietnamese input right away. Click away and back"
+    echo "   — that forces a reconnect and fixes it."
 fi

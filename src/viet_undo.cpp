@@ -16,7 +16,6 @@
 
 #include <string>
 
-#include "bamboo_ffi.h"
 #include "viet_util.h"
 
 namespace skey {
@@ -26,12 +25,11 @@ namespace skey {
 // ---------------------------------------------------------------------------
 
 void VietnameseEngine::resetCompositionState() {
-    // Clear rawInput_ and composed_, reset bamboo engine.
+    // Clear rawInput_ and composed_.
     // Deliberately does NOT clear committed_ — undo paths (P4, P5) append
     // to it; only reset() clears it.
     rawInput_.clear();
     composed_.clear();
-    skey_engine_reset(handle_);
 }
 
 void VietnameseEngine::enterEnglishBypass() {
@@ -59,52 +57,11 @@ bool VietnameseEngine::processEnglishBypass() {
 // ---------------------------------------------------------------------------
 
 bool VietnameseEngine::tryUndoTransform(
-    char ch, const std::string &oldComposed, const std::string &oldRawInput) {
-    // Detect undo: bamboo-core cancelled the transformation.
-    // Before this key: oldComposed ≠ oldRawInput (e.g. "ư" ≠ "w", "đ" ≠ "dd").
-    // After this key: composed_ is pure ASCII — no Vietnamese chars remain.
-    //
-    // Sub-cases for the commit decision:
-    //   Multi-char transforms (oo→ô, dd→đ): trigger consumed.
-    //     composed_ is shorter than rawInput_.  Commit ALL of composed_.
-    //     ooo → "oo" (2<3) → commit "oo"
-    //     ddd → "dd" (2<3) → commit "dd"
-    //   Single-char transforms (w→ư when shortW/telex_w): trigger NOT consumed.
-    //     composed_ equals rawInput_.  Strip last char (the trigger).
-    //     ww → "ww" (2=2) → commit "w"
-    //
-    // The isRepeatKey guard distinguishes real undo from a manual
-    // abbreviation followed by a different letter (e.g. "ađ" + 'r') —
-    // in that case composed_ is all-ASCII only because bamboo never
-    // produced the đ in the first place.
-    //
-    // Reads: rawInput_, composed_, handle_.
-    // Writes: committed_ (appended), rawInput_, composed_, englishBypass_.
-    // Bamboo limitation: commit-on-undo + word-level English bypass are
-    // skey UI semantics — must stay in the wrapper.
-
-    if (rawInput_.size() <= 1 || oldComposed == oldRawInput) return false;
-
-    if (!detail::isAllAscii(composed_)) return false;
-
-    bool isRepeatKey = !oldRawInput.empty() && ch == oldRawInput.back();
-    if (!isRepeatKey) return false;
-    // Not a repeat key: keep composed_ as-is.  The all-ASCII result is
-    // because bamboo didn't transform "dd"→"đ" earlier, not because an
-    // undo happened.
-
-    if (composed_.size() < rawInput_.size()) {
-        // Trigger consumed by bamboo — commit all
-        committed_ += composed_;
-    } else if (composed_.size() > 0) {
-        // Trigger still present at end — strip it
-        committed_ += composed_.substr(0, composed_.size() - 1);
-    }
-
-    resetCompositionState();
-    enterEnglishBypass();
-
-    return true;  // caller returns ProcessResult::Committed
+    char /*ch*/, const std::string &/*oldComposed*/, const std::string &/*oldRawInput*/) {
+    // P4 is now disabled. The skey-engine core handles toggle patterns
+    // internally (oo↔ô, dd↔đ, ww↔ư, etc.), so the wrapper no longer
+    // needs to detect "undo" by comparing before/after ASCII state.
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +123,6 @@ bool VietnameseEngine::tryToneKeyUndo(
     committed_ = base;
     rawInput_ = std::string(1, ch);
     composed_ = rawInput_;
-    skey_engine_reset(handle_);
 
     return true;  // caller returns ProcessResult::Committed
 }

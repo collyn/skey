@@ -5,8 +5,8 @@
  * live in namespace skey::detail.
  */
 
-#ifndef FCITX5_SKEY_VIET_UTIL_H
-#define FCITX5_SKEY_VIET_UTIL_H
+#ifndef FCITX5_SKEY_UTIL_H
+#define FCITX5_SKEY_UTIL_H
 
 #include <string>
 
@@ -120,4 +120,4 @@ inline bool containsD(const std::string &s) {
 } // namespace detail
 } // namespace skey
 
-#endif // FCITX5_SKEY_VIET_UTIL_H
+#endif // FCITX5_SKEY_UTIL_H

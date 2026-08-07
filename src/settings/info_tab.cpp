@@ -22,7 +22,7 @@
 #include <QVBoxLayout>
 
 #ifndef SKEY_VERSION
-#define SKEY_VERSION "0.1.0"
+#define SKEY_VERSION "0.1.1"
 #endif
 
 static const char *kGitHubUrl = "https://github.com/collyn/skey";

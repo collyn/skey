@@ -22,29 +22,46 @@ include("${FCITX_INSTALL_CMAKECONFIG_DIR}/Fcitx5Utils/Fcitx5CompilerSettings.cma
 add_definitions(-DFCITX_GETTEXT_DOMAIN=\"fcitx5-skey\" -D_GNU_SOURCE)
 fcitx5_add_i18n_definition()
 
-# ── Build bamboo-core Rust static library ──────────────────────────────
-set(BAMBOO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/bamboo")
-set(BAMBOO_LIB "${BAMBOO_DIR}/target/release/libskey_bamboo.a")
+# ── Build skey-engine Rust static library ────────────────────────────────
+set(SKEY_ENGINE_VERSION "v0.1.4")
+set(SKEY_ENGINE_DIR "${CMAKE_CURRENT_BINARY_DIR}/skey-engine")
+set(SKEY_ENGINE_LIB "${SKEY_ENGINE_DIR}/target/release/libskey_engine.a")
+
+# Auto-clone from GitHub if not present
+if(NOT EXISTS "${SKEY_ENGINE_DIR}/Cargo.toml")
+    find_package(Git REQUIRED)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} clone --branch ${SKEY_ENGINE_VERSION} --depth 1
+            https://github.com/collyn/skey-engine.git ${SKEY_ENGINE_DIR}
+        RESULT_VARIABLE CLONE_RESULT
+    )
+    if(NOT CLONE_RESULT EQUAL 0)
+        message(FATAL_ERROR "Failed to clone skey-engine ${SKEY_ENGINE_VERSION}")
+    endif()
+endif()
 
 add_custom_command(
-    OUTPUT ${BAMBOO_LIB}
+    OUTPUT ${SKEY_ENGINE_LIB}
     COMMAND cargo build --release
-    WORKING_DIRECTORY ${BAMBOO_DIR}
-    COMMENT "Building bamboo-core Rust static library"
+    WORKING_DIRECTORY ${SKEY_ENGINE_DIR}
+    COMMENT "Building skey-engine ${SKEY_ENGINE_VERSION}"
     DEPENDS
-        ${BAMBOO_DIR}/Cargo.toml
-        ${BAMBOO_DIR}/src/lib.rs
+        ${SKEY_ENGINE_DIR}/Cargo.toml
+        ${SKEY_ENGINE_DIR}/src/lib.rs
+        ${SKEY_ENGINE_DIR}/src/engine.rs
+        ${SKEY_ENGINE_DIR}/src/tables.rs
+        ${SKEY_ENGINE_DIR}/src/spelling.rs
 )
 
-add_custom_target(bamboo_build DEPENDS ${BAMBOO_LIB})
+add_custom_target(skey_engine_build DEPENDS ${SKEY_ENGINE_LIB})
 
-# Create an imported static library target for bamboo-core
-add_library(bamboo_core STATIC IMPORTED)
-set_target_properties(bamboo_core PROPERTIES
-    IMPORTED_LOCATION ${BAMBOO_LIB}
+# Create an imported static library target for skey-engine
+add_library(skey_engine STATIC IMPORTED)
+set_target_properties(skey_engine PROPERTIES
+    IMPORTED_LOCATION ${SKEY_ENGINE_LIB}
 )
-add_dependencies(bamboo_core bamboo_build)
-# ───────────────────────────────────────────────────────────────────────
+add_dependencies(skey_engine skey_engine_build)
+# ─────────────────────────────────────────────────────────────────────────
 
 add_subdirectory(src)
 add_subdirectory(data)

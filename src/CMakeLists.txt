@@ -8,7 +8,6 @@ set(SKEY_SOURCES
     vietnamese.cpp
     viet_recompose.cpp
     viet_undo.cpp
-    viet_fallback.cpp
     viet_restore.cpp
     charset.cpp
     a11y_monitor.cpp
@@ -22,7 +21,7 @@ pkg_check_modules(DBUS REQUIRED dbus-1)
 add_library(skey MODULE ${SKEY_SOURCES})
 target_link_libraries(skey
     Fcitx5::Core
-    bamboo_core
+    skey_engine
     ${DBUS_LIBRARIES}
     pthread
     dl
@@ -34,21 +33,17 @@ target_compile_definitions(skey PRIVATE
     FCITX_SKEY_ICON_PATH="${CMAKE_INSTALL_PREFIX}/share/icons/hicolor/scalable/apps/fcitx-skey.svg"
 )
 
-# Include path for bamboo_ffi.h
-target_include_directories(skey PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../bamboo"
-)
+# Include path for skey_engine.h
+target_include_directories(skey PRIVATE "${SKEY_ENGINE_DIR}")
 
 add_executable(fcitx5-skey-uinput-server uinput_server.cpp)
 target_compile_features(fcitx5-skey-uinput-server PRIVATE cxx_std_17)
 
-# ── Test executable: Vietnamese typing tests ─────────────────────────────
-add_executable(test_vietnamese test_vietnamese.cpp vietnamese.cpp viet_recompose.cpp viet_undo.cpp viet_fallback.cpp viet_restore.cpp charset.cpp)
-target_link_libraries(test_vietnamese bamboo_core pthread dl)
+# ── Test executable: Vietnamese typing tests ─────────────────────────
+add_executable(test_vietnamese test_vietnamese.cpp vietnamese.cpp viet_recompose.cpp viet_undo.cpp viet_restore.cpp charset.cpp)
+target_link_libraries(test_vietnamese skey_engine pthread dl)
 target_compile_features(test_vietnamese PRIVATE cxx_std_17)
-target_include_directories(test_vietnamese PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../bamboo"
-)
+target_include_directories(test_vietnamese PRIVATE "${SKEY_ENGINE_DIR}")
 # Enable CTest integration
 add_test(NAME VietnameseTyping COMMAND test_vietnamese)
 enable_testing()

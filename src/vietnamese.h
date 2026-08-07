@@ -3,9 +3,9 @@
 
 #include <string>
 
-// Forward declare opaque handle from bamboo FFI
+// Forward declare opaque handle from skey-engine FFI
 extern "C" {
-    typedef void BambooEngine;
+    typedef void SkeyEngine;
 }
 
 namespace skey {
@@ -90,31 +90,19 @@ public:
     bool isValid() const;
 
 private:
-    /// Recompose from raw input using bamboo-core.
+    /// Recompose from raw input using skey-engine.
     void recompose();
 
     // ── recompose() pipeline steps ─────────────────────────────────────
-    //
-    // Each step compensates for a bamboo-core limitation or implements an
-    // skey-specific input-mapping feature.
 
     /// Translate '[' → "ow" and ']' → "uw" for the BracketUO option.
-    /// Edge case: bamboo only understands Telex spellings "ow"/"uw", not
-    /// bracket keys.  Applies only when bracketUO_ is on in Telex mode.
     /// Reads: rawInput_, bracketUO_, method_.  Pure — returns new string.
     std::string translateBracketUO() const;
 
-    /// Deduplicate repeated tone keys.  Delegates to
-    /// detail::deduplicateToneKeys for the scan; wraps with the recompose
-    /// context (method check).
-    /// Reads: nothing beyond input.  Pure — returns new string.
-    std::string deduplicateToneKeys(const std::string &input,
-                                    size_t firstVowel) const;
-
-    /// Feed the deduplicated input to bamboo-core and cache the result
-    /// in composed_.  On FFI failure, falls back to rawInput_.
+    /// Feed the input string to skey-engine and cache the result
+    /// in composed_.  Pair substitution and tone placement are built-in.
     /// Writes: composed_.
-    void runBamboo(const std::string &dedupedInput);
+    void runSkeyEngine(const std::string &input);
 
     // ── processKey() undo / fallback / restore helpers ─────────────────
 
@@ -149,11 +137,6 @@ private:
     /// Set englishBypass_ = true.  Called only by tryUndoTransform().
     void enterEnglishBypass();
 
-    /// Fallback pair substitution: bamboo-core only transforms double-letter
-    /// Telex patterns at syllable start.  Replace untransformed pairs
-    /// (dd→đ, oo→ô, aa→â, ee→ê, aw→ă, ow→ơ, uw→ư, ww→ư) at any position.
-    void applyFallbackPairSubstitution();
-
     // ── Auto-restore ───────────────────────────────────────────────────
 
     /// Real-time auto-restore after every recompose (also from backspace).
@@ -169,9 +152,9 @@ private:
     /// When false (commit-time path), restores any invalid result.
     /// ddFreeStyle guard: words with đ but no vowels (vcđ, đc, nđm)
     /// are never restored.
-    bool shouldRestoreToRaw(bool requireAllAscii) const;
+    bool shouldRestoreToRaw() const;
 
-    BambooEngine *handle_ = nullptr;
+    SkeyEngine *handle_ = nullptr;
 
     InputMethod method_ = InputMethod::Telex;
     ToneStyle toneStyle_ = ToneStyle::Modern;

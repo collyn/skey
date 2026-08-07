@@ -3,8 +3,8 @@
 #include <cstdlib>
 #include <cstring>
 
-// bamboo-core FFI
-#include "bamboo_ffi.h"
+// skey-engine FFI
+#include "skey_engine.h"
 
 // Shared utility helpers
 #include "viet_util.h"
@@ -16,12 +16,12 @@ namespace skey {
 // ---------------------------------------------------------------------------
 
 VietnameseEngine::VietnameseEngine() {
-    handle_ = bamboo_engine_new(BAMBOO_METHOD_TELEX);
+    handle_ = skey_engine_new(SKEY_METHOD_TELEX);
 }
 
 VietnameseEngine::~VietnameseEngine() {
     if (handle_) {
-        bamboo_engine_free(handle_);
+        skey_engine_free(handle_);
         handle_ = nullptr;
     }
 }
@@ -45,7 +45,7 @@ VietnameseEngine::VietnameseEngine(VietnameseEngine &&other) noexcept
 VietnameseEngine &VietnameseEngine::operator=(VietnameseEngine &&other) noexcept {
     if (this != &other) {
         if (handle_) {
-            bamboo_engine_free(handle_);
+            skey_engine_free(handle_);
         }
         handle_ = other.handle_;
         method_ = other.method_;
@@ -70,31 +70,18 @@ VietnameseEngine &VietnameseEngine::operator=(VietnameseEngine &&other) noexcept
 
 void VietnameseEngine::setMethod(InputMethod method) {
     method_ = method;
-    int32_t m;
-    if (method == InputMethod::VNI) {
-        m = BAMBOO_METHOD_VNI;
-    } else if (shortW_) {
-        // Telex + "bare w → ư" option → bamboo telex_w variant
-        m = BAMBOO_METHOD_TELEXW;
-    } else {
-        m = BAMBOO_METHOD_TELEX;
-    }
+    int32_t m = (method == InputMethod::VNI) ? SKEY_METHOD_VNI : SKEY_METHOD_TELEX;
     skey_engine_set_method(handle_, m);
 }
 
 void VietnameseEngine::setToneStyle(ToneStyle style) {
     toneStyle_ = style;
-    // Modern = "hòa" (std_tone_style=true), Traditional = "hoà" (std_tone_style=false)
-    skey_engine_set_std_tone_style(handle_, style == ToneStyle::Modern ? 1 : 0);
+    skey_engine_set_tone_style(handle_, style == ToneStyle::Modern ? 1 : 0);
 }
 
 void VietnameseEngine::setFreeMarking(bool free) {
     freeMarking_ = free;
-    // bamboo-core's free_tone_marking=true means "enable smart tone relocation"
-    // (the engine auto-moves tone marks to standard position).
-    // User's "Đánh dấu tự do" = true means "let me place tone freely" →
-    // so we INVERT: user free=true → bamboo free_tone_marking=false.
-    skey_engine_set_free_marking(handle_, free ? 0 : 1);
+    skey_engine_set_free_marking(handle_, free ? 1 : 0);
 }
 
 void VietnameseEngine::setAutoRestore(bool restore) {
@@ -102,14 +89,13 @@ void VietnameseEngine::setAutoRestore(bool restore) {
 }
 
 void VietnameseEngine::setShortW(bool enabled) {
-    if (shortW_ == enabled) return;
     shortW_ = enabled;
-    // Re-apply method so bamboo switches between telex() and telex_w().
-    setMethod(method_);
+    skey_engine_set_short_w(handle_, enabled ? 1 : 0);
 }
 
 void VietnameseEngine::setBracketUO(bool enabled) {
     bracketUO_ = enabled;
+    skey_engine_set_bracket_uo(handle_, enabled ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -128,24 +114,26 @@ bool VietnameseEngine::isCompositionKey(char ch) const {
 }
 
 ProcessResult VietnameseEngine::processKey(char ch) {
-    if (!isCompositionKey(ch)) return ProcessResult::Ignored;       // P1
+    if (!isCompositionKey(ch)) return ProcessResult::Ignored;
 
     std::string oldComposed = composed_;
     std::string oldRawInput = rawInput_;
     rawInput_ += ch;
 
-    if (processEnglishBypass()) return ProcessResult::Consumed;     // P2
+    if (processEnglishBypass()) return ProcessResult::Consumed;
 
-    recompose();                                                     // P3
+    recompose();
 
-    if (tryUndoTransform(ch, oldComposed, oldRawInput))             // P4
+    if (tryUndoTransform(ch, oldComposed, oldRawInput))
         return ProcessResult::Committed;
 
-    if (tryToneKeyUndo(ch, oldComposed, oldRawInput))               // P5
+    if (tryToneKeyUndo(ch, oldComposed, oldRawInput))
         return ProcessResult::Committed;
 
-    applyFallbackPairSubstitution();                                 // P6
-    maybeAutoRestoreRealTime();                                      // R5 — after P6 so is_valid() sees final state
+    // R5: auto-restore runs after recompose.
+    // Pair substitution is now built into the engine, so is_valid()
+    // sees the final composed_ state directly.
+    maybeAutoRestoreRealTime();
 
     return ProcessResult::Consumed;
 }
@@ -156,7 +144,6 @@ void VietnameseEngine::backspace() {
     rawInput_.pop_back();
     if (rawInput_.empty()) {
         composed_.clear();
-        skey_engine_reset(handle_);
     } else {
         recompose();
     }
@@ -167,7 +154,6 @@ void VietnameseEngine::reset() {
     composed_.clear();
     committed_.clear();
     englishBypass_ = false;
-    skey_engine_reset(handle_);
 }
 
 std::string VietnameseEngine::getComposed() const {
@@ -179,7 +165,7 @@ std::string VietnameseEngine::getComposed() const {
 // ---------------------------------------------------------------------------
 
 bool VietnameseEngine::isValid() const {
-    return skey_engine_is_valid(handle_) != 0;
+    return skey_engine_is_valid(composed_.c_str()) != 0;
 }
 
 } // namespace skey
