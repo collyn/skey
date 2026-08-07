@@ -34,8 +34,12 @@ bool VietnameseEngine::shouldRestoreToRaw() const {
     if (composed_ == rawInput_) return false;
     if (skey_engine_is_valid(composed_.c_str()) != 0) return false;
 
-    // ddFreeStyle: abbreviations with đ but no vowels
-    if (detail::containsD(composed_) && !detail::hasAsciiVowel(composed_))
+    // ddFreeStyle: abbreviations with đ but no vowels in raw input.
+    // Check rawInput_ (not composed_) because composed_ may contain
+    // non-ASCII vowels like ả/ấ/ô that hasAsciiVowel skips, causing
+    // false positives (e.g. "addr" → composed "ảđ" has no ASCII vowel
+    // but rawInput_ "addr" clearly has 'a').
+    if (detail::containsD(composed_) && !detail::hasAsciiVowel(rawInput_))
         return false;
 
     return true;
