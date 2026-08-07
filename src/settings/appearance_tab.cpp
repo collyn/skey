@@ -65,21 +65,7 @@ const char *kStyleAddTile =
     "  background: #222;"
     "}";
 
-// Draw a checkerboard so transparent icons are visible on any tile background.
-static QPixmap checkerboardBg(int size) {
-    QPixmap cb(size, size);
-    const int cs = 8; // checker cell size
-    const QColor c1(0x55, 0x55, 0x55);  // dark gray
-    const QColor c2(0x6E, 0x6E, 0x6E);  // medium gray
-    QPainter p(&cb);
-    for (int y = 0; y < size; y += cs) {
-        for (int x = 0; x < size; x += cs) {
-            p.fillRect(x, y, cs, cs, ((x / cs + y / cs) & 1) ? c2 : c1);
-        }
-    }
-    p.end();
-    return cb;
-}
+
 
 QIcon makeRoundedIcon(const QString &iconPath, int size,
                        const QColor &bgColor = QColor(0x2d, 0x2d, 0x2d)) {
@@ -98,15 +84,9 @@ QIcon makeRoundedIcon(const QString &iconPath, int size,
     pp.addRoundedRect(QRectF(0, 0, size, size), kTileRadius - 2, kTileRadius - 2);
     p.setClipPath(pp);
 
-    // Checkerboard background (shows through transparent icon areas)
-    p.drawPixmap(QRectF(0, 0, size, size), checkerboardBg(size),
-                 QRectF(0, 0, size, size));
-
-    // Solid background fill (blended under icon — useful for dark-theme icons)
+    // Solid background fill
     if (bgColor.alpha() > 0) {
-        p.setCompositionMode(QPainter::CompositionMode_DestinationOver);
         p.fillRect(QRectF(0, 0, size, size), bgColor);
-        p.setCompositionMode(QPainter::CompositionMode_SourceOver);
     }
 
     // Icon on top
