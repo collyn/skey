@@ -896,25 +896,36 @@ std::string SKeyEngine::subModeIconImpl(const InputMethodEntry &entry,
                                         InputContext &ic) {
   FCITX_UNUSED(entry);
   FCITX_UNUSED(ic);
-  // Return absolute path to bypass XDG icon theme lookup, which fails on
-  // many non-Breeze KDE icon themes despite the icon being installed in
-  // hicolor and breeze fallback directories.
   // Cache keyed on the current IconTheme — re-resolves automatically when
   // the config value changes (no manual invalidation needed).
   std::string currentTheme = config_.iconTheme.value();
   if (iconCacheTheme_ == currentTheme && !iconCachePath_.empty())
     return iconCachePath_;
 
+  iconCacheTheme_ = currentTheme;
+
+  // For preset themes, return the icon NAME (not absolute path).
+  // This is critical for SNI-based tray hosts like Cinnamon's XApp
+  // Status Applet: they receive IconName over D-Bus and resolve it
+  // via Gtk.IconTheme, which only understands theme icon names, not
+  // filesystem paths.  fcitx5-bamboo does the same thing — it never
+  // overrides subModeIconImpl, so the icon name from the .conf file
+  // is used directly.
+  //
+  // For custom icons (user files in ~/.local/share/fcitx5/skey/icons/),
+  // there is no theme name, so we fall back to an absolute path.
+  // fcitx5's internal icon lookup (IconTheme::findIcon) respects
+  // absolute paths, so XEmbed tray still works for these.
+  if (skey::isPresetTheme(currentTheme)) {
+    iconCachePath_ = skey::presetIconBaseName(currentTheme);
+    return iconCachePath_;
+  }
+
+  // Custom icon: resolve to absolute path.
   skey::IconSearchPaths paths;
   // fcitx5's PkgData = "$XDG_DATA_HOME/fcitx5" (~/.local/share/fcitx5)
   paths.userDataDir = fcitx::StandardPath::global().userDirectory(
       fcitx::StandardPath::Type::PkgData);
-  // PNG-first: raster icons work on any DE without QtSVG/librsvg.
-  // The resolveIconPath probe order is .png then .svg per directory,
-  // so size-specific dirs (which have PNGs from rsvg-convert) must
-  // come before scalable/ dirs (which are SVG-only).  On GTK-based
-  // DEs like Cinnamon this avoids a blank icon when the gdk-pixbuf
-  // SVG loader isn't installed.
   paths.systemDirs = {
       "/usr/share/icons/hicolor/22x22/status",
       "/usr/share/icons/hicolor/24x24/status",
@@ -925,7 +936,6 @@ std::string SKeyEngine::subModeIconImpl(const InputMethodEntry &entry,
   };
   paths.fallback = FCITX_SKEY_ICON_PATH; // compile-time default
 
-  iconCacheTheme_ = currentTheme;
   iconCachePath_ = skey::resolveIconPath(currentTheme, paths);
   return iconCachePath_;
 }
