@@ -23,8 +23,8 @@
 // ── Visual constants ──────────────────────────────────────────────────────
 namespace {
 
-constexpr int kTileIconSize  = 68;   // rendered icon
 constexpr int kTileBtnSize   = 80;   // button total size
+constexpr int kTileIconSize  = kTileBtnSize - 4;  // leave room for border only
 constexpr int kGridSpacing   = 12;
 constexpr int kTileRadius     = 14;
 
@@ -32,20 +32,19 @@ const char *kStyleTile =
     "QPushButton {"
     "  border: 2px solid #444;"
     "  border-radius: %1px;"
-    "  background: #2d2d2d;"
-    "  padding: 2px;"
+    "  background: transparent;"
+    "  padding: 0px;"
     "}"
     "QPushButton:hover {"
     "  border-color: #1a73e8;"
-    "  background: #344;"
     "}";
 
 const char *kStyleTileSelected =
     "QPushButton {"
     "  border: 3px solid #1a73e8;"
     "  border-radius: %1px;"
-    "  background: #1a3350;"
-    "  padding: 1px;"
+    "  background: transparent;"
+    "  padding: 0px;"
     "}"
     "QPushButton:hover {"
     "  border-color: #2979ff;"
