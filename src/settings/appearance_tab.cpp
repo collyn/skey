@@ -177,6 +177,16 @@ QPushButton *AppearanceTab::makeTile(const QString &iconPath,
     if (!icon.isNull()) {
         btn->setIcon(icon);
         btn->setIconSize(QSize(kTileIconSize, kTileIconSize));
+    } else {
+        // Icon failed to load (missing SVG plugin, no PNG fallback).
+        // Show the theme key as text so the tile is never a blank dark box.
+        QString label = isPreset
+            ? QString::fromUtf8(skey::presetIconBaseName(themeKey.toStdString()))
+                      .remove("fcitx-skey-")
+            : themeKey;
+        btn->setText(label);
+        btn->setStyleSheet(btn->styleSheet() +
+            "QPushButton { color: #888; font-size: 9px; font-weight: bold; }");
     }
 
     QString style = QString(kStyleTile).arg(kTileRadius);
@@ -211,10 +221,14 @@ QPushButton *AppearanceTab::makeAddTile() {
 // ── Grid management ───────────────────────────────────────────────────────
 
 void AppearanceTab::rebuildGrid() {
-    // Clear existing tiles except the grid layout
+    // Clear existing tiles. hide() ensures widgets disappear immediately;
+    // deleteLater() defers deletion to the event loop to avoid dangling refs.
     QLayoutItem *child;
     while ((child = grid_->takeAt(0)) != nullptr) {
-        if (child->widget()) child->widget()->deleteLater();
+        if (child->widget()) {
+            child->widget()->hide();
+            child->widget()->deleteLater();
+        }
         delete child;
     }
 
