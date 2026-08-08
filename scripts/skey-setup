@@ -365,37 +365,22 @@ if command -v dbus-update-activation-environment >/dev/null 2>&1; then
     echo "✓ D-Bus activation environment updated"
 fi
 
-# ── Tray: enable SNI (notificationitem) when XEmbed won't work ──
-# Wayland has no XEmbed at all.  Cinnamon's systray@cinnamon.org applet
-# doesn't reliably own _NET_SYSTEM_TRAY_S0, so classicui's XEmbed tray
-# can't dock — notificationitem (SNI) works with XApp Status Applet.
-NEEDS_SNI=false
+# ── Wayland: disable classicui (XEmbed tray broken on Wayland) ──
 if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
-    NEEDS_SNI=true
-elif [ "$DESKTOP_SESSION" = "cinnamon" ] || \
-     [ "$XDG_CURRENT_DESKTOP" = "cinnamon" ] || \
-     [ "$XDG_CURRENT_DESKTOP" = "X-Cinnamon" ]; then
-    NEEDS_SNI=true
-fi
-
-if [ "$NEEDS_SNI" = "true" ]; then
     ADDON_DIR="$CONFIG_DIR/addon"
     mkdir -p "$ADDON_DIR"
-    if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
-        # Wayland: XEmbed is completely broken, disable classicui
-        cat > "$ADDON_DIR/classicui.conf" << 'CLASSICUIOFF'
+    cat > "$ADDON_DIR/classicui.conf" << 'CLASSICUIOFF'
 [Addon]
 Enabled=False
 CLASSICUIOFF
-        echo "✓ Disabled classicui (XEmbed tray doesn't work on Wayland)"
-    fi
+    echo "✓ Disabled classicui (XEmbed tray doesn't work on Wayland)"
 
-    # Enable notificationitem for native SNI tray
+    # Ensure notificationitem is enabled for native SNI tray
     cat > "$ADDON_DIR/notificationitem.conf" << 'SNION'
 [Addon]
 Enabled=True
 SNION
-    echo "✓ Enabled notificationitem (native SNI tray)"
+    echo "✓ Ensured notificationitem (native SNI tray) is enabled"
 fi
 
 # ── Wayland: re-trigger compositor virtual keyboard binding ──
