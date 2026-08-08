@@ -926,13 +926,12 @@ std::string SKeyEngine::subModeIconImpl(const InputMethodEntry &entry,
   // fcitx5's PkgData = "$XDG_DATA_HOME/fcitx5" (~/.local/share/fcitx5)
   paths.userDataDir = fcitx::StandardPath::global().userDirectory(
       fcitx::StandardPath::Type::PkgData);
+  // SVG-first: DE compositors render SVGs natively for tray icons
   paths.systemDirs = {
-      "/usr/share/icons/hicolor/22x22/status",
-      "/usr/share/icons/hicolor/24x24/status",
-      "/usr/share/icons/hicolor/48x48/apps",
-      "/usr/share/pixmaps",
       "/usr/share/icons/hicolor/scalable/apps",
       "/usr/share/icons/hicolor/scalable/status",
+      "/usr/share/icons/hicolor/48x48/apps",
+      "/usr/share/pixmaps",
   };
   paths.fallback = FCITX_SKEY_ICON_PATH; // compile-time default
 
