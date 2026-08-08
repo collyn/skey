@@ -909,12 +909,19 @@ std::string SKeyEngine::subModeIconImpl(const InputMethodEntry &entry,
   // fcitx5's PkgData = "$XDG_DATA_HOME/fcitx5" (~/.local/share/fcitx5)
   paths.userDataDir = fcitx::StandardPath::global().userDirectory(
       fcitx::StandardPath::Type::PkgData);
-  // SVG-first: DE compositors render SVGs natively for tray icons
+  // PNG-first: raster icons work on any DE without QtSVG/librsvg.
+  // The resolveIconPath probe order is .png then .svg per directory,
+  // so size-specific dirs (which have PNGs from rsvg-convert) must
+  // come before scalable/ dirs (which are SVG-only).  On GTK-based
+  // DEs like Cinnamon this avoids a blank icon when the gdk-pixbuf
+  // SVG loader isn't installed.
   paths.systemDirs = {
-      "/usr/share/icons/hicolor/scalable/apps",
-      "/usr/share/icons/hicolor/scalable/status",
+      "/usr/share/icons/hicolor/22x22/status",
+      "/usr/share/icons/hicolor/24x24/status",
       "/usr/share/icons/hicolor/48x48/apps",
       "/usr/share/pixmaps",
+      "/usr/share/icons/hicolor/scalable/apps",
+      "/usr/share/icons/hicolor/scalable/status",
   };
   paths.fallback = FCITX_SKEY_ICON_PATH; // compile-time default
 
