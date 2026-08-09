@@ -32,9 +32,11 @@ BuildRequires:  pkgconfig(dbus-1)
 
 %if 0%{?suse_version}
 BuildRequires:  qt6-base-devel
+BuildRequires:  qt6-svg-devel
 BuildRequires:  rsvg-convert
 %else
 BuildRequires:  qt6-qtbase-devel
+BuildRequires:  qt6-qtsvg-devel
 BuildRequires:  librsvg2-tools
 %endif
 
