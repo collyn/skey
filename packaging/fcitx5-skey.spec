@@ -32,18 +32,19 @@ BuildRequires:  pkgconfig(dbus-1)
 
 %if 0%{?fedora} || 0%{?rhel}
 BuildRequires:  qt6-qtbase-devel
-BuildRequires:  qt6-qtsvg-devel
 BuildRequires:  librsvg2-tools
+Requires:       qt6-qtsvg
 %endif
 %if 0%{?suse_version}
 BuildRequires:  qt6-base-devel
-BuildRequires:  qt6-svg-devel
 BuildRequires:  rsvg-convert
+Requires:       qt6-svg
 %endif
 
-# Qt6 SVG runtime: fcitx5-skey-settings links against Qt6::Svg, so RPM
-# auto-detects libQt6Svg.so.6 and adds the correct package name per distro
-# (qt6-qtsvg on Fedora, qt6-svg on openSUSE).  No explicit Requires needed.
+# qt6-qtsvg / qt6-svg is needed at runtime for the settings GUI to load
+# SVG icons via QIcon.  It's an explicit Requires (not BuildRequires)
+# because the settings app builds fine without Qt6Svg headers — it just
+# won't display SVGs at runtime if the plugin is missing.
 
 Requires:       fcitx5
 Requires:       hicolor-icon-theme
