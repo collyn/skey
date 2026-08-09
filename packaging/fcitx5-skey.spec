@@ -30,14 +30,15 @@ BuildRequires:  pkgconfig(dbus-1)
 # BuildRequires:  rust
 # BuildRequires:  cargo
 
+%if 0%{?fedora} || 0%{?rhel}
+BuildRequires:  qt6-qtbase-devel
+BuildRequires:  qt6-qtsvg-devel
+BuildRequires:  librsvg2-tools
+%endif
 %if 0%{?suse_version}
 BuildRequires:  qt6-base-devel
 BuildRequires:  qt6-svg-devel
 BuildRequires:  rsvg-convert
-%else
-BuildRequires:  qt6-qtbase-devel
-BuildRequires:  qt6-qtsvg-devel
-BuildRequires:  librsvg2-tools
 %endif
 
 # Qt6 SVG runtime: fcitx5-skey-settings links against Qt6::Svg, so RPM
