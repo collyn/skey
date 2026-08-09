@@ -9,7 +9,7 @@
 #   rpmbuild -bb fcitx5-skey.spec
 
 Name:           fcitx5-skey
-Version:        0.4.5
+Version:        0.5.6
 Release:        1%{?dist}
 Summary:        Vietnamese SKey input method addon for Fcitx5
 
@@ -33,12 +33,14 @@ BuildRequires:  pkgconfig(dbus-1)
 %if 0%{?suse_version}
 BuildRequires:  qt6-base-devel
 BuildRequires:  rsvg-convert
-Requires:       qt6-svg
 %else
 BuildRequires:  qt6-qtbase-devel
 BuildRequires:  librsvg2-tools
-Requires:       qt6-qtsvg
 %endif
+
+# Qt6 SVG runtime: fcitx5-skey-settings links against Qt6::Svg, so RPM
+# auto-detects libQt6Svg.so.6 and adds the correct package name per distro
+# (qt6-qtsvg on Fedora, qt6-svg on openSUSE).  No explicit Requires needed.
 
 Requires:       fcitx5
 Requires:       hicolor-icon-theme
