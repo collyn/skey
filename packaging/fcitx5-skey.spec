@@ -27,8 +27,8 @@ BuildRequires:  gcc-c++
 BuildRequires:  make
 BuildRequires:  pkgconfig(dbus-1)
 # rust + cargo provided by rustup in CI; use distro packages for local builds:
-# BuildRequires:  rust
-# BuildRequires:  cargo
+BuildRequires:  rust
+BuildRequires:  cargo
 
 %if 0%{?suse_version}
 BuildRequires:  qt6-base-devel
@@ -54,8 +54,7 @@ and spell checking.
 %setup -q -n fcitx5-skey-%{version}
 
 %build
-# bamboo-core needs network and writable CARGO_HOME inside rpmbuild sandbox
-# Ensure rustup-installed cargo is on PATH (for CI; distro rust works too)
+# system rust/cargo from BuildRequires (CI); rustup fallback for local builds
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_HOME=%{_builddir}/.cargo
 mkdir -p "$CARGO_HOME"

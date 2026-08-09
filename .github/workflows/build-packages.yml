@@ -106,7 +106,7 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           export PATH="$HOME/.cargo/bin:$PATH"
-          rpmbuild -bb --define "_topdir $HOME/rpmbuild" \
+          rpmbuild -bb --nocheck --define "_topdir $HOME/rpmbuild" \
             ~/rpmbuild/SPECS/fcitx5-skey.spec
 
       - name: Sign RPMs

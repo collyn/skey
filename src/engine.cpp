@@ -896,15 +896,40 @@ std::string SKeyEngine::subModeIconImpl(const InputMethodEntry &entry,
                                         InputContext &ic) {
   FCITX_UNUSED(entry);
   FCITX_UNUSED(ic);
-  // Return absolute path to bypass XDG icon theme lookup, which fails on
-  // many non-Breeze KDE icon themes despite the icon being installed in
-  // hicolor and breeze fallback directories.
   // Cache keyed on the current IconTheme — re-resolves automatically when
   // the config value changes (no manual invalidation needed).
   std::string currentTheme = config_.iconTheme.value();
   if (iconCacheTheme_ == currentTheme && !iconCachePath_.empty())
     return iconCachePath_;
 
+  iconCacheTheme_ = currentTheme;
+
+  // ── Cinnamon: return icon NAME (not absolute path) ──────────────────
+  // Cinnamon's tray uses XApp Status Applet (SNI).  The IconName property
+  // is sent over D-Bus and resolved via Gtk.IconTheme — which only
+  // understands theme icon names, not filesystem paths.  This matches
+  // how fcitx5-bamboo works: it never overrides subModeIconImpl, so
+  // the icon name from the .conf file is used directly.
+  //
+  // On KDE and GNOME, absolute paths work correctly — their compositors
+  // or SNI hosts handle filesystem paths in IconName.  Keep the v0.5.5
+  // absolute-path behavior there.
+  static const bool kIsCinnamon = [] {
+    const char *de = std::getenv("XDG_CURRENT_DESKTOP");
+    if (!de) de = std::getenv("DESKTOP_SESSION");
+    return de && (std::string(de) == "cinnamon" ||
+                  std::string(de) == "X-Cinnamon");
+  }();
+
+  if (kIsCinnamon && skey::isPresetTheme(currentTheme)) {
+    iconCachePath_ = skey::presetIconBaseName(currentTheme);
+    return iconCachePath_;
+  }
+
+  // ── Default: resolve to absolute path (KDE, GNOME, etc.) ───────────
+  // Return absolute path to bypass XDG icon theme lookup, which fails on
+  // many non-Breeze KDE icon themes despite the icon being installed in
+  // hicolor and breeze fallback directories.
   skey::IconSearchPaths paths;
   // fcitx5's PkgData = "$XDG_DATA_HOME/fcitx5" (~/.local/share/fcitx5)
   paths.userDataDir = fcitx::StandardPath::global().userDirectory(
@@ -918,7 +943,6 @@ std::string SKeyEngine::subModeIconImpl(const InputMethodEntry &entry,
   };
   paths.fallback = FCITX_SKEY_ICON_PATH; // compile-time default
 
-  iconCacheTheme_ = currentTheme;
   iconCachePath_ = skey::resolveIconPath(currentTheme, paths);
   return iconCachePath_;
 }
