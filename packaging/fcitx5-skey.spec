@@ -27,8 +27,8 @@ BuildRequires:  gcc-c++
 BuildRequires:  make
 BuildRequires:  pkgconfig(dbus-1)
 # rust + cargo provided by rustup in CI; use distro packages for local builds:
-BuildRequires:  rust
-BuildRequires:  cargo
+# BuildRequires:  rust
+# BuildRequires:  cargo
 
 %if 0%{?suse_version}
 BuildRequires:  qt6-base-devel
