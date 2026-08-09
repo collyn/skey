@@ -1,24 +1,24 @@
 Architectures: amd64
 Codename: stable
 Components: main
-Date: Sun, 09 Aug 2026 01:32:11 +0000
+Date: Sun, 09 Aug 2026 10:57:20 +0000
 Description: Vietnamese SKey input method addon for Fcitx5
 Label: fcitx5-skey
 Origin: fcitx5-skey
 Suite: stable
 MD5Sum:
- 8f0c642d78365efba356d2df07a66ea8              205 Release
- 65e11758d22ac58876de97544273de91              617 main/binary-amd64/Packages
- c56f0836fc0aa18b4587b971c3ef2352              448 main/binary-amd64/Packages.gz
+ d2027688775f1961ae1363e10773dbe7              205 Release
+ 56868a1dfc47a81806d0ffe09ec360bf              617 main/binary-amd64/Packages
+ ef10d19088711c43e2923940b38ed642              446 main/binary-amd64/Packages.gz
 SHA1:
- ce31a66463c080c2eebbe63fd517a277342bb614              205 Release
- ad640baa4f0d7f65cc7fcfa82f78ed35b0394ae1              617 main/binary-amd64/Packages
- 94b1424f271b37c801b74d10061ef801a1ccb56e              448 main/binary-amd64/Packages.gz
+ 3fb8f5c1203e5c315fae612300aaf2a0282315db              205 Release
+ 295761be650cd6adeb48d4b5d40a339b5704dc15              617 main/binary-amd64/Packages
+ 0f4ba9aa431bcba1803d7be75e2eab4e60053466              446 main/binary-amd64/Packages.gz
 SHA256:
- c2546cee42e3df4cf1bc92d175179c64e27d4b93f0192efc90ed2323db3b83de              205 Release
- 864f308d5165842349789e6fc974aa6d5fabe40db9846196ecf006c9f496da4b              617 main/binary-amd64/Packages
- 41468f345f97732228bfaad4eccb6fa53815b364cb764ae7c849c0a1eccf3ef4              448 main/binary-amd64/Packages.gz
+ 3ba3e6009cadd976cc51ca031cfcfe4f9e2e9749f52c17d0b0096c68e744c1fe              205 Release
+ 4c2cdca804c9650ae46767deccf9f47b80fad55abf4d0bc6126e2066a311c318              617 main/binary-amd64/Packages
+ 9f13a9b218c622a109cce1aa3f8df11f228ff9634ed81bcced4e369ee242bc99              446 main/binary-amd64/Packages.gz
 SHA512:
- defbd437f6e805768a40847ec64e34f7d26848cd4ce4610b5ae13e576402648e9d099889f946b2e0e974c1ccce4fc028dc74f9552f4dd5e0209520d7f22e62d0              205 Release
- f8c9c7690f78915d1147ea6960967d4f88b73814eb88b53cde621ecb23bb7f9abb17de9600db52d1423fa023344e4d29036ad8334f51fe6eef6c6db5edf61e7e              617 main/binary-amd64/Packages
- c92f6d0f0896b3265de83c43e0c04c0f509f393dc520dc68eaf7d4fb6dd741b0636cc00a506aa02d514042392ce3059a9d395f2a07c04e9a5f2870356b385223              448 main/binary-amd64/Packages.gz
+ 304ad62e9413e46de22762286f499bae36f31a832f8918b0c8056ce702029ebb50de8ed207930b118640ef0c35a9b626f8b9a980988042534b3eec9715cf3feb              205 Release
+ 4b35dd5c813020b9aa8f6596740ba7b1101bb2523b9fe204a3c87876b42579bc29d722a57224837fbc6106c7e44d3b9781dfc1d06de5d8393daf1d2a7cdf7d85              617 main/binary-amd64/Packages
+ 0918f1424c16b7a1851e9976773e89d2750b763b45864cc4b552265dc41a03b20e1d389c8586e24e8574266c80efeb0505b375b510028c975d2a0134f6625351              446 main/binary-amd64/Packages.gz
