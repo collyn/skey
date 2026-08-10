@@ -287,6 +287,45 @@ fi
 upsert_shell_env "$HOME/.xprofile" "$EXPORT_LINES"
 echo "✓ X11 fallback: $HOME/.xprofile"
 
+# ── Stop ibus if it's running ──
+# On Ubuntu and many distros, ibus is the default IM and conflicts with
+# fcitx5. We stop it cleanly and prevent it from restarting so the user
+# doesn't have to manually disable it.
+if pidof ibus-daemon > /dev/null 2>&1; then
+    echo "→ Stopping ibus (default IM on this system)..."
+    ibus exit 2>/dev/null || true
+
+    # Wait for graceful shutdown (up to 3s)
+    for i in $(seq 1 30); do
+        if ! pidof ibus-daemon > /dev/null 2>&1; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    # Force-kill any remaining ibus processes
+    if pidof ibus-daemon > /dev/null 2>&1; then
+        pkill ibus-daemon 2>/dev/null || true
+        sleep 0.5
+    fi
+
+    # Disable ibus systemd user service so it won't restart on next login
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user stop ibus-daemon.service 2>/dev/null || true
+        systemctl --user disable ibus-daemon.service 2>/dev/null || true
+    fi
+
+    # Remove ibus from XDG autostart so it doesn't launch on login.
+    # We rename rather than delete so the change is reversible.
+    for f in "$HOME/.config/autostart/ibus-daemon.desktop" \
+             "$HOME/.config/autostart/ibus-ui-gtk3.desktop"; do
+        if [ -f "$f" ]; then
+            mv "$f" "$f.disabled-by-skey" 2>/dev/null || true
+        fi
+    done
+    echo "✓ ibus stopped and disabled"
+fi
+
 # ── Restart fcitx5 FIRST before touching session environment ──
 # systemd set-environment and dbus-update-activation-environment can
 # briefly disrupt D-Bus service registration.  Restart fcitx5 while
@@ -328,6 +367,49 @@ if [ "$READY" = "1" ]; then
 else
     echo "⚠ WARNING: fcitx5 may not be fully ready yet."
     echo "  If input is not working, run: fcitx5 -r -d"
+fi
+
+# ── Ensure fcitx5 starts automatically on login ──
+# XDG autostart is the universal mechanism respected by GNOME, KDE Plasma,
+# Cinnamon, XFCE, Budgie, Pantheon, and all major Wayland compositors.
+AUTOSTART_DIR="$HOME/.config/autostart"
+mkdir -p "$AUTOSTART_DIR"
+
+if [ ! -f "$AUTOSTART_DIR/fcitx5.desktop" ]; then
+    # Prefer copying the system desktop file if available (distro-maintained
+    # entries often include distro-specific tweaks).
+    if [ -f /etc/xdg/autostart/fcitx5.desktop ]; then
+        cp /etc/xdg/autostart/fcitx5.desktop "$AUTOSTART_DIR/fcitx5.desktop"
+    elif [ -f /etc/xdg/autostart/org.fcitx.Fcitx5.desktop ]; then
+        cp /etc/xdg/autostart/org.fcitx.Fcitx5.desktop "$AUTOSTART_DIR/fcitx5.desktop"
+    else
+        # Create a minimal autostart entry
+        cat > "$AUTOSTART_DIR/fcitx5.desktop" << 'AUTOSTARTEOF'
+[Desktop Entry]
+Name=Fcitx 5
+GenericName=Input Method
+Comment=Start Fcitx5 input method daemon
+Exec=fcitx5 -d
+Icon=fcitx5
+Terminal=false
+Type=Application
+Categories=System;Utility;
+X-GNOME-Autostart-Phase=Applications
+X-GNOME-Autostart-Notify=true
+X-KDE-autostart-after=panel
+AUTOSTARTEOF
+    fi
+    echo "✓ fcitx5 autostart enabled ($AUTOSTART_DIR/fcitx5.desktop)"
+else
+    echo "✓ fcitx5 autostart already configured"
+fi
+
+# Debian/Ubuntu: use im-config to set fcitx5 as the system IM framework.
+# This ensures the IM is available even in GDM/XDM login sessions and
+# is respected by im-launch in X11 sessions.
+if [ "$DISTRO" = "debian" ] && command -v im-config >/dev/null 2>&1; then
+    im-config -n fcitx5 2>/dev/null || true
+    echo "✓ im-config set to fcitx5"
 fi
 
 # ── Now update session environment ──
