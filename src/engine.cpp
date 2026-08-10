@@ -1782,9 +1782,10 @@ void SKeyState::deactivate() {
           // mode, replacements already committed via commitText() so
           // commitBuffer() here would double-commit.
           if (!useUinputMode()) {
-            // if (!viet_.getComposed().empty() && !useSurroundingText())
-            //   commitBuffer();
-            viet_.reset();
+            if (!viet_.getComposed().empty() && !useSurroundingText())
+              commitBuffer();
+            else
+              viet_.reset();
             committedLen_ = 0;
           }
           clearLastWord();
@@ -1805,10 +1806,10 @@ void SKeyState::deactivate() {
   uinputSafetyTimer_.reset();
   uinputDeleting_ = false;
 
-  // if (!viet_.getComposed().empty() && !useSurroundingText()) {
-  //   commitBuffer();
-  // }
-  viet_.reset();
+  if (!viet_.getComposed().empty() && !useSurroundingText())
+    commitBuffer();
+  else
+    viet_.reset();
   committedLen_ = 0;
   clearLastWord();
   clearUI();
@@ -1833,7 +1834,13 @@ void SKeyState::reset() {
   if (hasDeferredCommitPending()) {
     SKEY_DEBUG() << "Reset: keeping deferred commit";
   }
-  viet_.reset();
+  // In Preedit mode, uncommitted composition text must be committed
+  // before clearing state — otherwise it's lost on focus change.
+  if (!viet_.getComposed().empty() && !useSurroundingText()) {
+    commitBuffer();
+  } else {
+    viet_.reset();
+  }
   bufferedUinputKeys_.clear();
   uinputCommitTimer_.reset();
   uinputSafetyTimer_.reset();
