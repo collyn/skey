@@ -25,9 +25,9 @@ enum class ProcessResult {
 
 /// Core Vietnamese input processing engine.
 ///
-/// Thin wrapper around bamboo-core (Rust) via C FFI.
+/// Thin wrapper around skey-engine (Rust) via C FFI.
 /// Maintains composition state for a single syllable and handles
-/// Telex/VNI input rules via bamboo-core's optimized engine.
+/// Telex/VNI input rules via skey-engine's optimized engine.
 class VietnameseEngine {
 public:
     VietnameseEngine();
@@ -46,9 +46,9 @@ public:
     void setToneStyle(ToneStyle style);
     void setFreeMarking(bool free);
     void setAutoRestore(bool restore);
-    /// Telex only: bare 'w' → 'ư' (switches bamboo to telex_w).
+    /// Telex only: bare 'w' → 'ư' (switches skey-engine to telex_w).
     void setShortW(bool enabled);
-    /// Telex only: '[' → 'ơ', ']' → 'ư' (translated to ow/uw for bamboo).
+    /// Telex only: '[' → 'ơ', ']' → 'ư' (translated to ow/uw for skey-engine).
     void setBracketUO(bool enabled);
 
     /// Process a single key press. Returns the result type.
@@ -130,7 +130,7 @@ private:
                         const std::string &oldComposed,
                         const std::string &oldRawInput);
 
-    /// Clear rawInput_, composed_, and reset the bamboo engine.
+    /// Clear rawInput_, composed_, and reset the skey-engine.
     /// Deliberately does NOT clear committed_ — undo paths append to it.
     void resetCompositionState();
 
@@ -141,7 +141,7 @@ private:
 
     /// Real-time auto-restore after every recompose (also from backspace).
     /// Prevents Telex modifier keys from destructively rewriting English
-    /// words (e.g. "address" → bamboo yields "addres" when ss = undo tone).
+    /// words (e.g. "address" → skey-engine yields "addres" when ss = undo tone).
     /// Only restores when composed_ is all-ASCII.
     /// Abbreviations with đ but no vowels are protected by ddFreeStyle.
     void maybeAutoRestoreRealTime();
@@ -164,7 +164,7 @@ private:
     bool bracketUO_ = false;   // Telex: '[' → 'ơ', ']' → 'ư'
 
     std::string rawInput_;       // What the user actually typed
-    std::string composed_;       // Cached composed output from bamboo-core
+    std::string composed_;       // Cached composed output from skey-engine
     bool englishBypass_ = false;  // After undo, skip Vietnamese processing
     std::string committed_;      // Auto-committed text
 };

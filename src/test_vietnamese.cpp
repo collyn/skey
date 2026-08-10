@@ -1,7 +1,7 @@
 /**
  * test_vietnamese.cpp — Comprehensive Vietnamese typing test suite for skey.
  *
- * Tests the VietnameseEngine wrapper against bamboo-core for all common
+ * Tests the VietnameseEngine wrapper using skey-engine for all common
  * Telex, VNI, and Telex+ShortW/BracketUO typing patterns, plus edge cases.
  *
  * Build:

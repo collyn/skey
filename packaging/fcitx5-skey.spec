@@ -52,7 +52,7 @@ Requires:       systemd
 
 %description
 SKey (Simple Key) is a Vietnamese input method engine for Fcitx5,
-using bamboo-core (Rust) via FFI. It supports Telex, Telex W, and VNI
+using skey-engine (Rust) via FFI. It supports Telex, Telex W, and VNI
 with surrounding text editing, auto mode switching, per-app mode override,
 and spell checking.
 

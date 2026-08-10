@@ -176,6 +176,15 @@ void InfoTab::setupUI() {
   emailLabel->setCursor(Qt::PointingHandCursor);
   mainLayout->addWidget(emailLabel);
 
+  auto *telegramLabel = new QLabel(this);
+  telegramLabel->setText(QString::fromUtf8(
+      "<a href=\"https://t.me/+irlw1EnOtAkxNDc1\">Telegram Group</a>"));
+  telegramLabel->setTextFormat(Qt::RichText);
+  telegramLabel->setOpenExternalLinks(true);
+  telegramLabel->setAlignment(Qt::AlignCenter);
+  telegramLabel->setCursor(Qt::PointingHandCursor);
+  mainLayout->addWidget(telegramLabel);
+
   // ── Backup / Restore ──
   auto *sep3 = new QFrame(this);
   sep3->setFrameShape(QFrame::HLine);

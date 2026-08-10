@@ -4,7 +4,7 @@
 pkgname=fcitx5-skey
 pkgver=0.4.4
 pkgrel=1
-pkgdesc="Vietnamese SKey input method addon for Fcitx5 (bamboo-core engine)"
+pkgdesc="Vietnamese SKey input method addon for Fcitx5 (skey-engine)"
 arch=('x86_64')
 url="https://github.com/collyn/skey"
 license=('MIT')
