@@ -1,0 +1,7 @@
+fcitx5-skey (0.5.7-1) noble; urgency=medium
+
+  * Initial PPA release.
+  * Vietnamese SKey input method engine for Fcitx5 — supports Telex, Telex W,
+    VNI with advanced surrounding text editing.
+
+ -- Nguyen Tien Huy <collyn094@gmail.com>  Sun, 10 Aug 2026 12:00:00 +0700

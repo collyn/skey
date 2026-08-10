@@ -1,0 +1,14 @@
+#!/bin/bash
+set -e
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
+        gtk-update-icon-cache /usr/share/icons/breeze 2>/dev/null || true
+        gtk-update-icon-cache /usr/share/icons/breeze-dark 2>/dev/null || true
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload 2>/dev/null || true
+    fi
+fi
+
+#DEBHELPER#

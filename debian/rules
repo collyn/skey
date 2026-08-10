@@ -1,0 +1,23 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE = 1
+
+%:
+	dh $@ --buildsystem=cmake
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+	    -DCMAKE_BUILD_TYPE=Release \
+	    -DSKEY_ENGINE_SOURCE_DIR=$(CURDIR)/skey-engine \
+	    -DCMAKE_INSTALL_PREFIX=/usr
+
+# Skip test suite — it only runs unit tests that were already checked upstream.
+# Launchpad buildd has no DISPLAY, so runtime integration tests are
+# meaningless in this environment.
+override_dh_auto_test:
+	@echo "Skipping test suite (no display on buildd)"
+
+override_dh_auto_install:
+	dh_auto_install
+	# Remove libtool .la files if any (Debian Policy 10.2)
+	find debian/fcitx5-skey -name '*.la' -delete 2>/dev/null || true

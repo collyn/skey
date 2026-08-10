@@ -1,0 +1,38 @@
+PPA Source Package — fcitx5-skey
+=================================
+
+This directory contains the Debian packaging for fcitx5-skey, intended
+for upload to Ubuntu Launchpad PPA.
+
+Quick Start
+-----------
+
+1. Create the orig tarball (bundles skey-engine source):
+
+    ./scripts/make-ppa-source.sh
+
+2. Build the source package:
+
+    debuild -S -sa
+
+3. Check package quality:
+
+    lintian --pedantic ../fcitx5-skey_*.changes
+
+4. Upload to Launchpad PPA:
+
+    dput ppa:collyn094/fcitx5-skey ../fcitx5-skey_*_source.changes
+
+About skey-engine (Rust)
+-------------------------
+
+skey-engine is a stateless Vietnamese input method engine written in Rust.
+It ships as a static library (libskey_engine.a) that links into the C++
+fcitx5 addon.
+
+The engine has zero external Cargo dependencies — it only uses the Rust
+standard library. This makes it suitable for offline build environments
+like Launchpad buildd.
+
+During the build, CMake receives `-DSKEY_ENGINE_SOURCE_DIR=$(CURDIR)/skey-engine`
+(via debian/rules) to use the bundled source instead of cloning from GitHub.

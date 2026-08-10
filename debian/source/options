@@ -1,0 +1,9 @@
+# Ignore generated files that shouldn't be included in the source diff
+extend-diff-ignore = "(^|/)\.github/"
+extend-diff-ignore = "(^|/)\.gitignore$"
+extend-diff-ignore = "(^|/)build-deb/"
+extend-diff-ignore = "(^|/)build/"
+extend-diff-ignore = "(^|/)\.venv/"
+extend-diff-ignore = "(^|/)\.claude/"
+extend-diff-ignore = "(^|/)CLAUDE\.md$"
+extend-diff-ignore = "(^|/)AGENTS\.md$"

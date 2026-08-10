@@ -1,0 +1,15 @@
+#!/bin/bash
+set -e
+if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop "fcitx5-skey-uinput-server@*.service" 2>/dev/null || true
+        for link in /etc/systemd/system/multi-user.target.wants/fcitx5-skey-uinput-server@*; do
+            if [ -L "$link" ]; then
+                instance=$(basename "$link")
+                systemctl disable "$instance" 2>/dev/null || true
+            fi
+        done
+    fi
+fi
+
+#DEBHELPER#

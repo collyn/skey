@@ -44,6 +44,94 @@ jobs:
           name: deb-package
           path: '*.deb'
 
+  # ── PPA source package (.dsc + .orig.tar.gz) ────────────────────────────
+  build-ppa-source:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y devscripts debhelper dpkg-dev git rsync
+
+      - name: Extract version
+        run: |
+          VER=$(grep -oP 'project\(fcitx5-skey VERSION \K[0-9.]+' CMakeLists.txt)
+          echo "PKG_VERSION=$VER" >> $GITHUB_ENV
+
+      - name: Create orig tarball
+        run: |
+          chmod +x scripts/make-ppa-source.sh
+          ./scripts/make-ppa-source.sh "$PKG_VERSION"
+
+      - name: Build source package
+        run: |
+          debuild -S -sa -d 2>&1 | tee /tmp/debuild.log
+          # debuild places output in parent dir
+          echo "=== Source package files ==="
+          ls -la ../*.dsc ../*.orig.tar.* ../*.debian.tar.* ../*_source.* 2>/dev/null || true
+
+      - name: Upload PPA source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppa-source
+          path: |
+            ../*.dsc
+            ../*.orig.tar.*
+            ../*.debian.tar.*
+            ../*_source.changes
+            ../*_source.buildinfo
+
+  # ── Upload to Launchpad PPA (tag only) ──────────────────────────────────
+  upload-ppa:
+    needs: build-ppa-source
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-22.04
+    env:
+      PPA_INCOMING: ~collyn094/ubuntu/fcitx5-skey
+
+    steps:
+      - name: Download PPA source artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ppa-source
+
+      - name: Install dput
+        run: sudo apt-get update && sudo apt-get install -y dput
+
+      - name: Import GPG key
+        env:
+          PPA_GPG_PRIVATE_KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
+        run: |
+          echo "$PPA_GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: Configure dput
+        run: |
+          cat > ~/.dput.cf << 'DEOF'
+          [ppa-collyn]
+          fqdn = ppa.launchpad.net
+          method = ftp
+          incoming = ~collyn094/ubuntu/fcitx5-skey
+          login = anonymous
+          allow_unsigned_uploads = 0
+          DEOF
+
+      - name: Upload to Launchpad PPA
+        run: |
+          CHANGES=$(ls fcitx5-skey_*_source.changes 2>/dev/null | head -1)
+          if [ -z "$CHANGES" ]; then
+            echo "Error: No .changes file found" >&2
+            ls -la
+            exit 1
+          fi
+          echo "Uploading: $CHANGES"
+          dput ppa-collyn "$CHANGES"
+
   # ── Fedora / openSUSE (.rpm) ────────────────────────────────────────────
   build-rpm:
     runs-on: ubuntu-latest
@@ -206,7 +294,7 @@ jobs:
 
   # ── GitHub Release (all artifacts, tag only) ───────────────────────────
   release:
-    needs: [build-deb, build-rpm, build-arch]
+    needs: [build-deb, build-rpm, build-arch, build-ppa-source, upload-ppa]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
 
@@ -224,6 +312,11 @@ jobs:
             *.rpm
             *.pkg.tar.zst
             *.pkg.tar.zst.sig
+            *.dsc
+            *.orig.tar.*
+            *.debian.tar.*
+            *_source.changes
+            *_source.buildinfo
           draft: false
           prerelease: false
 

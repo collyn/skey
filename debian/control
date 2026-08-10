@@ -1,0 +1,40 @@
+Source: fcitx5-skey
+Section: utils
+Priority: optional
+Maintainer: Nguyen Tien Huy <collyn094@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               cmake,
+               extra-cmake-modules,
+               libfcitx5core-dev,
+               qt6-base-dev,
+               libgl-dev,
+               libxkbcommon-dev,
+               libfontconfig-dev,
+               librsvg2-bin,
+               libdbus-1-dev,
+               cargo,
+               rustc,
+               libstd-rust-dev,
+               pkgconf,
+               gettext
+Standards-Version: 4.7.0
+Homepage: https://github.com/collyn/skey
+Vcs-Git: https://github.com/collyn/skey.git
+Vcs-Browser: https://github.com/collyn/skey
+
+Package: fcitx5-skey
+Architecture: amd64
+Depends: ${shlibs:Depends},
+         ${misc:Depends},
+         fcitx5,
+         hicolor-icon-theme
+Description: Vietnamese SKey input method addon for Fcitx5
+ Skey is a Vietnamese input method engine for the Fcitx5
+ input method framework, supporting Telex, Telex W, and VNI
+ with advanced surrounding text editing capabilities.
+ .
+ Includes:
+  - skey IME addon for fcitx5
+  - uinput server for fallback typing mode
+  - Qt6-based settings GUI
+  - skey-setup utility for automatic configuration

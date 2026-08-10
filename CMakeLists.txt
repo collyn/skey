@@ -27,8 +27,20 @@ set(SKEY_ENGINE_VERSION "v0.1.5")
 set(SKEY_ENGINE_DIR "${CMAKE_CURRENT_BINARY_DIR}/skey-engine")
 set(SKEY_ENGINE_LIB "${SKEY_ENGINE_DIR}/target/release/libskey_engine.a")
 
-# Auto-clone from GitHub if not present
-if(NOT EXISTS "${SKEY_ENGINE_DIR}/Cargo.toml")
+# Populate skey-engine source into build dir.
+# - PPA / offline: pass -DSKEY_ENGINE_SOURCE_DIR=/path/to/skey-engine
+# - Normal builds: auto-clone from GitHub (requires internet)
+if(DEFINED SKEY_ENGINE_SOURCE_DIR)
+    if(NOT EXISTS "${SKEY_ENGINE_SOURCE_DIR}/Cargo.toml")
+        message(FATAL_ERROR "SKEY_ENGINE_SOURCE_DIR=${SKEY_ENGINE_SOURCE_DIR} "
+                            "but Cargo.toml not found there")
+    endif()
+    message(STATUS "Using skey-engine from ${SKEY_ENGINE_SOURCE_DIR} (offline mode)")
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${SKEY_ENGINE_SOURCE_DIR}" "${SKEY_ENGINE_DIR}"
+    )
+elseif(NOT EXISTS "${SKEY_ENGINE_DIR}/Cargo.toml")
     find_package(Git REQUIRED)
     execute_process(
         COMMAND ${GIT_EXECUTABLE} clone --branch ${SKEY_ENGINE_VERSION} --depth 1
