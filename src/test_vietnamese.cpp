@@ -429,7 +429,7 @@ int main(int argc, char **argv) {
         // oo→ô→oo, but ddd/aaa/eee behave differently from bamboo-core.
         runTest({cat, "ooo → oo (undo ô)",
                  skey::InputMethod::Telex, "ooo", "oo"});
-        // ddd: skey-engine dd→đ on first two chars, third d stays as-is
+        // ddd: consecutive d's → no toggle, third d stays literal
         runTest({cat, "ddd → đd (no undo)",
                  skey::InputMethod::Telex, "ddd", "đd"});
         // aaa: skey-engine skips aa→â when third a present
@@ -698,12 +698,12 @@ int main(int argc, char **argv) {
                  skey::InputMethod::Telex, "NDd", "NĐ",
                  "mixed Dd after N → Đ"});
 
-        // Uppercase undo: DDD → ĐD (no triple-D undo in skey-engine)
+        // Uppercase: consecutive D's → no toggle, third D stays literal
         runTest({cat, "DDD → ĐD (no undo)",
                  skey::InputMethod::Telex, "DDD", "ĐD",
                  "third D stays as-is after Đ transform"});
 
-        // NDDD: N + ĐD → NĐD (no triple-D undo)
+        // NDDD: N + ĐD → NĐD (no triple-D toggle)
         runTest({cat, "NDDD → NĐD (no undo)",
                  skey::InputMethod::Telex, "NDDD", "NĐD",
                  "third D stays as-is after Đ transform"});
@@ -1196,8 +1196,7 @@ int main(int argc, char **argv) {
                        {"nguwowif", "Vieetj", "Nam"},
                        {"người", "Việt", "Nam"}});
 
-        // Rapid undo scenarios — only ooo undo works in skey-engine.
-        // ddd/aaa don't undo (P4 disabled, engine handles differently).
+        // Rapid undo scenarios — ooo toggle, ddd/aaa keep literal.
         runRapidWords({"undo patterns rapid",
                        skey::InputMethod::Telex,
                        {"ooo", "ddd", "aaa"},
