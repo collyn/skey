@@ -7,7 +7,7 @@ Forwarded: not-needed
 
 --- a/skey-engine/src/lib.rs
 +++ b/skey-engine/src/lib.rs
-@@ -51,7 +51,7 @@
+@@ -52,7 +52,7 @@
 
  // ── C FFI ──────────────────────────────────────────────────────────
 
@@ -16,7 +16,7 @@ Forwarded: not-needed
  pub unsafe extern "C" fn skey_engine_new(method: i32) -> *mut SkeyEngine {
      let m = match method {
          0 => Method::Telex,    // SKEY_METHOD_TELEX
-@@ -63,12 +63,12 @@
+@@ -64,12 +64,12 @@
      Box::into_raw(Box::new(SkeyEngine::new(m)))
  }
 
@@ -31,7 +31,7 @@ Forwarded: not-needed
  pub unsafe extern "C" fn skey_engine_set_method(engine: *mut SkeyEngine, method: i32) {
      if engine.is_null() { return; }
      let m = match method {
-@@ -82,24 +82,24 @@
+@@ -83,24 +83,24 @@
  }
 
  /// tone_style: 0=traditional (hoà, thuỷ), 1=modern (hòa, thủy). Default modern.
@@ -61,16 +61,51 @@ Forwarded: not-needed
  pub unsafe extern "C" fn skey_engine_transform(
      engine: *const SkeyEngine,
      input: *const c_char,
-@@ -112,7 +112,7 @@
-     CString::new(e.transform(s)).unwrap_or_default().into_raw()
+@@ -115,7 +115,7 @@
+
+ // ── Charset FFI ──────────────────────────────────────────────────────
+
+-#[unsafe(no_mangle)]
++#[no_mangle]
+ pub unsafe extern "C" fn skey_charset_encode(
+     input: *const c_char,
+     charset: i32,
+@@ -142,7 +142,7 @@
+     ptr
  }
+
+-#[unsafe(no_mangle)]
++#[no_mangle]
+ pub unsafe extern "C" fn skey_charset_decode(
+     input: *const u8,
+     len: usize,
+@@ -162,7 +162,7 @@
+     CString::new(decoded).unwrap_or_default().into_raw()
+ }
+
+-#[unsafe(no_mangle)]
++#[no_mangle]
+ pub unsafe extern "C" fn skey_charset_remove_tone(input: *const c_char) -> *mut c_char {
+     if input.is_null() { return std::ptr::null_mut(); }
+     let s = match unsafe { CStr::from_ptr(input) }.to_str() {
+@@ -171,14 +171,14 @@
+     CString::new(charset::remove_tone(s)).unwrap_or_default().into_raw()
+ }
+
+-#[unsafe(no_mangle)]
++#[no_mangle]
+ pub unsafe extern "C" fn skey_charset_free_buf(ptr: *mut u8) {
+     if !ptr.is_null() { unsafe { libc::free(ptr.cast()); } }
+ }
+
+ // ── C FFI (continued) ────────────────────────────────────────────────
 
 -#[unsafe(no_mangle)]
 +#[no_mangle]
  pub unsafe extern "C" fn skey_engine_is_valid(s: *const c_char) -> i32 {
      if s.is_null() { return 0; }
      let s = match unsafe { CStr::from_ptr(s) }.to_str() {
-@@ -121,7 +121,7 @@
+@@ -187,7 +187,7 @@
      if SkeyEngine::is_valid(s) { 1 } else { 0 }
  }
 
