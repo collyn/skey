@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(fcitx5-skey VERSION 0.5.9)
+project(fcitx5-skey VERSION 0.5.10)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -23,7 +23,7 @@ add_definitions(-DFCITX_GETTEXT_DOMAIN=\"fcitx5-skey\" -D_GNU_SOURCE)
 fcitx5_add_i18n_definition()
 
 # ── Build skey-engine Rust static library ────────────────────────────────
-set(SKEY_ENGINE_VERSION "v0.1.7")
+set(SKEY_ENGINE_VERSION "v0.1.11")
 set(SKEY_ENGINE_DIR "${CMAKE_CURRENT_BINARY_DIR}/skey-engine")
 set(SKEY_ENGINE_LIB "${SKEY_ENGINE_DIR}/target/release/libskey_engine.a")
 
@@ -59,10 +59,12 @@ add_custom_command(
     COMMENT "Building skey-engine ${SKEY_ENGINE_VERSION}"
     DEPENDS
         ${SKEY_ENGINE_DIR}/Cargo.toml
+        ${SKEY_ENGINE_DIR}/Cargo.lock
         ${SKEY_ENGINE_DIR}/src/lib.rs
         ${SKEY_ENGINE_DIR}/src/engine.rs
         ${SKEY_ENGINE_DIR}/src/tables.rs
         ${SKEY_ENGINE_DIR}/src/spelling.rs
+        ${SKEY_ENGINE_DIR}/src/charset.rs
 )
 
 add_custom_target(skey_engine_build DEPENDS ${SKEY_ENGINE_LIB})

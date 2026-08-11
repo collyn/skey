@@ -28,10 +28,17 @@ FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyChromiumAddressBarMode, N_("Auto"),
                                  N_("Preedit"),
                                  N_("No Vietnamese"));
 
-// Character set / encoding
-enum class SKeyCharset { Unicode, TCVN3, VNIWindows };
-FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyCharset, N_("Unicode"),
-                                 N_("TCVN3 (ABC)"), N_("VNI Windows"));
+// Character set / encoding — IDs match skey-engine VietCharset enum
+enum class SKeyCharset {
+    Unicode, TCVN3, VNIWindows, WinCP1258, VIQR,
+    VPS, VISCII, BKHCM1, VietwareF, ISC,
+    BKHCM2, VietwareX, VNIMac, UnicodeDecomposed
+};
+FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyCharset,
+    N_("Unicode"), N_("TCVN3 (ABC)"), N_("VNI Windows"),
+    N_("Windows CP1258"), N_("VIQR"),
+    N_("VPS"), N_("VISCII"), N_("BKHCM1"), N_("Vietware-F"), N_("ISC"),
+    N_("BKHCM2"), N_("Vietware-X"), N_("VNI-MAC"), N_("Unicode NFD"));
 
 
 FCITX_CONFIGURATION(

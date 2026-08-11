@@ -119,7 +119,7 @@ bool writeSkeyConfig(const SKeyConfig &cfg) {
     out << "InputMethod="   << maybeQuote(cfg.inputMethod)  << "\n";
     out << "# Output Mode"                  << "\n";
     out << "OutputMode="    << maybeQuote(cfg.outputMode)   << "\n";
-    out << "# Character set (Unicode / TCVN3 (ABC) / VNI Windows)" << "\n";
+    out << "# Character set (Unicode / TCVN3 (ABC) / VNI Windows / Windows CP1258 / VIQR)" << "\n";
     out << "Charset="       << maybeQuote(cfg.charset)      << "\n";
     out << "# Telex: type w as ư"           << "\n";
     out << "ShortW="        << boolStr(cfg.shortW)          << "\n";

@@ -960,18 +960,8 @@ SKeyState::SKeyState(SKeyEngine *engine, InputContext *ic)
   if (*cfg.inputMethod == SKeyInputMethod::VNI) {
     im = skey::InputMethod::VNI;
   }
-  // Charset
-  switch (*cfg.charset) {
-  case SKeyCharset::TCVN3:
-    charset_ = skey::Charset::TCVN3;
-    break;
-  case SKeyCharset::VNIWindows:
-    charset_ = skey::Charset::VNIWindows;
-    break;
-  default:
-    charset_ = skey::Charset::Unicode;
-    break;
-  }
+  // Charset — SKeyCharset and Charset enums share the same order
+  charset_ = static_cast<skey::Charset>(*cfg.charset);
 
   viet_.setShortW(*cfg.shortW);
   viet_.setBracketUO(*cfg.bracketUO);
@@ -1306,18 +1296,9 @@ void SKeyState::activate() {
   if (*cfg.inputMethod == SKeyInputMethod::VNI) {
     im = skey::InputMethod::VNI;
   }
-  // Charset
-  switch (*cfg.charset) {
-  case SKeyCharset::TCVN3:
-    charset_ = skey::Charset::TCVN3;
-    break;
-  case SKeyCharset::VNIWindows:
-    charset_ = skey::Charset::VNIWindows;
-    break;
-  default:
-    charset_ = skey::Charset::Unicode;
-    break;
-  }
+  // Charset — SKeyCharset and Charset enums share the same order
+  charset_ = static_cast<skey::Charset>(*cfg.charset);
+
   viet_.setShortW(*cfg.shortW);
   viet_.setBracketUO(*cfg.bracketUO);
   viet_.setMethod(im);
@@ -1329,6 +1310,19 @@ void SKeyState::activate() {
     SKEY_DEBUG() << "Activate: spurious cycle, cancel loss timer";
     addrBarCycleTimer_.reset();
   } else {
+    // Commit preedit text saved from a previous focus loss.
+    // At GNOME/Mutter, commitString() during reset()/deactivate()
+    // is silently dropped — the saved text is committed now that
+    // the IC has a fresh Wayland connection.
+    if (!focusLostPreedit_.empty()) {
+      SKEY_DEBUG() << "Activate: committing saved preedit '"
+                   << focusLostPreedit_ << "'";
+      commitText(focusLostPreedit_);
+      focusLostPreedit_.clear();
+      // commitString() clears preedit, but the new IC may need an
+      // explicit update to sync its preedit state.
+      ic_->updatePreedit();
+    }
     viet_.reset();
     committedLen_ = 0;
     surroundingTextFailed_ = false; // fresh focus, re-verify
@@ -1782,10 +1776,14 @@ void SKeyState::deactivate() {
           // mode, replacements already committed via commitText() so
           // commitBuffer() here would double-commit.
           if (!useUinputMode()) {
-            if (!viet_.getComposed().empty() && !useSurroundingText())
-              commitBuffer();
-            else
-              viet_.reset();
+            // Save preedit for restore on next activation —
+            // commitString() during deactivate is dropped at GNOME.
+            if (!viet_.getComposed().empty() && !useSurroundingText()) {
+              if (focusLostPreedit_.empty()) {
+                focusLostPreedit_ = viet_.getComposed();
+              }
+            }
+            viet_.reset();
             committedLen_ = 0;
           }
           clearLastWord();
@@ -1806,10 +1804,15 @@ void SKeyState::deactivate() {
   uinputSafetyTimer_.reset();
   uinputDeleting_ = false;
 
-  if (!viet_.getComposed().empty() && !useSurroundingText())
-    commitBuffer();
-  else
-    viet_.reset();
+  // Save preedit text for restore on next activation (see reset()).
+  if (!viet_.getComposed().empty() && !useSurroundingText()) {
+    if (focusLostPreedit_.empty()) {
+      focusLostPreedit_ = viet_.getComposed();
+      SKEY_DEBUG() << "Deactivate: saved preedit '"
+                   << focusLostPreedit_ << "'";
+    }
+  }
+  viet_.reset();
   committedLen_ = 0;
   clearLastWord();
   clearUI();
@@ -1834,13 +1837,15 @@ void SKeyState::reset() {
   if (hasDeferredCommitPending()) {
     SKEY_DEBUG() << "Reset: keeping deferred commit";
   }
-  // In Preedit mode, uncommitted composition text must be committed
-  // before clearing state — otherwise it's lost on focus change.
+  // In Preedit mode, uncommitted composition text must be saved
+  // for restore on next activation — commitString() during reset()
+  // is silently dropped on some Wayland compositors (GNOME Mutter)
+  // that have already processed the keyboard-leave event.
   if (!viet_.getComposed().empty() && !useSurroundingText()) {
-    commitBuffer();
-  } else {
-    viet_.reset();
+    focusLostPreedit_ = viet_.getComposed();
+    SKEY_DEBUG() << "Reset: saved preedit '" << focusLostPreedit_ << "'";
   }
+  viet_.reset();
   bufferedUinputKeys_.clear();
   uinputCommitTimer_.reset();
   uinputSafetyTimer_.reset();

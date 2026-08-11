@@ -5,8 +5,10 @@
 
 namespace skey {
 
-/// Output character set / encoding.
-enum class Charset { Unicode, TCVN3, VNIWindows };
+/// Output character set / encoding. IDs match skey-engine VietCharset.
+enum class Charset { Unicode, TCVN3, VNIWindows, WinCP1258, VIQR,
+    VPS, VISCII, BKHCM1, VietwareF, ISC,
+    BKHCM2, VietwareX, VNIMac, UnicodeDecomposed };
 
 /// Convert a UTF-8 Vietnamese string to the target charset.
 ///

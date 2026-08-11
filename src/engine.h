@@ -158,6 +158,10 @@ private:
     // within 500ms in the same address bar, we preserve first-word/space
     // tracking to prevent fullReplace from deleting text before cursor.
     uint64_t lastDeactivateTime_ = 0;
+    // Preedit text saved on focus loss — committed on next activation.
+    // Needed because commitString() during reset()/deactivate() is
+    // silently dropped on some Wayland compositors (GNOME Mutter).
+    std::string focusLostPreedit_;
     std::string pendingUinputCommit_;
     std::vector<KeySym> bufferedUinputKeys_;
     uint64_t bsSentAt_ = 0;        // timestamp when BS was sent

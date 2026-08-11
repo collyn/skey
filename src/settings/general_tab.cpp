@@ -43,6 +43,17 @@ void GeneralTab::setupUI() {
   charsetCombo_->addItem("Unicode", "Unicode");
   charsetCombo_->addItem("TCVN3 (ABC)", "TCVN3 (ABC)");
   charsetCombo_->addItem("VNI Windows", "VNI Windows");
+  charsetCombo_->addItem("Windows CP1258", "Windows CP1258");
+  charsetCombo_->addItem("VIQR", "VIQR");
+  charsetCombo_->addItem("VPS", "VPS");
+  charsetCombo_->addItem("VISCII", "VISCII");
+  charsetCombo_->addItem("BKHCM1", "BKHCM1");
+  charsetCombo_->addItem("Vietware-F", "Vietware-F");
+  charsetCombo_->addItem("ISC", "ISC");
+  charsetCombo_->addItem("BKHCM2", "BKHCM2");
+  charsetCombo_->addItem("Vietware-X", "Vietware-X");
+  charsetCombo_->addItem("VNI-MAC", "VNI-MAC");
+  charsetCombo_->addItem("Unicode NFD", "Unicode NFD");
   enumLayout->addRow(QString::fromUtf8("Bảng mã:"), charsetCombo_);
 
   triggerKeyEdit_ = new HotkeyEdit(enumFrame);
