@@ -314,8 +314,8 @@ int main(int argc, char **argv) {
 
         // Words with free marking (tone at end)
         // skey-engine defaults to new-style tone placement (tone on last vowel).
-        runTest({cat, "hoaf → hoà (new-style)",
-                 skey::InputMethod::Telex, "hoaf", "hoà"});
+        runTest({cat, "hoaf → hòa (traditional, FreeMarking off)",
+                 skey::InputMethod::Telex, "hoaf", "hòa"});
         runTest({cat, "nguwowix → ngưỡi (free mark)",
                  skey::InputMethod::Telex, "nguwowix", "ngưỡi",
                  "bamboo-core places tone differently with free marking"});
@@ -1028,8 +1028,8 @@ int main(int argc, char **argv) {
 
         // Tone can be placed anywhere (free marking)
         // skey-engine defaults to new-style tone placement.
-        runTest({cat, "hoaf → hoà (tone at end, new-style)",
-                 skey::InputMethod::Telex, "hoaf", "hoà"});
+        runTest({cat, "hoaf → hòa (traditional, FreeMarking off)",
+                 skey::InputMethod::Telex, "hoaf", "hòa"});
         runTest({cat, "banj → bạn",
                  skey::InputMethod::Telex, "banj", "bạn"});
         runTest({cat, "toans → toán",

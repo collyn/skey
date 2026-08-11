@@ -23,7 +23,7 @@ add_definitions(-DFCITX_GETTEXT_DOMAIN=\"fcitx5-skey\" -D_GNU_SOURCE)
 fcitx5_add_i18n_definition()
 
 # ── Build skey-engine Rust static library ────────────────────────────────
-set(SKEY_ENGINE_VERSION "v0.1.5")
+set(SKEY_ENGINE_VERSION "v0.1.7")
 set(SKEY_ENGINE_DIR "${CMAKE_CURRENT_BINARY_DIR}/skey-engine")
 set(SKEY_ENGINE_LIB "${SKEY_ENGINE_DIR}/target/release/libskey_engine.a")
 

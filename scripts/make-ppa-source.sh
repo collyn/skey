@@ -47,6 +47,7 @@ rsync -a \
     --exclude='.git' \
     --exclude='.venv/' \
     --exclude='.env/' \
+    --exclude='.cache/' \
     --exclude='__pycache__/' \
     --exclude='*.pyc' \
     --exclude='build/' \
@@ -69,8 +70,13 @@ git clone --branch "${ENGINE_VERSION}" --depth 1 \
     https://github.com/collyn/skey-engine.git \
     "${STAGING}/skey-engine"
 
-# Remove engine's .git so it doesn't confuse dpkg-source
-rm -rf "${STAGING}/skey-engine/.git"
+# Remove engine's .git so it doesn't confuse dpkg-source.
+# Also remove Cargo.lock — the bundled lock may use format v4 (requires
+# Rust ≥ 1.78), but Launchpad builders ship Rust 1.75 which only
+# understands format v3.  Deleting it lets cargo generate a compatible
+# lock on first build.  Safe to do because skey-engine has zero external
+# Cargo dependencies.
+rm -rf "${STAGING}/skey-engine/.git" "${STAGING}/skey-engine/Cargo.lock"
 
 # ── Create the orig tarball ──────────────────────────────────────────────
 echo "→ Creating ${TARBALL}..."

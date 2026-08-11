@@ -75,24 +75,59 @@ DESTDIR=%{buildroot} %cmake_install
 %ctest
 
 %post
-# Icon cache update
+# Icon cache update (always — icons may have changed)
 if [ -x /usr/bin/gtk-update-icon-cache ]; then
     /usr/bin/gtk-update-icon-cache %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
     /usr/bin/gtk-update-icon-cache %{_datadir}/icons/breeze >/dev/null 2>&1 || :
     /usr/bin/gtk-update-icon-cache %{_datadir}/icons/breeze-dark >/dev/null 2>&1 || :
 fi
 
-# systemd daemon-reload for the new uinput service unit
+# systemd daemon-reload for the new/updated uinput service unit
 if [ -x /usr/bin/systemctl ]; then
     /usr/bin/systemctl daemon-reload 2>/dev/null || :
 fi
 
-# Run skey-setup for the console user (SUDO_USER not available in rpm scripts)
-if [ -x /usr/bin/loginctl ] && [ -x /usr/bin/skey-setup ]; then
+# Find the console user (SUDO_USER not available in rpm scripts)
+CONSOLE_USER=""
+if [ -x /usr/bin/loginctl ]; then
     CONSOLE_USER=$(/usr/bin/loginctl list-sessions --no-legend 2>/dev/null | \
         awk '$4=="seat0" {print $3}' | sort -u | head -1)
-    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+fi
+
+if [ "$1" -eq 1 ]; then
+    # ── First install ──
+    # Run full skey-setup: configures fcitx5 profile, shell env vars,
+    # KWin virtual keyboard, autostart, ibus disable, etc.
+    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ -x /usr/bin/skey-setup ]; then
         su -s /bin/bash "$CONSOLE_USER" -c /usr/bin/skey-setup >/dev/null 2>&1 || :
+    fi
+elif [ "$1" -ge 2 ]; then
+    # ── Upgrade ──
+    # Restart fcitx5 to load the new skey.so, then gently reconnect
+    # KWin's zwp_input_method_v2 with a minimal 100ms toggle.
+    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+        # Restart uinput server first
+        if [ -x /usr/bin/systemctl ]; then
+            /usr/bin/systemctl try-restart "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
+        fi
+        # Restart fcitx5 to load new skey.so
+        su -s /bin/bash "$CONSOLE_USER" -c "fcitx5 -r -d 2>/dev/null" 2>/dev/null || :
+        # KDE Plasma Wayland: gentle KWin reconnect
+        su -s /bin/bash "$CONSOLE_USER" -c '
+            if [ "$XDG_SESSION_TYPE" = wayland ]; then
+                case "${XDG_CURRENT_DESKTOP:-}" in
+                    KDE|kde|KDE-Plasma|plasma)
+                        QDBUS=$(command -v qdbus6 || command -v qdbus || echo "")
+                        if [ -n "$QDBUS" ]; then
+                            sleep 0.4
+                            $QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set org.kde.kwin.VirtualKeyboard enabled false 2>/dev/null || true
+                            sleep 0.1
+                            $QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set org.kde.kwin.VirtualKeyboard enabled true 2>/dev/null || true
+                        fi
+                        ;;
+                esac
+            fi
+        ' 2>/dev/null || :
     fi
 fi
 

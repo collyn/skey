@@ -1,22 +1,68 @@
 #!/bin/bash
 set -e
 
-# Update icon caches so the skey icon appears in taskbar after installation
-if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-    gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
-    gtk-update-icon-cache /usr/share/icons/breeze 2>/dev/null || true
-    gtk-update-icon-cache /usr/share/icons/breeze-dark 2>/dev/null || true
-fi
+case "$1" in
+    configure)
+        # Update icon caches so the skey icon appears in taskbar after installation
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
+            gtk-update-icon-cache /usr/share/icons/breeze 2>/dev/null || true
+            gtk-update-icon-cache /usr/share/icons/breeze-dark 2>/dev/null || true
+        fi
 
-# Run skey-setup and start the optional uinput server for the user who invoked sudo
-if [ -n "$SUDO_USER" ]; then
-    su - "$SUDO_USER" -c "skey-setup" 2>/dev/null || true
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl daemon-reload 2>/dev/null || true
-        systemctl enable --now "fcitx5-skey-uinput-server@${SUDO_USER}.service" 2>/dev/null || true
-    fi
-elif command -v systemctl >/dev/null 2>&1; then
-    systemctl daemon-reload 2>/dev/null || true
-fi
+        # systemd daemon-reload for new/updated uinput service unit
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload 2>/dev/null || true
+        fi
+
+        if [ -z "$2" ]; then
+            # ── First install ──
+            # Run full skey-setup: configures fcitx5 profile, shell env vars,
+            # KWin virtual keyboard, autostart, ibus disable, etc.
+            if [ -n "$SUDO_USER" ]; then
+                su - "$SUDO_USER" -c "skey-setup" 2>/dev/null || true
+                if command -v systemctl >/dev/null 2>&1; then
+                    systemctl enable --now "fcitx5-skey-uinput-server@${SUDO_USER}.service" 2>/dev/null || true
+                fi
+            fi
+        else
+            # ── Upgrade ──
+            # Restart fcitx5 to load the new skey.so, then gently
+            # reconnect KWin's zwp_input_method_v2 with a minimal
+            # 100ms VirtualKeyboard toggle (vs the old 600ms that
+            # caused apps like STerm to permanently lose IM).
+            if [ -n "$SUDO_USER" ]; then
+                # Restart uinput server first (picks up new binary)
+                if command -v systemctl >/dev/null 2>&1; then
+                    systemctl try-restart "fcitx5-skey-uinput-server@${SUDO_USER}.service" 2>/dev/null || true
+                fi
+                # Restart fcitx5 to load new skey.so
+                su - "$SUDO_USER" -c "fcitx5 -r -d 2>/dev/null" 2>/dev/null || true
+                # KDE Plasma Wayland: gentle KWin reconnect
+                su - "$SUDO_USER" -c "
+                    if [ \"\$XDG_SESSION_TYPE\" = wayland ]; then
+                        case \"\${XDG_CURRENT_DESKTOP:-}\" in
+                            KDE|kde|KDE-Plasma|plasma)
+                                QDBUS=\$(command -v qdbus6 || command -v qdbus || echo '')
+                                if [ -n \"\$QDBUS\" ]; then
+                                    sleep 0.4
+                                    \$QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set org.kde.kwin.VirtualKeyboard enabled false 2>/dev/null || true
+                                    sleep 0.1
+                                    \$QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set org.kde.kwin.VirtualKeyboard enabled true 2>/dev/null || true
+                                fi
+                                ;;
+                        esac
+                    fi
+                " 2>/dev/null || true
+            fi
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
 
 #DEBHELPER#

@@ -472,33 +472,39 @@ fi
 # "None", breaking Vietnamese input until the user manually re-selects
 # fcitx5 in system settings.  We fix this by toggling KWin's VirtualKeyboard
 # enabled property via D-Bus, which forces a protocol reconnect.
+#
+# The toggle uses a minimal 100ms off window — long enough for KWin to
+# tear down and re-establish the zwp_input_method_v2 connection, but
+# short enough that most apps don't notice the IM was gone and keep
+# their text input registration intact.
 if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
         case "${XDG_CURRENT_DESKTOP:-}" in
             KDE|kde|KDE-Plasma|plasma)
-                # KWin: toggle VirtualKeyboard enabled via D-Bus to force
-                # compositor to tear down and re-establish the
-                # zwp_input_method_v2 connection to the new fcitx5 process.
                 QDBUS="qdbus6"
                 if ! command -v qdbus6 >/dev/null 2>&1; then
                     QDBUS="qdbus"  # fallback for Plasma 5
                 fi
                 $QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set \
                     org.kde.kwin.VirtualKeyboard enabled false 2>/dev/null || true
-                sleep 0.6
+                sleep 0.1
                 $QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set \
                     org.kde.kwin.VirtualKeyboard enabled true 2>/dev/null || true
                 echo "✓ KWin virtual keyboard reconnected to fcitx5"
                 ;;
-            GNOME|gnome|GNOME-Classic)
-                # GNOME Shell: re-apply input sources to trigger reconnect
+            GNOME|gnome|GNOME-Classic|X-Cinnamon|Cinnamon|cinnamon)
+                # GNOME Shell / Cinnamon: re-apply input sources to force
+                # Mutter/Muffin to reconnect zwp_input_method_v2.
+                # Cinnamon uses the same gsettings schema as GNOME.
                 if command -v gsettings >/dev/null 2>&1; then
                     CURRENT_SRC=$(gsettings get org.gnome.desktop.input-sources sources 2>/dev/null || true)
-                    if [ -n "$CURRENT_SRC" ]; then
-                        # Toggle off then on to force Shell to reconnect
+                    if [ -n "$CURRENT_SRC" ] && [ "$CURRENT_SRC" != "@as []" ]; then
+                        # Minimal dead zone (100ms) — same principle as KDE:
+                        # long enough for the compositor to cycle, short enough
+                        # that apps don't deregister their text input.
                         gsettings set org.gnome.desktop.input-sources sources "[]" 2>/dev/null || true
-                        sleep 0.5
+                        sleep 0.1
                         gsettings set org.gnome.desktop.input-sources sources "$CURRENT_SRC" 2>/dev/null || true
-                        echo "✓ GNOME Shell input sources refreshed"
+                        echo "✓ GNOME/Cinnamon input sources refreshed"
                     fi
                 fi
                 ;;
