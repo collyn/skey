@@ -47,6 +47,9 @@ jobs:
           PPA_GPG_PRIVATE_KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
         run: |
           echo "$PPA_GPG_PRIVATE_KEY" | base64 -d | gpg --batch --import
+          # Trust our own key so dput signature verification passes
+          KEYID=$(gpg --list-secret-keys --keyid-format LONG | grep '^sec' | head -1 | sed 's|.*/||;s| .*||')
+          echo "$KEYID:6:" | gpg --batch --import-ownertrust
           echo "=== GPG keys imported ==="
           gpg --list-secret-keys --keyid-format LONG
 
@@ -62,7 +65,7 @@ jobs:
           echo "=== Files in parent ==="
           ls -la ../*.dsc ../*.orig.tar.* ../*.debian.tar.* ../*_source.* 2>/dev/null || echo "(none found)"
           # Copy to cwd for dput
-          cp ../*.dsc ../*.debian.tar.* ../*_source.changes ../*_source.buildinfo . 2>/dev/null || true
+          cp ../*.dsc ../*.orig.tar.* ../*.debian.tar.* ../*_source.changes ../*_source.buildinfo . 2>/dev/null || true
 
           cat > ~/.dput.cf << 'DEOF'
           [ppa-collyn]
