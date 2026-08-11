@@ -69,6 +69,8 @@ jobs:
           PPA_GPG_PRIVATE_KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
         run: |
           echo "$PPA_GPG_PRIVATE_KEY" | base64 -d | gpg --batch --import
+          echo "=== GPG keys imported ==="
+          gpg --list-secret-keys --keyid-format LONG
 
       - name: Create orig tarball
         run: |
@@ -77,7 +79,11 @@ jobs:
 
       - name: Build source package
         run: |
+          set -o pipefail
           debuild -S -sa -d 2>&1 | tee /tmp/debuild.log
+          echo "=== debuild exit code: $? ==="
+          echo "=== Files in parent ==="
+          ls -la ../*.dsc ../*.orig.tar.* ../*.debian.tar.* ../*_source.* 2>/dev/null || echo "(none found)"
           # debuild places output in parent dir — copy back for artifact upload
           cp ../*.dsc ../*.orig.tar.* ../*.debian.tar.* ../*_source.* . 2>/dev/null || true
           echo "=== Source package files ==="

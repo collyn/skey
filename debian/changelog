@@ -1,3 +1,10 @@
+fcitx5-skey (0.5.8-1) noble; urgency=medium
+
+  * Update skey-engine to v0.1.7.
+  * Fix CI workflow for PPA source package signing and upload.
+
+ -- Nguyen Tien Huy <collyn094@gmail.com>  Mon, 11 Aug 2026 10:00:00 +0700
+
 fcitx5-skey (0.5.7-1ubuntu1) noble; urgency=medium
 
   * Fix Cargo.lock format compatibility with Launchpad builder Rust 1.75.
