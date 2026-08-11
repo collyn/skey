@@ -72,20 +72,21 @@ jobs:
       - name: Build source package
         run: |
           debuild -S -sa -d 2>&1 | tee /tmp/debuild.log
-          # debuild places output in parent dir
+          # debuild places output in parent dir — copy back for artifact upload
+          cp ../*.dsc ../*.orig.tar.* ../*.debian.tar.* ../*_source.* . 2>/dev/null || true
           echo "=== Source package files ==="
-          ls -la ../*.dsc ../*.orig.tar.* ../*.debian.tar.* ../*_source.* 2>/dev/null || true
+          ls -la *.dsc *.orig.tar.* *.debian.tar.* *_source.* 2>/dev/null || true
 
       - name: Upload PPA source artifact
         uses: actions/upload-artifact@v4
         with:
           name: ppa-source
           path: |
-            ../*.dsc
-            ../*.orig.tar.*
-            ../*.debian.tar.*
-            ../*_source.changes
-            ../*_source.buildinfo
+            *.dsc
+            *.orig.tar.*
+            *.debian.tar.*
+            *_source.changes
+            *_source.buildinfo
 
   # ── Upload to Launchpad PPA (tag only) ──────────────────────────────────
   upload-ppa:
