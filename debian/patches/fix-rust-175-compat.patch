@@ -1,0 +1,83 @@
+Description: Fix Rust 1.75 compatibility — replace #[unsafe(no_mangle)] with #[no_mangle]
+ The #[unsafe(no_mangle)] attribute syntax requires Rust >= 1.82, but the
+ Launchpad buildd ships Rust 1.75.  This patch reverts to the pre-1.82
+ syntax which is supported by both old and new Rust toolchains.
+Author: Nguyen Tien Huy <collyn094@gmail.com>
+Forwarded: not-needed
+
+--- a/skey-engine/src/lib.rs
++++ b/skey-engine/src/lib.rs
+@@ -51,7 +51,7 @@
+
+ // ── C FFI ──────────────────────────────────────────────────────────
+
+-#[unsafe(no_mangle)]
++#[no_mangle]
+ pub unsafe extern "C" fn skey_engine_new(method: i32) -> *mut SkeyEngine {
+     let m = match method {
+         0 => Method::Telex,    // SKEY_METHOD_TELEX
+@@ -63,7 +63,7 @@
+     Box::into_raw(Box::new(SkeyEngine::new(m)))
+ }
+
+-#[unsafe(no_mangle)]
++#[no_mangle]
+ pub unsafe extern "C" fn skey_engine_free(engine: *mut SkeyEngine) {
+     if !engine.is_null() { unsafe { drop(Box::from_raw(engine)); } }
+ }
+@@ -68,7 +68,7 @@
+     if !engine.is_null() { unsafe { drop(Box::from_raw(engine)); } }
+ }
+
+-#[unsafe(no_mangle)]
++#[no_mangle]
+ pub unsafe extern "C" fn skey_engine_set_method(engine: *mut SkeyEngine, method: i32) {
+     if engine.is_null() { return; }
+     let m = match method {
+@@ -82,21 +82,21 @@
+
+ /// tone_style: 0=traditional (hoà, thuỷ), 1=modern (hòa, thủy). Default modern.
+-#[unsafe(no_mangle)]
++#[no_mangle]
+ pub unsafe extern "C" fn skey_engine_set_tone_style(e: *mut SkeyEngine, v: i32) {
+     if !e.is_null() { unsafe { (*e).set_modern(v != 0); } }
+ }
+-#[unsafe(no_mangle)]
++#[no_mangle]
+ pub unsafe extern "C" fn skey_engine_set_free_marking(e: *mut SkeyEngine, v: i32) {
+     // Free marking ON → modern style (tone on 2nd vowel for oa/oe/uy)
+     // Free marking OFF → traditional (tone on 1st vowel for oa/oe/uy)
+     if !e.is_null() { unsafe { (*e).set_modern(v != 0); } }
+ }
+-#[unsafe(no_mangle)]
++#[no_mangle]
+ pub unsafe extern "C" fn skey_engine_set_short_w(e: *mut SkeyEngine, v: i32) {
+     if !e.is_null() { unsafe { (*e).set_short_w(v != 0); } }
+ }
+-#[unsafe(no_mangle)]
++#[no_mangle]
+ pub unsafe extern "C" fn skey_engine_set_bracket_uo(_e: *mut SkeyEngine, _v: i32) {}
+
+-#[unsafe(no_mangle)]
++#[no_mangle]
+ pub unsafe extern "C" fn skey_engine_transform(
+     engine: *const SkeyEngine,
+     input: *const c_char,
+@@ -112,7 +112,7 @@
+     CString::new(e.transform(s)).unwrap_or_default().into_raw()
+ }
+
+-#[unsafe(no_mangle)]
++#[no_mangle]
+ pub unsafe extern "C" fn skey_engine_is_valid(s: *const c_char) -> i32 {
+     if s.is_null() { return 0; }
+     let s = match unsafe { CStr::from_ptr(s) }.to_str() {
+@@ -121,7 +121,7 @@
+     if SkeyEngine::is_valid(s) { 1 } else { 0 }
+ }
+
+-#[unsafe(no_mangle)]
++#[no_mangle]
+ pub unsafe extern "C" fn skey_free_string(s: *mut c_char) {
+     if !s.is_null() { unsafe { drop(CString::from_raw(s)); } }
+ }
