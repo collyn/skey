@@ -1,4 +1,10 @@
-fcitx5-skey (0.5.9-1) noble; urgency=medium
+fcitx5-skey (0.5.9-2) resolute; urgency=medium
+
+  * Target Ubuntu 26.04 (Resolute) for PPA build.
+
+ -- Nguyen Tien Huy <collyn094@gmail.com>  Tue, 11 Aug 2026 12:00:00 +0700
+
+fcitx5-skey (0.5.9-1) resolute; urgency=medium
 
   * Add patch to fix Rust 1.75 compatibility (#[unsafe(no_mangle)] → #[no_mangle]).
   * Fix CI workflow for PPA source package signing and upload.
