@@ -44,7 +44,7 @@ jobs:
           name: deb-package
           path: '*.deb'
 
-  # ── PPA source package (.dsc + .orig.tar.gz) ────────────────────────────
+  # ── PPA source package + upload to Launchpad ──────────────────────────
   build-ppa-source:
     runs-on: ubuntu-22.04
 
@@ -57,12 +57,18 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y devscripts debhelper dpkg-dev git rsync
+          sudo apt-get install -y devscripts debhelper dpkg-dev git rsync dput
 
       - name: Extract version
         run: |
           VER=$(grep -oP 'project\(fcitx5-skey VERSION \K[0-9.]+' CMakeLists.txt)
           echo "PKG_VERSION=$VER" >> $GITHUB_ENV
+
+      - name: Import GPG key
+        env:
+          PPA_GPG_PRIVATE_KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
+        run: |
+          echo "$PPA_GPG_PRIVATE_KEY" | base64 -d | gpg --batch --import
 
       - name: Create orig tarball
         run: |
@@ -88,30 +94,8 @@ jobs:
             *_source.changes
             *_source.buildinfo
 
-  # ── Upload to Launchpad PPA (tag only) ──────────────────────────────────
-  upload-ppa:
-    needs: build-ppa-source
-    if: github.ref_type == 'tag'
-    runs-on: ubuntu-22.04
-    env:
-      PPA_INCOMING: ~collyn094/ubuntu/fcitx5-skey
-
-    steps:
-      - name: Download PPA source artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ppa-source
-
-      - name: Install dput
-        run: sudo apt-get update && sudo apt-get install -y dput
-
-      - name: Import GPG key
-        env:
-          PPA_GPG_PRIVATE_KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
-        run: |
-          echo "$PPA_GPG_PRIVATE_KEY" | base64 -d | gpg --batch --import
-
       - name: Configure dput
+        if: github.ref_type == 'tag'
         run: |
           cat > ~/.dput.cf << 'DEOF'
           [ppa-collyn]
@@ -123,6 +107,7 @@ jobs:
           DEOF
 
       - name: Upload to Launchpad PPA
+        if: github.ref_type == 'tag'
         run: |
           CHANGES=$(ls fcitx5-skey_*_source.changes 2>/dev/null | head -1)
           if [ -z "$CHANGES" ]; then
@@ -295,7 +280,7 @@ jobs:
 
   # ── GitHub Release (all artifacts, tag only) ───────────────────────────
   release:
-    needs: [build-deb, build-rpm, build-arch, build-ppa-source, upload-ppa]
+    needs: [build-deb, build-rpm, build-arch, build-ppa-source]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
 
