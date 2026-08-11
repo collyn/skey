@@ -1,9 +1,9 @@
-fcitx5-skey (0.5.8-2) noble; urgency=medium
+fcitx5-skey (0.5.9-1) noble; urgency=medium
 
   * Add patch to fix Rust 1.75 compatibility (#[unsafe(no_mangle)] → #[no_mangle]).
   * Fix CI workflow for PPA source package signing and upload.
 
- -- Nguyen Tien Huy <collyn094@gmail.com>  Mon, 11 Aug 2026 11:30:00 +0700
+ -- Nguyen Tien Huy <collyn094@gmail.com>  Mon, 11 Aug 2026 11:40:00 +0700
 
 fcitx5-skey (0.5.8-1) noble; urgency=medium
 

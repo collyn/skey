@@ -1,7 +1,7 @@
 Description: Fix Rust 1.75 compatibility — replace #[unsafe(no_mangle)] with #[no_mangle]
  The #[unsafe(no_mangle)] attribute syntax requires Rust >= 1.82, but the
- Launchpad buildd ships Rust 1.75.  This patch reverts to the pre-1.82
- syntax which is supported by both old and new Rust toolchains.
+ Launchpad buildd ships Rust 1.75.  Revert to the pre-1.82 syntax which
+ is supported by both old and new Rust toolchains.
 Author: Nguyen Tien Huy <collyn094@gmail.com>
 Forwarded: not-needed
 
@@ -16,7 +16,7 @@ Forwarded: not-needed
  pub unsafe extern "C" fn skey_engine_new(method: i32) -> *mut SkeyEngine {
      let m = match method {
          0 => Method::Telex,    // SKEY_METHOD_TELEX
-@@ -63,7 +63,7 @@
+@@ -63,12 +63,12 @@
      Box::into_raw(Box::new(SkeyEngine::new(m)))
  }
 
@@ -25,16 +25,14 @@ Forwarded: not-needed
  pub unsafe extern "C" fn skey_engine_free(engine: *mut SkeyEngine) {
      if !engine.is_null() { unsafe { drop(Box::from_raw(engine)); } }
  }
-@@ -68,7 +68,7 @@
-     if !engine.is_null() { unsafe { drop(Box::from_raw(engine)); } }
- }
 
 -#[unsafe(no_mangle)]
 +#[no_mangle]
  pub unsafe extern "C" fn skey_engine_set_method(engine: *mut SkeyEngine, method: i32) {
      if engine.is_null() { return; }
      let m = match method {
-@@ -82,21 +82,21 @@
+@@ -82,24 +82,24 @@
+ }
 
  /// tone_style: 0=traditional (hoà, thuỷ), 1=modern (hòa, thủy). Default modern.
 -#[unsafe(no_mangle)]
