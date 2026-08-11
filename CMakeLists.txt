@@ -59,7 +59,6 @@ add_custom_command(
     COMMENT "Building skey-engine ${SKEY_ENGINE_VERSION}"
     DEPENDS
         ${SKEY_ENGINE_DIR}/Cargo.toml
-        ${SKEY_ENGINE_DIR}/Cargo.lock
         ${SKEY_ENGINE_DIR}/src/lib.rs
         ${SKEY_ENGINE_DIR}/src/engine.rs
         ${SKEY_ENGINE_DIR}/src/tables.rs
