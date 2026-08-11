@@ -1,0 +1,83 @@
+name: PPA Upload (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version (leave blank to use version from CMakeLists.txt)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  ppa-upload:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y devscripts debhelper dpkg-dev git rsync dput
+
+      - name: Resolve version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VER="${{ github.event.inputs.version }}"
+          else
+            VER=$(grep -oP 'project\(fcitx5-skey VERSION \K[0-9.]+' CMakeLists.txt)
+          fi
+          echo "PKG_VERSION=$VER" >> $GITHUB_ENV
+
+      - name: Bump changelog target to current series
+        run: |
+          SERIES=$(lsb_release -cs)
+          echo "Build target: $SERIES"
+          # Replace distribution in latest changelog entry
+          sed -i "1s/) [a-z]*;/) ${SERIES};/" debian/changelog
+
+      - name: Import GPG key
+        env:
+          PPA_GPG_PRIVATE_KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
+        run: |
+          echo "$PPA_GPG_PRIVATE_KEY" | base64 -d | gpg --batch --import
+          echo "=== GPG keys imported ==="
+          gpg --list-secret-keys --keyid-format LONG
+
+      - name: Create orig tarball
+        run: |
+          chmod +x scripts/make-ppa-source.sh
+          ./scripts/make-ppa-source.sh "$PKG_VERSION"
+
+      - name: Build & upload source package
+        run: |
+          set -o pipefail
+          debuild -S -sa -d 2>&1 | tee /tmp/debuild.log
+          echo "=== Files in parent ==="
+          ls -la ../*.dsc ../*.orig.tar.* ../*.debian.tar.* ../*_source.* 2>/dev/null || echo "(none found)"
+          # Copy to cwd for dput
+          cp ../*.dsc ../*.debian.tar.* ../*_source.changes ../*_source.buildinfo . 2>/dev/null || true
+
+          cat > ~/.dput.cf << 'DEOF'
+          [ppa-collyn]
+          fqdn = ppa.launchpad.net
+          method = ftp
+          incoming = ~collyn094/ubuntu/fcitx5-skey
+          login = anonymous
+          allow_unsigned_uploads = 0
+          DEOF
+
+          CHANGES=$(ls fcitx5-skey_*_source.changes 2>/dev/null | head -1)
+          if [ -z "$CHANGES" ]; then
+            echo "Error: No .changes file found" >&2
+            ls -la
+            exit 1
+          fi
+          echo "Uploading: $CHANGES"
+          dput ppa-collyn "$CHANGES"
