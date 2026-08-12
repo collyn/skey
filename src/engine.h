@@ -109,6 +109,10 @@ private:
     mutable SKeyOutputMode cachedMode_ = SKeyOutputMode::SurroundingText;
     mutable int cachedIsChromium_ = -1;  // tristate: -1=unset, 0=false, 1=true
     mutable int cachedIsFirefoxOrSnap_ = -1;
+    // Sticky Uinput for Chromium-family apps that initially report bare caps
+    // (0x72, no content hints).  Caps may later gain hints after the app
+    // enters edit mode, but commitString still won't work without Uinput.
+    mutable bool chromiumBareCapsUinput_ = false;
     bool isFirefoxOrSnap() const;
     std::unique_ptr<EventSourceTime> deferredCommitTimer_;
     std::string deferredCommitText_;
@@ -192,10 +196,6 @@ private:
     // surroundingCommit to use forwardKey instead of the native
     // surrounding-text API, which may be out-of-sync after reclaim.
     bool reclaimInProgress_ = false;
-    // Runtime verification: set when a replacement needs surrounding text
-    // but ic_->surroundingText().isValid() returns false.  Once set,
-    // detectAutoMode() returns Uinput for the rest of this IC's lifetime.
-    bool surroundingTextFailed_ = false;
 };
 
 /// Main fcitx5 engine class.
@@ -270,6 +270,14 @@ private:
 
     // Tray menu: Launch settings app
     SimpleAction settingsAction_;
+
+    // Engine-level sticky Uinput: when a Chromium browser program reports
+    // truly bare caps (0x72), remember it so subsequent IC re-creations
+    // (which may report content hints like UppercaseWords) stay in Uinput.
+    // Only applies when the new IC lacks "strong" content hints (Alpha,
+    // SpellCheck, etc.) — real editors bypass this sticky flag.
+    std::string chromiumBareCapsProgram_;
+    bool chromiumHadBareCaps_ = false;
 
     // AT-SPI2 accessibility monitor for address bar detection
     std::unique_ptr<A11yMonitor> a11yMonitor_;

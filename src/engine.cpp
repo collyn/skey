@@ -1123,10 +1123,11 @@ bool SKeyState::useUinputMode() const {
 }
 
 SKeyOutputMode SKeyState::detectAutoMode() const {
-  // Runtime override: if surrounding text API was verified as non-functional
-  // during a previous replacement attempt, stick with Uinput for this IC.
-  if (surroundingTextFailed_) {
-    SKEY_DEBUG() << "Auto: surrounding text previously failed → Uinput";
+  // Sticky Uinput: Chromium browsers (e.g. Google Sheets) may initially
+  // report bare caps (0x72), then add content hints on re-focus without
+  // actually providing a working SurroundingText editor.
+  if (chromiumBareCapsUinput_) {
+    SKEY_DEBUG() << "Auto: sticky bare caps → Uinput";
     return SKeyOutputMode::Uinput;
   }
 
@@ -1152,29 +1153,38 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     return SKeyOutputMode::Uinput;
   }
 
-  // Electron apps (not full browsers): bare caps without content hints
-  // (0x72) → terminal / plain text input → Uinput.  Content-hint flags
-  // (UppercaseWords, Alpha, etc.) indicate a real editor with working
-  // SurroundingText.  Unlike full browsers, Electron apps don't send
-  // progressive caps for terminals — 0x72 stays 0x72.
+  // Chromium-family apps (Electron + full browsers) with truly bare caps
+  // (no content hints whatsoever) → Uinput.  Any content hint (including
+  // UppercaseWords) indicates a real editor — SurroundingText.
+  //
+  // Google Sheets first focus reports 0x72 (bare) → Uinput + sticky flag.
+  // Re-focus adds UppercaseWords (0x80072) → sticky flag keeps Uinput.
+  // Facebook chat (0x90072, includes UppercaseWords) → SurroundingText.
   if (caps.test(CapabilityFlag::SurroundingText) && isChromiumCached() &&
-      !isChromiumBrowser(ic_->program()) && !caps.test(CapabilityFlag::Url)) {
+      !caps.test(CapabilityFlag::Url)) {
     static constexpr uint64_t kContentHints =
-        (1ULL << 7) |  // Email
-        (1ULL << 8) |  // Digit
-        (1ULL << 9) |  // Uppercase
-        (1ULL << 10) | // Lowercase
-        (1ULL << 11) | // NoAutoUpperCase
-        (1ULL << 13) | // Dialable
-        (1ULL << 14) | // Number
-        (1ULL << 15) | // NoOnScreenKeyboard
-        (1ULL << 19) | // UppercaseWords
-        (1ULL << 21) | // Alpha
-        (1ULL << 22) | // Name
-        (1ULL << 3);   // Password
+        (1ULL << 3)  |  // Password
+        (1ULL << 7)  |  // Email
+        (1ULL << 8)  |  // Digit
+        (1ULL << 9)  |  // Uppercase
+        (1ULL << 10) |  // Lowercase
+        (1ULL << 11) |  // NoAutoUpperCase
+        (1ULL << 13) |  // Dialable
+        (1ULL << 14) |  // Number
+        (1ULL << 15) |  // NoOnScreenKeyboard
+        (1ULL << 16) |  // SpellCheck
+        (1ULL << 17) |  // NoSpellCheck
+        (1ULL << 18) |  // WordCompletion
+        (1ULL << 19) |  // UppercaseWords
+        (1ULL << 20) |  // UppercaseSentences
+        (1ULL << 21) |  // Alpha
+        (1ULL << 22);    // Name
     CapabilityFlags contentHints(kContentHints);
     if (!(caps & contentHints)) {
-      SKEY_DEBUG() << "Auto: Electron without content hints → Uinput";
+      chromiumBareCapsUinput_ = true;
+      engine_->chromiumBareCapsProgram_ = ic_->program();
+      engine_->chromiumHadBareCaps_ = true;
+      SKEY_DEBUG() << "Auto: bare caps without content hints → Uinput";
       return SKeyOutputMode::Uinput;
     }
   }
@@ -1334,7 +1344,6 @@ void SKeyState::activate() {
     preeditWasPending_ = false;
     viet_.reset();
     committedLen_ = 0;
-    surroundingTextFailed_ = false; // fresh focus, re-verify
 
     // Detect spurious focus cycles that arrived when addrBarExpectCycle_
     // was not armed (e.g. asynchronous omnibox updates).  If reactivation
@@ -1401,11 +1410,39 @@ void SKeyState::activate() {
   }
 
   // Invalidate mode cache — new focus means caps/program may have changed.
+  chromiumBareCapsUinput_ = false;
   modeCacheValid_ = false;
   cachedIsChromium_ = -1;
   cachedIsFirefoxOrSnap_ = -1;
 
   auto caps = ic_->capabilityFlags();
+
+  // Engine-level sticky Uinput: if a previous IC for this Chromium program
+  // reported bare caps (0x72), keep Uinput for subsequent ICs of the same
+  // program — but only when the current caps lack "strong" content hints
+  // (Alpha, SpellCheck, etc.) that indicate a real editor like Facebook chat.
+  if (engine_->chromiumHadBareCaps_ &&
+      ic_->program() == engine_->chromiumBareCapsProgram_ &&
+      !ic_->program().empty() && isChromiumCached()) {
+    static constexpr uint64_t kStrongHints =
+        (1ULL << 3)  |  // Password
+        (1ULL << 7)  |  // Email
+        (1ULL << 8)  |  // Digit
+        (1ULL << 9)  |  // Uppercase
+        (1ULL << 10) |  // Lowercase
+        (1ULL << 14) |  // Number
+        (1ULL << 16) |  // SpellCheck
+        (1ULL << 17) |  // NoSpellCheck
+        (1ULL << 18) |  // WordCompletion
+        (1ULL << 20) |  // UppercaseSentences
+        (1ULL << 21) |  // Alpha
+        (1ULL << 22);    // Name
+    CapabilityFlags strong(kStrongHints);
+    if (!(caps & strong)) {
+      chromiumBareCapsUinput_ = true;
+      SKEY_DEBUG() << "Activate: engine sticky bare caps → Uinput";
+    }
+  }
   auto mode = effectiveMode();
   auto configuredMode = engine_->config().outputMode.value();
   SKEY_DEBUG() << "Activated: mode=" << outputModeName(mode)
@@ -3495,13 +3532,11 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         if (!surrounding.isValid() ||
             surrounding.cursor() < static_cast<unsigned int>(deleteLen)) {
           // SurroundingText capability was advertised but the runtime
-          // data is invalid or missing.  Mark as failed so subsequent
-          // replacements use Uinput instead of retrying a dead API.
+          // data is invalid or missing.  Fall back to forwardKey/Uinput
+          // for this replacement.
           if (!surrounding.isValid()) {
-            surroundingTextFailed_ = true;
-            modeCacheValid_ = false;
             SKEY_DEBUG()
-                << "Surr: surrounding text invalid, downgrading to uinput";
+                << "Surr: surrounding text invalid, falling back";
           } else {
             SKEY_DEBUG() << "Surr: native surrounding not ready";
           }
@@ -3542,10 +3577,8 @@ void SKeyState::surroundingBackspace() {
     const auto &surrounding = ic_->surroundingText();
     if (!surrounding.isValid()) {
       // Surrounding text advertised but not actually available.
-      // Mark as failed and fall back to forwardKey.
-      surroundingTextFailed_ = true;
-      modeCacheValid_ = false;
-      SKEY_DEBUG() << "SurrBS: surrounding text invalid, downgrading to uinput";
+      // Fall back to forwardKey.
+      SKEY_DEBUG() << "SurrBS: surrounding text invalid, falling back to forwardKey";
       ic_->forwardKey(Key(FcitxKey_BackSpace));
     } else {
       ic_->deleteSurroundingText(-1, 1);

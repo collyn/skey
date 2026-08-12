@@ -86,6 +86,7 @@ void VietnameseEngine::setFreeMarking(bool free) {
 
 void VietnameseEngine::setAutoRestore(bool restore) {
     autoRestore_ = restore;
+    skey_engine_set_auto_restore(handle_, restore ? 1 : 0);
 }
 
 void VietnameseEngine::setShortW(bool enabled) {
@@ -130,10 +131,8 @@ ProcessResult VietnameseEngine::processKey(char ch) {
     if (tryToneKeyUndo(ch, oldComposed, oldRawInput))
         return ProcessResult::Committed;
 
-    // R5: auto-restore runs after recompose.
-    // Pair substitution is now built into the engine, so is_valid()
-    // sees the final composed_ state directly.
-    maybeAutoRestoreRealTime();
+    // auto-restore is now handled by the Rust engine (skey_engine_set_auto_restore).
+    // No need for separate C++-side restore logic.
 
     return ProcessResult::Consumed;
 }
