@@ -55,9 +55,9 @@ jobs:
       - name: Build & upload source package
         run: |
           set -o pipefail
-          export DEBEMAIL=collyn094@gmail.com
-          export DEBFULLNAME="Nguyen Tien Huy"
-          debuild -S -sa -d 2>&1 | tee /tmp/debuild.log
+          KEYID=$(gpg --list-secret-keys --with-colons | grep '^sec:' | head -1 | cut -d: -f5)
+          echo "Signing with GPG key: $KEYID"
+          debuild -k"$KEYID" -S -sa -d 2>&1 | tee /tmp/debuild.log
           echo "=== Files in parent ==="
           ls -la ../*.dsc ../*.orig.tar.* ../*.debian.tar.* ../*_source.* 2>/dev/null || echo "(none found)"
           # Copy to cwd for dput
