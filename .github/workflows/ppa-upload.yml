@@ -49,6 +49,4 @@ jobs:
       - name: Build & upload for all series
         run: |
           chmod +x scripts/make-ppa-source.sh scripts/ppa-build-upload.sh
-          for SERIES in noble resolute; do
-            ./scripts/ppa-build-upload.sh "$PKG_VERSION" "$SERIES"
-          done
+          ./scripts/ppa-build-upload.sh "$PKG_VERSION"
