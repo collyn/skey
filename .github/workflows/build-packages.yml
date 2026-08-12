@@ -44,71 +44,6 @@ jobs:
           name: deb-package
           path: '*.deb'
 
-  # ── PPA source package + upload to Launchpad ──────────────────────────
-  build-ppa-source:
-    runs-on: ubuntu-22.04
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y devscripts debhelper dpkg-dev git rsync dput
-
-      - name: Extract version
-        run: |
-          VER=$(grep -oP 'project\(fcitx5-skey VERSION \K[0-9.]+' CMakeLists.txt)
-          echo "PKG_VERSION=$VER" >> $GITHUB_ENV
-
-      - name: Import GPG key
-        env:
-          PPA_GPG_PRIVATE_KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
-        run: |
-          echo "$PPA_GPG_PRIVATE_KEY" | base64 -d | gpg --batch --import
-          echo "=== GPG keys imported ==="
-          gpg --list-secret-keys --keyid-format LONG
-
-      - name: Create orig tarball
-        run: |
-          chmod +x scripts/make-ppa-source.sh
-          ./scripts/make-ppa-source.sh "$PKG_VERSION"
-
-      - name: Build source package
-        run: |
-          set -o pipefail
-          debuild -S -sa -d 2>&1 | tee /tmp/debuild.log
-          echo "=== debuild exit code: $? ==="
-          echo "=== Files in parent ==="
-          ls -la ../*.dsc ../*.orig.tar.* ../*.debian.tar.* ../*_source.* 2>/dev/null || echo "(none found)"
-          # debuild places output in parent dir — copy back for artifact upload
-          cp ../*.dsc ../*.orig.tar.* ../*.debian.tar.* ../*_source.* . 2>/dev/null || true
-          echo "=== Source package files ==="
-          ls -la *.dsc *.orig.tar.* *.debian.tar.* *_source.* 2>/dev/null || true
-
-      - name: Import GPG key (for signing)
-        env:
-          PPA_GPG_PRIVATE_KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
-        run: |
-          echo "$PPA_GPG_PRIVATE_KEY" | base64 -d | gpg --batch --import
-          for fp in $(gpg --list-secret-keys --with-colons | grep '^fpr:' | cut -d: -f10); do
-            echo "$fp:6:" | gpg --batch --import-ownertrust
-          done
-
-      - name: Upload PPA source artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ppa-source
-          path: |
-            *.dsc
-            *.orig.tar.*
-            *.debian.tar.*
-            *_source.changes
-            *_source.buildinfo
-
   # ── Fedora / openSUSE (.rpm) ────────────────────────────────────────────
   build-rpm:
     runs-on: ubuntu-latest
@@ -271,7 +206,7 @@ jobs:
 
   # ── GitHub Release (all artifacts, tag only) ───────────────────────────
   release:
-    needs: [build-deb, build-rpm, build-arch, build-ppa-source]
+    needs: [build-deb, build-rpm, build-arch]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
 
@@ -289,11 +224,6 @@ jobs:
             *.rpm
             *.pkg.tar.zst
             *.pkg.tar.zst.sig
-            *.dsc
-            *.orig.tar.*
-            *.debian.tar.*
-            *_source.changes
-            *_source.buildinfo
           draft: false
           prerelease: false
 
