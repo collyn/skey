@@ -55,6 +55,8 @@ jobs:
       - name: Build & upload source package
         run: |
           set -o pipefail
+          export DEBEMAIL=collyn094@gmail.com
+          export DEBFULLNAME="Nguyen Tien Huy"
           debuild -S -sa -d 2>&1 | tee /tmp/debuild.log
           echo "=== Files in parent ==="
           ls -la ../*.dsc ../*.orig.tar.* ../*.debian.tar.* ../*_source.* 2>/dev/null || echo "(none found)"

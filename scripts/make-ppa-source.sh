@@ -90,6 +90,10 @@ replace-with = "vendored-sources"
 [source.vendored-sources]
 directory = "vendor"
 CARGO_EOF
+    # Remove non-essential files from vendor dir that lintian complains about
+    find vendor -name '*.html' -delete 2>/dev/null || true
+    find vendor -name '.github' -type d -exec rm -rf {} + 2>/dev/null || true
+    find vendor -name '.gitignore' -delete 2>/dev/null || true
     echo "   Vendored $(find vendor -name '*.crate' 2>/dev/null | wc -l) crates"
 fi
 popd > /dev/null
