@@ -109,30 +109,6 @@ jobs:
             *_source.changes
             *_source.buildinfo
 
-      - name: Configure dput
-        if: github.ref_type == 'tag'
-        run: |
-          cat > ~/.dput.cf << 'DEOF'
-          [ppa-collyn]
-          fqdn = ppa.launchpad.net
-          method = ftp
-          incoming = ~collyn094/ubuntu/fcitx5-skey
-          login = anonymous
-          allow_unsigned_uploads = 0
-          DEOF
-
-      - name: Upload to Launchpad PPA
-        if: github.ref_type == 'tag'
-        run: |
-          CHANGES=$(ls fcitx5-skey_*_source.changes 2>/dev/null | head -1)
-          if [ -z "$CHANGES" ]; then
-            echo "Error: No .changes file found" >&2
-            ls -la
-            exit 1
-          fi
-          echo "Uploading: $CHANGES"
-          dput ppa-collyn "$CHANGES"
-
   # ── Fedora / openSUSE (.rpm) ────────────────────────────────────────────
   build-rpm:
     runs-on: ubuntu-latest

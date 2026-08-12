@@ -94,6 +94,36 @@ CARGO_EOF
 fi
 popd > /dev/null
 
+# ── Auto-generate debian/changelog ──────────────────────────────────────
+echo "→ Generating debian/changelog..."
+SERIES=$(lsb_release -cs 2>/dev/null || echo "resolute")
+if [ -f "debian/changelog" ]; then
+    # Update existing changelog with new version
+    dch --newversion "${VERSION}-1" \
+        --distribution "${SERIES}" \
+        --urgency medium \
+        "Release ${VERSION} with skey-engine ${ENGINE_VERSION}." \
+        2>/dev/null || {
+        # Fallback: write minimal changelog
+        cat > "${STAGING}/debian/changelog" << DCH_EOF
+${PKG_NAME} (${VERSION}-1) ${SERIES}; urgency=medium
+
+  * Release ${VERSION} with skey-engine ${ENGINE_VERSION}.
+
+ -- Nguyen Tien Huy <collyn094@gmail.com>  $(date -R)
+DCH_EOF
+    }
+else
+    # Create new changelog
+    cat > "${STAGING}/debian/changelog" << DCH_EOF
+${PKG_NAME} (${VERSION}-1) ${SERIES}; urgency=medium
+
+  * Release ${VERSION} with skey-engine ${ENGINE_VERSION}.
+
+ -- Nguyen Tien Huy <collyn094@gmail.com>  $(date -R)
+DCH_EOF
+fi
+
 # ── Create the orig tarball ──────────────────────────────────────────────
 echo "→ Creating ${TARBALL}..."
 tar czf "${REPO_ROOT}/../${TARBALL}" -C "$WORKDIR" "${PKG_NAME}-${VERSION}"

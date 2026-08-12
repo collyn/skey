@@ -158,10 +158,11 @@ private:
     // within 500ms in the same address bar, we preserve first-word/space
     // tracking to prevent fullReplace from deleting text before cursor.
     uint64_t lastDeactivateTime_ = 0;
-    // Preedit text saved on focus loss — committed on next activation.
-    // Needed because commitString() during reset()/deactivate() is
-    // silently dropped on some Wayland compositors (GNOME Mutter).
-    std::string focusLostPreedit_;
+    // Spurious-cycle detection: when preeditWasPending_ is true and
+    // the next activate is for the same IC+program, the app auto-committed
+    // on focus loss (e.g., LibreOffice) — skip the engine fallback commit.
+    bool preeditWasPending_ = false;
+    std::string preeditPendingProgram_;
     std::string pendingUinputCommit_;
     std::vector<KeySym> bufferedUinputKeys_;
     uint64_t bsSentAt_ = 0;        // timestamp when BS was sent
@@ -247,6 +248,11 @@ private:
     Instance *instance_;
     SKeyConfig config_;
     FactoryFor<SKeyState> factory_;
+
+    friend class SKeyState;
+    // Pending preedit text saved on focus loss, keyed by program name.
+    // Survives IC destruction — committed when the program is reactivated.
+    std::map<std::string, std::string> pendingPreedits_;
 
     // Tray menu: Input Method selector
     SimpleAction imAction_;

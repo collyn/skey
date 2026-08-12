@@ -1310,19 +1310,28 @@ void SKeyState::activate() {
     SKEY_DEBUG() << "Activate: spurious cycle, cancel loss timer";
     addrBarCycleTimer_.reset();
   } else {
-    // Commit preedit text saved from a previous focus loss.
-    // At GNOME/Mutter, commitString() during reset()/deactivate()
-    // is silently dropped — the saved text is committed now that
-    // the IC has a fresh Wayland connection.
-    if (!focusLostPreedit_.empty()) {
+    // Spurious-cycle detection: if preeditWasPending_ is set and the
+    // activating program matches, the same IC is being reactivated —
+    // the app auto-committed on focus loss (e.g., LibreOffice).
+    // Don't double-commit; just clean up the engine entry.
+    auto it = engine_->pendingPreedits_.find(ic_->program());
+    if (preeditWasPending_ && preeditPendingProgram_ == ic_->program()) {
+      SKEY_DEBUG() << "Activate: spurious cycle for '"
+                   << ic_->program() << "', discarding saved preedit";
+      if (it != engine_->pendingPreedits_.end()) {
+        engine_->pendingPreedits_.erase(it);
+      }
+    } else if (it != engine_->pendingPreedits_.end()) {
+      // Genuine return — the IC was destroyed and recreated, or the
+      // activating program differs from the one that saved the text.
       SKEY_DEBUG() << "Activate: committing saved preedit '"
-                   << focusLostPreedit_ << "'";
-      commitText(focusLostPreedit_);
-      focusLostPreedit_.clear();
-      // commitString() clears preedit, but the new IC may need an
-      // explicit update to sync its preedit state.
+                   << it->second << "' for program '" << ic_->program()
+                   << "'";
+      commitText(it->second);
+      engine_->pendingPreedits_.erase(it);
       ic_->updatePreedit();
     }
+    preeditWasPending_ = false;
     viet_.reset();
     committedLen_ = 0;
     surroundingTextFailed_ = false; // fresh focus, re-verify
@@ -1776,11 +1785,13 @@ void SKeyState::deactivate() {
           // mode, replacements already committed via commitText() so
           // commitBuffer() here would double-commit.
           if (!useUinputMode()) {
-            // Save preedit for restore on next activation —
-            // commitString() during deactivate is dropped at GNOME.
+            // Save preedit for restore on next activation (see reset()).
             if (!viet_.getComposed().empty() && !useSurroundingText()) {
-              if (focusLostPreedit_.empty()) {
-                focusLostPreedit_ = viet_.getComposed();
+              if (!preeditWasPending_) {
+                preeditWasPending_ = true;
+                preeditPendingProgram_ = ic_->program();
+                engine_->pendingPreedits_[ic_->program()] =
+                    viet_.getComposed();
               }
             }
             viet_.reset();
@@ -1804,12 +1815,15 @@ void SKeyState::deactivate() {
   uinputSafetyTimer_.reset();
   uinputDeleting_ = false;
 
-  // Save preedit text for restore on next activation (see reset()).
+  // Save preedit for restore on next activation (see reset()).
   if (!viet_.getComposed().empty() && !useSurroundingText()) {
-    if (focusLostPreedit_.empty()) {
-      focusLostPreedit_ = viet_.getComposed();
+    if (!preeditWasPending_) {
+      preeditWasPending_ = true;
+      preeditPendingProgram_ = ic_->program();
+      engine_->pendingPreedits_[ic_->program()] = viet_.getComposed();
       SKEY_DEBUG() << "Deactivate: saved preedit '"
-                   << focusLostPreedit_ << "'";
+                   << viet_.getComposed() << "' for program '"
+                   << ic_->program() << "'";
     }
   }
   viet_.reset();
@@ -1837,13 +1851,16 @@ void SKeyState::reset() {
   if (hasDeferredCommitPending()) {
     SKEY_DEBUG() << "Reset: keeping deferred commit";
   }
-  // In Preedit mode, uncommitted composition text must be saved
-  // for restore on next activation — commitString() during reset()
-  // is silently dropped on some Wayland compositors (GNOME Mutter)
-  // that have already processed the keyboard-leave event.
+  // Save uncommitted preedit to engine (global, survives IC
+  // destruction) and set spurious-cycle flag (per-IC).
+  // commitString() during reset() is silently dropped on some
+  // Wayland compositors (GNOME Mutter).
   if (!viet_.getComposed().empty() && !useSurroundingText()) {
-    focusLostPreedit_ = viet_.getComposed();
-    SKEY_DEBUG() << "Reset: saved preedit '" << focusLostPreedit_ << "'";
+    preeditWasPending_ = true;
+    preeditPendingProgram_ = ic_->program();
+    engine_->pendingPreedits_[ic_->program()] = viet_.getComposed();
+    SKEY_DEBUG() << "Reset: saved preedit '" << viet_.getComposed()
+                 << "' for program '" << ic_->program() << "'";
   }
   viet_.reset();
   bufferedUinputKeys_.clear();

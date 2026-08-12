@@ -35,13 +35,6 @@ jobs:
           fi
           echo "PKG_VERSION=$VER" >> $GITHUB_ENV
 
-      - name: Bump changelog target to current series
-        run: |
-          SERIES=$(lsb_release -cs)
-          echo "Build target: $SERIES"
-          # Replace distribution in latest changelog entry
-          sed -i "1s/) [a-z]*;/) ${SERIES};/" debian/changelog
-
       - name: Import GPG key
         env:
           PPA_GPG_PRIVATE_KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
