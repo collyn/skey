@@ -40,67 +40,15 @@ jobs:
           PPA_GPG_PRIVATE_KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
         run: |
           echo "$PPA_GPG_PRIVATE_KEY" | base64 -d | gpg --batch --import
-          # Trust our own keys so dput signature verification passes
           for fp in $(gpg --list-secret-keys --with-colons | grep '^fpr:' | cut -d: -f10); do
             echo "$fp:6:" | gpg --batch --import-ownertrust
           done
           echo "=== GPG keys imported ==="
           gpg --list-secret-keys --keyid-format LONG
 
-      - name: Create orig tarball & build for all series
+      - name: Build & upload for all series
         run: |
-          chmod +x scripts/make-ppa-source.sh
-          # Create shared orig tarball (no debian/ inside — series-independent)
-          ./scripts/make-ppa-source.sh "$PKG_VERSION"
-
-          KEYID=$(gpg --list-secret-keys --with-colons | grep '^sec:' | head -1 | cut -d: -f5)
-          echo "Signing with GPG key: $KEYID"
-
+          chmod +x scripts/make-ppa-source.sh scripts/ppa-build-upload.sh
           for SERIES in noble resolute; do
-            echo ""
-            echo "=== Building for ${SERIES} ==="
-
-            # Generate changelog for this series
-            cat > debian/changelog << EOF
-fcitx5-skey (${PKG_VERSION}-1) ${SERIES}; urgency=medium
-
-  * Release ${PKG_VERSION} with skey-engine v$(grep -oP 'set\(SKEY_ENGINE_VERSION "\K[^"]+' CMakeLists.txt).
-
- -- Nguyen Tien Huy <collyn094@gmail.com>  $(date -R)
-EOF
-
-            # First series: include orig tarball (-sa). Rest: skip orig (-sd)
-            if [ "$SERIES" = "noble" ]; then
-              SA_FLAG="-sa"
-            else
-              SA_FLAG="-sd"
-            fi
-
-            set -o pipefail
-            debuild -k"$KEYID" -S ${SA_FLAG} -d 2>&1 | tee /tmp/debuild-${SERIES}.log
-            echo "=== Files in parent ==="
-            ls -la ../*.dsc ../*.orig.tar.* ../*.debian.tar.* ../*_source.* 2>/dev/null || echo "(none found)"
-            # Copy to cwd for dput
-            cp ../*.dsc ../*.debian.tar.* ../*_source.changes ../*_source.buildinfo . 2>/dev/null || true
-            if [ "$SERIES" = "noble" ]; then
-              cp ../*.orig.tar.* . 2>/dev/null || true
-            fi
-
-            cat > ~/.dput.cf << 'DEOF'
-            [ppa-collyn]
-            fqdn = ppa.launchpad.net
-            method = ftp
-            incoming = ~collyn094/ubuntu/fcitx5-skey
-            login = anonymous
-            allow_unsigned_uploads = 0
-            DEOF
-
-            CHANGES=$(ls fcitx5-skey_*_source.changes 2>/dev/null | head -1)
-            if [ -z "$CHANGES" ]; then
-              echo "Error: No .changes file found" >&2
-              ls -la
-              exit 1
-            fi
-            echo "Uploading to ${SERIES}: $CHANGES"
-            dput ppa-collyn "$CHANGES"
+            ./scripts/ppa-build-upload.sh "$PKG_VERSION" "$SERIES"
           done
