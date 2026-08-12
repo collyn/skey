@@ -5,9 +5,10 @@
 # that Launchpad buildd can build without internet access.
 #
 # Usage:
-#   ./scripts/make-ppa-source.sh [version]
+#   ./scripts/make-ppa-source.sh [version] [series]
 #
 # If version is omitted, it is extracted from CMakeLists.txt.
+# If series is omitted, it is auto-detected from lsb_release.
 set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,6 +19,13 @@ if [ -n "$1" ]; then
     VERSION="$1"
 else
     VERSION=$(grep -oP 'project\(fcitx5-skey VERSION \K[0-9.]+' CMakeLists.txt)
+fi
+
+# ── Resolve series ───────────────────────────────────────────────────────
+if [ -n "$2" ]; then
+    SERIES="$2"
+else
+    SERIES=$(lsb_release -cs 2>/dev/null || echo "resolute")
 fi
 
 if [ -z "$VERSION" ]; then
@@ -42,7 +50,7 @@ trap cleanup EXIT
 # ── Copy project source (exclude build artifacts and CI) ─────────────────
 mkdir -p "$STAGING"
 
-echo "→ Copying project source..."
+echo "→ Copying project source (without debian/ — packaging goes in .debian.tar.xz)..."
 rsync -a \
     --exclude='.git' \
     --exclude='.venv/' \
@@ -62,6 +70,7 @@ rsync -a \
     --exclude='CLAUDE.md' \
     --exclude='AGENTS.md' \
     --exclude='node_modules/' \
+    --exclude='debian/' \
     ./ "$STAGING/"
 
 # ── Clone skey-engine into the staging tree ──────────────────────────────
@@ -97,36 +106,6 @@ CARGO_EOF
     echo "   Vendored $(find vendor -name '*.crate' 2>/dev/null | wc -l) crates"
 fi
 popd > /dev/null
-
-# ── Auto-generate debian/changelog ──────────────────────────────────────
-echo "→ Generating debian/changelog..."
-SERIES=$(lsb_release -cs 2>/dev/null || echo "resolute")
-if [ -f "debian/changelog" ]; then
-    # Update existing changelog with new version
-    dch --newversion "${VERSION}-1" \
-        --distribution "${SERIES}" \
-        --urgency medium \
-        "Release ${VERSION} with skey-engine ${ENGINE_VERSION}." \
-        2>/dev/null || {
-        # Fallback: write minimal changelog
-        cat > "${STAGING}/debian/changelog" << DCH_EOF
-${PKG_NAME} (${VERSION}-1) ${SERIES}; urgency=medium
-
-  * Release ${VERSION} with skey-engine ${ENGINE_VERSION}.
-
- -- Nguyen Tien Huy <collyn094@gmail.com>  $(date -R)
-DCH_EOF
-    }
-else
-    # Create new changelog
-    cat > "${STAGING}/debian/changelog" << DCH_EOF
-${PKG_NAME} (${VERSION}-1) ${SERIES}; urgency=medium
-
-  * Release ${VERSION} with skey-engine ${ENGINE_VERSION}.
-
- -- Nguyen Tien Huy <collyn094@gmail.com>  $(date -R)
-DCH_EOF
-fi
 
 # ── Create the orig tarball ──────────────────────────────────────────────
 echo "→ Creating ${TARBALL}..."
