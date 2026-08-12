@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(fcitx5-skey VERSION 0.5.12)
+project(fcitx5-skey VERSION 0.5.13)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -23,7 +23,7 @@ add_definitions(-DFCITX_GETTEXT_DOMAIN=\"fcitx5-skey\" -D_GNU_SOURCE)
 fcitx5_add_i18n_definition()
 
 # ── Build skey-engine Rust static library ────────────────────────────────
-set(SKEY_ENGINE_VERSION "v0.1.14")
+set(SKEY_ENGINE_VERSION "v0.1.16")
 set(SKEY_ENGINE_DIR "${CMAKE_CURRENT_BINARY_DIR}/skey-engine")
 set(SKEY_ENGINE_LIB "${SKEY_ENGINE_DIR}/target/release/libskey_engine.a")
 
