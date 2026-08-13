@@ -55,6 +55,8 @@ FCITX_CONFIGURATION(
     Option<bool> freeMarking{this, "FreeMarking", _("Đánh dấu tự do"), false};
     Option<bool> autoRestore{this, "AutoRestore",
                              _("Tự động khôi phục"), true};
+    Option<bool> dict{this, "Dict",
+                      _("Dùng từ điển"), false};
     Option<bool> showPreedit{this, "ShowPreedit", _("Hiện preedit"), true};
     Option<SKeyChromiumAddressBarMode> chromiumAddressBarMode{
         this, "ChromiumAddressBarMode",

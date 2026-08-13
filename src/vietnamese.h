@@ -46,6 +46,9 @@ public:
     void setToneStyle(ToneStyle style);
     void setFreeMarking(bool free);
     void setAutoRestore(bool restore);
+    /// Dictionary mode: auto-restore validates against the embedded
+    /// Vietnamese word list instead of syllable rules.
+    void setDict(bool enabled);
     /// Telex only: bare 'w' → 'ư' (switches skey-engine to telex_w).
     void setShortW(bool enabled);
     /// Telex only: '[' → 'ơ', ']' → 'ư' (translated to ow/uw for skey-engine).
@@ -56,6 +59,12 @@ public:
 
     /// Handle backspace: remove last raw input character and recompose.
     void backspace();
+
+    /// Replace the raw input and recompose.  The raw input may contain
+    /// precomposed Vietnamese text — the engine round-trips it unchanged.
+    /// Used by the frontend to keep the engine following what the app
+    /// actually shows after backspace in surrounding/uinput modes.
+    void setRawInput(const std::string &raw);
 
     /// Reset all state.
     void reset();
@@ -160,6 +169,7 @@ private:
     ToneStyle toneStyle_ = ToneStyle::Modern;
     bool freeMarking_ = false;
     bool autoRestore_ = true;
+    bool dict_ = false;        // Auto-restore checks the word list, not rules
     bool shortW_ = false;      // Telex: bare 'w' → 'ư' (telex_w)
     bool bracketUO_ = false;   // Telex: '[' → 'ơ', ']' → 'ư'
 

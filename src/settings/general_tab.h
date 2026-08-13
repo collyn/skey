@@ -37,6 +37,7 @@ private:
     QCheckBox *bracketUOCheck_;
     QCheckBox *freeMarkingCheck_;
     QCheckBox *autoRestoreCheck_;
+    QCheckBox *dictCheck_;
     QCheckBox *showPreeditCheck_;
     QCheckBox *debugCheck_;
 };

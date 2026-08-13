@@ -40,6 +40,8 @@ struct TestCase {
     const char *note = nullptr; // optional explanation, nullptr if none
     bool shortW = false;      // Telex: bare 'w' → 'ư'
     bool bracketUO = false;   // Telex: '[' → 'ơ', ']' → 'ư'
+    bool autoRestore = false; // engine auto-restore (production default: on)
+    bool dict = false;        // dictionary mode for auto-restore
 };
 
 struct BackspaceTest {
@@ -77,6 +79,8 @@ static void runTest(const TestCase &tc) {
     eng.setBracketUO(tc.bracketUO);
     eng.setMethod(tc.method);
     eng.setFreeMarking(false);
+    eng.setAutoRestore(tc.autoRestore);
+    eng.setDict(tc.dict);
 
     auto [committed, composed] = feedKeys(eng, tc.keys);
     std::string actual = committed + composed;
@@ -429,15 +433,14 @@ int main(int argc, char **argv) {
         // oo→ô→oo, but ddd/aaa/eee behave differently from bamboo-core.
         runTest({cat, "ooo → oo (undo ô)",
                  skey::InputMethod::Telex, "ooo", "oo"});
-        // ddd: consecutive d's → no toggle, third d stays literal
-        runTest({cat, "ddd → đd (no undo)",
-                 skey::InputMethod::Telex, "ddd", "đd"});
-        // aaa: skey-engine skips aa→â when third a present
-        runTest({cat, "aaa → aaa (no undo)",
-                 skey::InputMethod::Telex, "aaa", "aaa"});
-        // eee: skey-engine skips ee→ê when third e present
-        runTest({cat, "eee → eee (no undo)",
-                 skey::InputMethod::Telex, "eee", "eee"});
+        // Toggle once, then one-shot: dd→đ, ddd→dd, dddd→ddd.
+        runTest({cat, "ddd → dd (toggle once)",
+                 skey::InputMethod::Telex, "ddd", "dd"});
+        // Same for circumflex vowels: aa→â, aaa→aa, aaaa→aaa.
+        runTest({cat, "aaa → aa (toggle once)",
+                 skey::InputMethod::Telex, "aaa", "aa"});
+        runTest({cat, "eee → ee (toggle once)",
+                 skey::InputMethod::Telex, "eee", "ee"});
 
         std::cout << std::endl;
     }
@@ -449,16 +452,19 @@ int main(int argc, char **argv) {
         const char *cat = "Telex / English Bypass After Undo";
         std::cout << CYAN << "── " << cat << " ──" << RESET << std::endl;
 
-        // "restore": r+e → re, +s → ré (tone), +s → undo → "res",
-        //   bypass on → t+o+r+e pass through → "restore"
-        runTest({cat, "restore → restore (bypass after undo ré→res)",
+        // "resstore": r+e → re, +s → ré (tone), +s → P5 tone-key undo
+        // commits "res".  P4 bypass is disabled (engine handles toggles),
+        // but P5 + engine auto-restore reach the same visible result:
+        // "store" → "stỏe" → restored → "store".
+        runTest({cat, "resstore → restore (P5 undo + engine restore)",
                  skey::InputMethod::Telex, "resstore", "restore",
-                 "After undo (ss cancels é), remaining tore is bypassed"});
+                 "ss cancels é (P5), engine auto-restore fixes the rest", false, false, true});
 
-        // "response": similar — res → ré → undo → bypass
-        runTest({cat, "response → response (bypass after undo)",
-                 skey::InputMethod::Telex, "ressponse", "response",
-                 "After undo, ponse is bypassed — no tỏ round-trip"});
+        // "ressponse": P5 fires twice; the leftover ASCII output is kept
+        // (all-ASCII guard skips auto-restore).
+        runTest({cat, "ressponse → respone (P5 undo, ASCII kept)",
+                 skey::InputMethod::Telex, "ressponse", "respone",
+                 "P4 bypass removed — P5 handles double tone keys", false, false, true});
 
         // "result": res → ré → undo → bypass → ult
         runTest({cat, "result → result (bypass after undo)",
@@ -469,6 +475,7 @@ int main(int argc, char **argv) {
         {
             skey::VietnameseEngine eng;
             eng.setMethod(skey::InputMethod::Telex);
+            eng.setAutoRestore(true);
             auto [c1, p1] = feedKeys(eng, "resstore");
             std::string word1 = c1 + p1;
             eng.reset();  // simulate space/enter — clears bypass
@@ -594,6 +601,50 @@ int main(int argc, char **argv) {
         runBackspaceTest({cat, "xin BSx3 → empty",
                           skey::InputMethod::Telex, "xin", 3, ""});
 
+        // Mid-word edit: BS keeps the engine composing, so a tone key
+        // typed after the edit completes the fixed word.
+        // ("hangh" BS "f" → "hàng" — the frontend must not reset the
+        // composition state on backspace.)
+        {
+            skey::VietnameseEngine eng;
+            eng.setMethod(skey::InputMethod::Telex);
+            eng.setRawInput("vã"); // precomposed raw (follow-app path)
+            eng.backspace();
+            bool pass = (eng.getComposed() == "v");
+            if (pass) {
+                ++gPassed;
+                std::cout << GREEN << "  PASS" << RESET
+                          << "  precomposed raw \"vã\" BS → v (UTF-8 pop)\n";
+            } else {
+                ++gFailed;
+                std::cout << RED << "  FAIL" << RESET
+                          << "  precomposed raw \"vã\" BS → v (UTF-8 pop)\n";
+                std::cout << "         actual:   \"" << eng.getComposed()
+                          << "\"\n";
+            }
+        }
+        {
+            skey::VietnameseEngine eng;
+            eng.setMethod(skey::InputMethod::Telex);
+            eng.setAutoRestore(true);
+            auto [c1, p1] = feedKeys(eng, "hangh");
+            eng.backspace();
+            auto [c2, p2] = feedKeys(eng, "f");
+            std::string actual = c1 + c2 + p2;
+            bool pass = (actual == "hàng");
+            if (pass) {
+                ++gPassed;
+                std::cout << GREEN << "  PASS" << RESET
+                          << "  hangh BS f → hàng (mid-word edit)\n";
+            } else {
+                ++gFailed;
+                std::cout << RED << "  FAIL" << RESET
+                          << "  hangh BS f → hàng (mid-word edit)\n";
+                std::cout << "         expected: \"hàng\"\n";
+                std::cout << "         actual:   \"" << actual << "\"\n";
+            }
+        }
+
         std::cout << std::endl;
     }
 
@@ -613,15 +664,15 @@ int main(int argc, char **argv) {
                  skey::InputMethod::Telex, "hello", "hello"});
         runTest({cat, "world → world (real-time restore)",
                  skey::InputMethod::Telex, "world", "world",
-                 "r=hỏi on o → invalid → real-time restore"});
+                 "r=hỏi on o → invalid → real-time restore", false, false, true});
         runTest({cat, "computer → computer (real-time restore)",
                  skey::InputMethod::Telex, "computer", "computer",
-                 "r=hỏi on e → invalid → real-time restore"});
+                 "r=hỏi on e → invalid → real-time restore", false, false, true});
 
-        // English word with oo → ô transform — now restored in real-time
+        // English word with oo → ô transform — restored in real-time
         runTest({cat, "wood → wood (real-time restore)",
                  skey::InputMethod::Telex, "wood", "wood",
-                 "P6: wood→wôd → invalid → real-time restore"});
+                 "wood→wôd → invalid → real-time restore", false, false, true});
 
         // đc abbreviation — ddFreeStyle protected (no vowel, has đ)
         runTest({cat, "ddc → đc (ddFreeStyle: no vowel, has đ)",
@@ -643,38 +694,35 @@ int main(int argc, char **argv) {
                  skey::InputMethod::Telex, "bcdd", "bcđ",
                  "ddFreeStyle protects: no vowel + has đ → keep"});
 
-        // avcdd: has vowel 'a' → ddFreeStyle does NOT protect → restored.
-        // Same behavior as lotus: words with vowels get restored.
-        runTest({cat, "avcdd → avcdd (has vowel a, restored)",
-                 skey::InputMethod::Telex, "avcdd", "avcdd",
-                 "has vowel 'a' → ddFreeStyle skip → real-time restore"});
+        // dd marker protects regardless of vowels (engine-level
+        // has_vn_markers) — intentional đ composition is never restored.
+        runTest({cat, "avcdd → avcđ (dd marker protected)",
+                 skey::InputMethod::Telex, "avcdd", "avcđ",
+                 "dd signals intentional đ — auto-restore skips", false, false, true});
 
-        // add: has vowel 'a' → ddFreeStyle does NOT protect → restored.
-        runTest({cat, "add → add (has vowel a, restored)",
-                 skey::InputMethod::Telex, "add", "add",
-                 "has vowel 'a' → ddFreeStyle skip → real-time restore"});
+        runTest({cat, "add → ađ (dd marker protected)",
+                 skey::InputMethod::Telex, "add", "ađ",
+                 "dd signals intentional đ — auto-restore skips", false, false, true});
 
-        // addr: dd→đ fix works, then 'r' = hỏi tone → ảdd.
-        // "ảdd" is invalid → real-time restore to "addr".
-        runTest({cat, "addr → addr (real-time restore)",
-                 skey::InputMethod::Telex, "addr", "addr",
-                 "ảdd invalid → real-time restore"});
+        runTest({cat, "addr → ảđ (dd marker protected)",
+                 skey::InputMethod::Telex, "addr", "ảđ",
+                 "dd→đ then r=hỏi on a; marker blocks restore", false, false, true});
 
         // nđm: ddFreeStyle protected (no vowel, has đ)
         runTest({cat, "nddm → nđm (ddFreeStyle: no vowel, has đ)",
                  skey::InputMethod::Telex, "nddm", "nđm",
                  "ddFreeStyle protects: no vowel + has đ → keep"});
 
-        // Lotus-style: intermediate transforms restored when invalid.
+        // Intermediate transforms restored when invalid.
         runTest({cat, "ook → ook (real-time restore)",
                  skey::InputMethod::Telex, "ook", "ook",
-                 "ook→ôk invalid → real-time restore (lotus-compatible)"});
+                 "ook→ôk invalid → real-time restore", false, false, true});
         runTest({cat, "vaai → vaai (real-time restore)",
                  skey::InputMethod::Telex, "vaai", "vaai",
-                 "vaai→vâi invalid → real-time restore"});
+                 "vaai→vâi invalid → real-time restore", false, false, true});
         runTest({cat, "aloo → aloo (real-time restore)",
                  skey::InputMethod::Telex, "aloo", "aloo",
-                 "aloo→alô invalid → real-time restore"});
+                 "aloo→alô invalid → real-time restore", false, false, true});
         runTest({cat, "baa → bâ (valid syllable, keep)",
                  skey::InputMethod::Telex, "baa", "bâ",
                  "bâ is valid Vietnamese → is_valid=true → keep"});
@@ -698,15 +746,14 @@ int main(int argc, char **argv) {
                  skey::InputMethod::Telex, "NDd", "NĐ",
                  "mixed Dd after N → Đ"});
 
-        // Uppercase: consecutive D's → no toggle, third D stays literal
-        runTest({cat, "DDD → ĐD (no undo)",
-                 skey::InputMethod::Telex, "DDD", "ĐD",
-                 "third D stays as-is after Đ transform"});
+        // Uppercase: toggle once then one-shot — DDD → DD
+        runTest({cat, "DDD → DD (toggle once)",
+                 skey::InputMethod::Telex, "DDD", "DD",
+                 "dd→đ once, then one-shot: DD stays"});
 
-        // NDDD: N + ĐD → NĐD (no triple-D toggle)
-        runTest({cat, "NDDD → NĐD (no undo)",
-                 skey::InputMethod::Telex, "NDDD", "NĐD",
-                 "third D stays as-is after Đ transform"});
+        runTest({cat, "NDDD → NDD (toggle once)",
+                 skey::InputMethod::Telex, "NDDD", "NDD",
+                 "dd→đ once, then one-shot: DD stays"});
 
         // "đẹp" → typed as dd + e + e + p? No...
         // dd + e + j + p = đẹ? Actually:
@@ -720,17 +767,18 @@ int main(int argc, char **argv) {
                  skey::InputMethod::Telex, "abc123", "abc",
                  "digits are ignored unless VNI mode; 'abc' stays, 123 ignored individually"});
 
-        // "address" — real-time restore works with ddFreeStyle fix.
-        // ddFreeStyle now checks rawInput_ (which has 'a') instead of
-        // composed_ (which had ả, a non-ASCII vowel that was skipped).
-        runTest({cat, "address → address (real-time restore)",
-                 skey::InputMethod::Telex, "address", "address",
-                 "real-time restore after ddFreeStyle fix"});
+        // "address" — dd marker protects the đ during composition; the
+        // trailing double tone keys trigger P5, which strips every tone
+        // key after the first vowel (including hỏi 'r') and commits the
+        // raw base + final 's'.
+        runTest({cat, "address → addes (dd marker + P5 tone strip)",
+                 skey::InputMethod::Telex, "address", "addes",
+                 "dd→đ protected; P5 strips r,s,s after first vowel", false, false, true});
 
-        // New: "reboot" — oo→ô transform, real-time restore works.
+        // "reboot" — oo→ô transform, real-time restore works.
         runTest({cat, "reboot → reboot (real-time restore)",
                  skey::InputMethod::Telex, "reboot", "reboot",
-                 "P6: reboot→rebôt, invalid → real-time restore"});
+                 "reboot→rebôt, invalid → real-time restore", false, false, true});
 
         // New: ddFreeStyle — abbreviations with đ but no vowels stay protected
         runTest({cat, "ddc → đc (ddFreeStyle: no vowel + has đ → keep)",
@@ -739,6 +787,50 @@ int main(int argc, char **argv) {
         runTest({cat, "vcdd → vcđ (ddFreeStyle: no vowel + has đ → keep)",
                  skey::InputMethod::Telex, "vcdd", "vcđ",
                  "ddFreeStyle protection at commit time"});
+
+        std::cout << std::endl;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // TELEX — DICTIONARY (auto-restore checks real words)
+    // ══════════════════════════════════════════════════════════════════════
+    {
+        const char *cat = "Telex / Dictionary";
+        std::cout << CYAN << "── " << cat << " ──" << RESET << std::endl;
+
+        // "lước" is a structurally valid syllable but not a real word —
+        // rule-based auto-restore keeps it, dictionary restores it.
+        runTest({cat, "luwocs → luwocs (non-word restored)",
+                 skey::InputMethod::Telex, "luwocs", "luwocs",
+                 "lước not in dictionary → restore", false, false, true, true});
+
+        // Real words pass the dictionary check.
+        runTest({cat, "truwocs → trước (real word kept)",
+                 skey::InputMethod::Telex, "truwocs", "trước",
+                 "trước is in the dictionary", false, false, true, true});
+        runTest({cat, "khoong → không (real word kept)",
+                 skey::InputMethod::Telex, "khoong", "không",
+                 "không is in the dictionary", false, false, true, true});
+
+        // dd marker still protects abbreviations in dictionary mode.
+        runTest({cat, "ddc → đc (dd marker protected)",
+                 skey::InputMethod::Telex, "ddc", "đc",
+                 "dd signals intentional đ — auto-restore skips", false, false, true, true});
+
+        // Dictionary mode without auto-restore does nothing.
+        runTest({cat, "luwocs → lước (dict without restore)",
+                 skey::InputMethod::Telex, "luwocs", "lước",
+                 "dict only refines auto-restore", false, false, false, true});
+
+        // w replaces circumflex with hook: luộc + w → lược
+        runTest({cat, "luoojcw → lược (w on uô)",
+                 skey::InputMethod::Telex, "luoojcw", "lược",
+                 "w converts ô→ơ (uô→ươ), matches unikey", false, false, true, true});
+
+        // Tone-marked intermediate stays visible in real time.
+        runTest({cat, "luowj → lượ (tone intermediate kept)",
+                 skey::InputMethod::Telex, "luowj", "lượ",
+                 "lượ base is a strict prefix of lược's base", false, false, true, true});
 
         std::cout << std::endl;
     }
@@ -1196,11 +1288,11 @@ int main(int argc, char **argv) {
                        {"nguwowif", "Vieetj", "Nam"},
                        {"người", "Việt", "Nam"}});
 
-        // Rapid undo scenarios — ooo toggle, ddd/aaa keep literal.
+        // Rapid toggle scenarios — toggle once, then one-shot.
         runRapidWords({"undo patterns rapid",
                        skey::InputMethod::Telex,
                        {"ooo", "ddd", "aaa"},
-                       {"oo", "đd", "aaa"}});
+                       {"oo", "dd", "aa"}});
 
         std::cout << std::endl;
     }

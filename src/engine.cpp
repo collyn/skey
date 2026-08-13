@@ -139,6 +139,7 @@ struct UinputTiming {
   uint64_t addrBarCommitDelayMaxUsec;
   double chromiumDelayFactor;   // extra multiplier for Chromium/Electron apps
   uint64_t safetyTimeoutUsec;   // force-commit if BS events don't arrive
+  uint64_t safetyRetryUsec;     // extended window when BS are just slow
   uint64_t passthroughBaseUsec; // base window for Ctrl+Shift+U passthrough
   uint64_t passthroughMinUsec;  // min Ctrl+Shift+U passthrough window
   uint64_t perCharUsec;         // per-char overhead for Ctrl+Shift+U typing
@@ -159,6 +160,7 @@ static constexpr UinputTiming kUinputTimingX11 = {
     50000,  // addrBarCommitDelayMaxUsec — 50ms (unchanged)
     2.0,    // chromiumDelayFactor — 2× → 6ms–60ms for Electron/Chromium
     150000, // safetyTimeoutUsec (150ms)
+    600000, // safetyRetryUsec (600ms) — one extension for slow loopbacks
     20000,  // passthroughBaseUsec
     35000,  // passthroughMinUsec
     10000,  // perCharUsec
@@ -177,6 +179,7 @@ static constexpr UinputTiming kUinputTimingWayland = {
     12000, // addrBarCommitDelayMaxUsec
     1.5,   // chromiumDelayFactor — Electron multi-process needs 1.5×
     80000, // safetyTimeoutUsec (80ms)
+    600000, // safetyRetryUsec (600ms) — one extension for slow loopbacks
     500,   // passthroughBaseUsec
     500,   // passthroughMinUsec
     1500,  // perCharUsec
@@ -968,6 +971,7 @@ SKeyState::SKeyState(SKeyEngine *engine, InputContext *ic)
   viet_.setMethod(im);
   viet_.setFreeMarking(*cfg.freeMarking);
   viet_.setAutoRestore(*cfg.autoRestore);
+  viet_.setDict(*cfg.dict);
 }
 
 void SKeyState::commitText(const std::string &utf8) {
@@ -1314,6 +1318,7 @@ void SKeyState::activate() {
   viet_.setMethod(im);
   viet_.setFreeMarking(*cfg.freeMarking);
   viet_.setAutoRestore(*cfg.autoRestore);
+  viet_.setDict(*cfg.dict);
 
   // Reactivate after spurious cycle: cancel the genuine-loss timer.
   if (addrBarExpectCycle_) {
@@ -1529,6 +1534,9 @@ void SKeyState::sendBackspaceUinput(int count, const std::string &text,
       send(uinputClientFd_, msg.data(), msg.size(), MSG_NOSIGNAL);
     }
   }
+  // Track injected BS that will loop back through fcitx5 — used to
+  // swallow late loopbacks instead of mistaking them for user backspaces.
+  uinputBsOutstanding_ += count;
   SKEY_DEBUG() << "Uinput: sent BS=" << count
                << (textLen > 0 ? " +text='" + text + "'" : "");
   // When text is included, the server types it via Ctrl+Shift+U hex.
@@ -1589,6 +1597,8 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   // The (N+1)-th BS is the sync anchor — it's consumed here.
   if (seenUinputBackspaces_ < expectedUinputBackspaces_) {
     ++seenUinputBackspaces_;
+    if (uinputBsOutstanding_ > 0)
+      --uinputBsOutstanding_;
     if (committedLen_ > 0) {
       committedLen_--;
     }
@@ -1607,6 +1617,9 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   // Address bar uses its own conservative timing constants.
   keyEvent.filterAndAccept();
   uinputSafetyTimer_.reset();
+  uinputSafetyRetried_ = false;
+  if (uinputBsOutstanding_ > 0)
+    --uinputBsOutstanding_;
 
   expectedUinputBackspaces_ = 0;
   seenUinputBackspaces_ = 0;
@@ -1904,6 +1917,10 @@ void SKeyState::reset() {
   uinputCommitTimer_.reset();
   uinputSafetyTimer_.reset();
   uinputDeleting_ = false;
+  // Any injected BS sent to the previous focus can no longer be
+  // distinguished from real keypresses — drop the outstanding count.
+  uinputBsOutstanding_ = 0;
+  uinputSafetyRetried_ = false;
   if (!hasDeferredCommitPending()) {
     committedLen_ = 0;
   }
@@ -1972,6 +1989,19 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   }
 
   if (handlePendingUinputBackspace(keyEvent)) {
+    return;
+  }
+
+  // Late uinput BS loopbacks — BS we injected that arrive after the
+  // deletion window closed (slow apps).  Swallow them: treating them as
+  // fresh user backspaces would pop composition chars and forward stray
+  // deletions to the app.
+  if (uinputBsOutstanding_ > 0 &&
+      keyEvent.key().check(FcitxKey_BackSpace)) {
+    --uinputBsOutstanding_;
+    SKEY_DEBUG() << "Uinput: swallow late BS (" << uinputBsOutstanding_
+                 << " outstanding)";
+    keyEvent.filterAndAccept();
     return;
   }
 
@@ -2221,18 +2251,86 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     }
     if (useSurroundingText()) {
       if (useUinputMode()) {
-        // Uinput: let raw BS pass through to the app so Wayland
-        // key-repeat continues working.  Just sync local tracking.
+        // A replacement in flight cannot tell user BS apart from
+        // injected-BS loopbacks — cancel the pending commit (the screen
+        // keeps whatever deletions already arrived) and handle this BS
+        // as a normal keystroke undo.
+        if (uinputDeleting_) {
+          SKEY_DEBUG() << "SurrBS: user BS during uinput replace — cancel";
+          uinputSafetyTimer_.reset();
+          uinputSafetyRetried_ = false;
+          pendingUinputCommit_.clear();
+          expectedUinputBackspaces_ = 0;
+          seenUinputBackspaces_ = 0;
+          uinputDeleting_ = false;
+          // uinputBsOutstanding_ stays — late loopbacks get swallowed.
+        }
+        std::string oldComposed = viet_.getComposed();
+        SKEY_DEBUG() << "SurrBS: uinput compose '" << oldComposed << "'";
         if (committedLen_ > 0) {
-          SKEY_DEBUG() << "SurrBS: uinput pass-through, len=" << committedLen_
-                       << " -> " << (committedLen_ - 1);
           committedLen_--;
           wordWasBackspaced_ = true; // user is deleting the word
         }
-        viet_.reset();
+        // The raw BS passes through and the app deletes the last rendered
+        // char.  Keep the engine composing — but when the recomposed text
+        // differs from what the app will show (merged pairs: "đ" BS,
+        // "ươ" BS), follow the app: feed the visible remainder as raw
+        // input.  The engine round-trips precomposed Vietnamese, so no
+        // injected-BS replacement is needed.
+        viet_.backspace();
+        std::string appText = oldComposed;
+        if (!appText.empty()) {
+          size_t last = appText.size() - 1;
+          while (last > 0 && isUtf8ContinuationByte(appText[last])) --last;
+          appText.resize(last);
+        }
+        if (viet_.getComposed() != appText) {
+          SKEY_DEBUG() << "SurrBS: uinput follow app, raw='" << appText << "'";
+          viet_.setRawInput(appText);
+        }
+        committedLen_ = viet_.getRawInput().empty()
+                            ? 0
+                            : static_cast<int>(utf8::length(viet_.getComposed()));
+        SKEY_DEBUG() << "SurrBS: uinput compose -> '" << viet_.getComposed()
+                     << "' len=" << committedLen_;
         return; // pass through raw BS (do NOT filter)
       }
-      surroundingBackspace();
+      // Keep composing: pop the last raw char instead of resetting the
+      // engine, so editing mid-word works (e.g. "hangh" BS → "hang",
+      // then "f" → "hàng").  The app deletes the last rendered char;
+      // when the recomposed text differs (merged pairs), follow the app
+      // by feeding the visible remainder as raw input.
+      std::string oldComposed = viet_.getComposed();
+      SKEY_DEBUG() << "SurrBS compose: '" << oldComposed << "'";
+      viet_.backspace();
+      std::string appText = oldComposed;
+      if (!appText.empty()) {
+        size_t last = appText.size() - 1;
+        while (last > 0 && isUtf8ContinuationByte(appText[last])) --last;
+        appText.resize(last);
+      }
+      if (viet_.getComposed() != appText) {
+        SKEY_DEBUG() << "SurrBS: follow app, raw='" << appText << "'";
+        viet_.setRawInput(appText);
+      }
+      committedLen_ = viet_.getRawInput().empty()
+                          ? 0
+                          : static_cast<int>(utf8::length(viet_.getComposed()));
+      SKEY_DEBUG() << "SurrBS compose -> '" << viet_.getComposed()
+                   << "' len=" << committedLen_;
+      if (useNativeSurroundingApi()) {
+        const auto &surrounding = ic_->surroundingText();
+        if (surrounding.isValid()) {
+          ic_->deleteSurroundingText(-1, 1);
+          if (ic_->surroundingText().isValid()) {
+            ic_->surroundingText().deleteText(-1, 1);
+          }
+        } else {
+          ic_->forwardKey(Key(FcitxKey_BackSpace));
+        }
+      } else {
+        ic_->forwardKey(Key(FcitxKey_BackSpace));
+      }
     } else {
       viet_.backspace();
       if (viet_.getRawInput().empty()) {
@@ -2929,28 +3027,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                   static_cast<int>(utf8::length(newComposed));
               uinputDeleting_ = true;
               // Safety: force-commit if BS events are lost
-              uinputSafetyTimer_ =
-                  engine_->instance()->eventLoop().addTimeEvent(
-                      CLOCK_MONOTONIC,
-                      now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec,
-                      0, [this](EventSourceTime *, uint64_t) {
-                        SKEY_DEBUG() << "Uinput: safety timeout, force commit";
-                        uinputSafetyTimer_.reset();
-                        std::string text = std::move(pendingUinputCommit_);
-                        pendingUinputCommit_.clear();
-                        expectedUinputBackspaces_ = 0;
-                        seenUinputBackspaces_ = 0;
-                        uinputDeleting_ = false;
-                        if (!text.empty())
-                          this->commitText(text);
-                        if (uinputPendingFinalLen_ > 0) {
-                          committedLen_ = uinputPendingFinalLen_;
-                          uinputPendingFinalLen_ = 0;
-                        }
-                        if (!bufferedUinputKeys_.empty())
-                          replayBufferedUinputKeys();
-                        return true;
-                      });
+              armUinputSafetyTimer();
             } else if (!addPart.empty()) {
               SKEY_DEBUG() << "Uinput: consume '" << keyUtf8 << "' commit '"
                            << addPart << "'";
@@ -3596,6 +3673,44 @@ void SKeyState::surroundingBackspace() {
   // Reset engine so next keystroke starts fresh composition.
   // The old committed chars (before cursor) stay in the app untouched.
   viet_.reset();
+}
+
+void SKeyState::armUinputSafetyTimer() {
+  auto &timing = uinputTiming();
+  uint64_t budget =
+      uinputSafetyRetried_ ? timing.safetyRetryUsec : timing.safetyTimeoutUsec;
+  uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+      CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + budget, 0,
+      [this](EventSourceTime *, uint64_t) {
+        // If our sent BS are still outstanding, they may just be slow
+        // (loopback latency > safety window).  Extend the window once —
+        // force-committing now would corrupt the screen when the late
+        // BS deletions arrive afterwards.
+        if (uinputBsOutstanding_ > 0 && !uinputSafetyRetried_) {
+          uinputSafetyRetried_ = true;
+          SKEY_DEBUG() << "Uinput: BS loopbacks slow — extend safety window";
+          armUinputSafetyTimer();
+          return true;
+        }
+        SKEY_DEBUG() << "Uinput: safety timeout, force commit";
+        uinputSafetyRetried_ = false;
+        uinputSafetyTimer_.reset();
+        std::string text = std::move(pendingUinputCommit_);
+        pendingUinputCommit_.clear();
+        expectedUinputBackspaces_ = 0;
+        seenUinputBackspaces_ = 0;
+        uinputBsOutstanding_ = 0;
+        uinputDeleting_ = false;
+        if (!text.empty())
+          this->commitText(text);
+        if (uinputPendingFinalLen_ > 0) {
+          committedLen_ = uinputPendingFinalLen_;
+          uinputPendingFinalLen_ = 0;
+        }
+        if (!bufferedUinputKeys_.empty())
+          replayBufferedUinputKeys();
+        return true;
+      });
 }
 
 void SKeyState::saveLastWord() {

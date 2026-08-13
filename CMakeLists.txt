@@ -30,7 +30,7 @@ fcitx5_add_i18n_definition()
 #             tree stays clean.  skey_engine.h is also taken from the source.
 #   CI:     no SKEY_ENGINE_SOURCE_DIR
 #           → clones the pinned tag from GitHub (used by GitHub Actions).
-set(SKEY_ENGINE_VERSION "v0.1.17")
+set(SKEY_ENGINE_VERSION "v0.1.18")
 set(SKEY_ENGINE_DIR "${CMAKE_CURRENT_BINARY_DIR}/skey-engine")
 
 if(DEFINED SKEY_ENGINE_SOURCE_DIR)
@@ -42,16 +42,26 @@ if(DEFINED SKEY_ENGINE_SOURCE_DIR)
     set(SKEY_ENGINE_DIR "${SKEY_ENGINE_SOURCE_DIR}")
     set(SKEY_ENGINE_LIB
         "${CMAKE_CURRENT_BINARY_DIR}/skey-engine-target/release/libskey_engine.a")
-    # Always run cargo (no-op ≈0.02s when unchanged).  This avoids the stale
-    # DEPENDS file-list problem when new source files are added to the engine.
-    add_custom_target(skey_engine_build ALL
+    # Glob engine sources with CONFIGURE_DEPENDS: new files re-trigger cmake
+    # automatically (no stale DEPENDS list), and cargo only runs when
+    # something actually changed — so `sudo make install` (root, no cargo
+    # in PATH) never needs to invoke cargo for an up-to-date build.
+    file(GLOB_RECURSE SKEY_ENGINE_SOURCES CONFIGURE_DEPENDS
+        "${SKEY_ENGINE_DIR}/src/*.rs"
+        "${SKEY_ENGINE_DIR}/data/*"
+        "${SKEY_ENGINE_DIR}/Cargo.toml"
+    )
+    add_custom_command(
+        OUTPUT ${SKEY_ENGINE_LIB}
         COMMAND cargo build --release
             --manifest-path "${SKEY_ENGINE_DIR}/Cargo.toml"
             --target-dir "${CMAKE_CURRENT_BINARY_DIR}/skey-engine-target"
         WORKING_DIRECTORY ${SKEY_ENGINE_DIR}
         COMMENT "Building skey-engine from ${SKEY_ENGINE_DIR} (dev mode)"
+        DEPENDS ${SKEY_ENGINE_SOURCES}
         VERBATIM
     )
+    add_custom_target(skey_engine_build DEPENDS ${SKEY_ENGINE_LIB})
 else()
     set(SKEY_ENGINE_LIB "${SKEY_ENGINE_DIR}/target/release/libskey_engine.a")
     if(NOT EXISTS "${SKEY_ENGINE_DIR}/Cargo.toml")

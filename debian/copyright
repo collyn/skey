@@ -11,6 +11,15 @@ Files: skey-engine/*
 Copyright: 2026 Nguyen Tien Huy <collyn094@gmail.com>
 License: GPL-3
 
+Files: skey-engine/data/*
+Copyright: 2018-2020 ibus-bamboo contributors
+License: GPL-3
+Comment: Vietnamese word list embedded into the engine at build time.
+ Sources: Free Vietnamese Dictionary Project (Ho Ngoc Duc, GPL),
+ vi.wiktionary (CC-BY-SA), Vietnamese abbreviation list by Ngo Quoc Hung
+ (with author permission). Dataset relicensed as GPLv3 by ibus-bamboo.
+ See data/LICENSE.vietnamese.cm.dict.
+
 License: GPL-3
  This program is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by

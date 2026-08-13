@@ -69,6 +69,11 @@ private:
     void surroundingCommit(const std::string &oldComposed,
                            const std::string &newComposed);
     void surroundingBackspace();
+    /// Arm the uinput safety timer.  If BS loopbacks are still outstanding
+    /// when it fires, the window is extended once (slow apps) instead of
+    /// force-committing early — an early commit plus late BS deletions
+    /// corrupts the text on screen.
+    void armUinputSafetyTimer();
     void reclaimLastWord();
     bool hasDeferredCommitPending() const;
     void scheduleDeferredCommit(const std::string &text,
@@ -127,6 +132,12 @@ private:
     int expectedUinputBackspaces_ = 0;
     int seenUinputBackspaces_ = 0;
     int uinputPendingFinalLen_ = 0; // expected committedLen_ after BS+commit
+    // BS we injected via uinput but have not yet seen loop back through
+    // fcitx5.  Late loopbacks (beyond the safety window) are swallowed
+    // instead of being mistaken for fresh user backspaces.
+    int uinputBsOutstanding_ = 0;
+    // Safety window already extended once — a second timeout force-commits.
+    bool uinputSafetyRetried_ = false;
     // Address bar deferred replacement state
     int addrBarPendingBs_ = 0;
     std::string addrBarPendingText_;

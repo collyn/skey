@@ -99,6 +99,13 @@ void GeneralTab::setupUI() {
       new QCheckBox(QString::fromUtf8("Tự động khôi phục"), checkFrame);
   checkLayout->addWidget(autoRestoreCheck_, 1, 1);
 
+  dictCheck_ = new QCheckBox(QString::fromUtf8("Dùng từ điển"), checkFrame);
+  dictCheck_->setToolTip(QString::fromUtf8(
+      "Tự động khôi phục kiểm tra từ thật trong từ điển tiếng Việt "
+      "thay vì luật âm tiết (khôi phục cả những âm tiết hợp lệ nhưng "
+      "không phải từ, ví dụ \"lước\")."));
+  checkLayout->addWidget(dictCheck_, 3, 0);
+
   showPreeditCheck_ =
       new QCheckBox(QString::fromUtf8("Hiện preedit"), checkFrame);
   checkLayout->addWidget(showPreeditCheck_, 2, 0);
@@ -138,6 +145,7 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
   bracketUOCheck_->setChecked(cfg.bracketUO);
   freeMarkingCheck_->setChecked(cfg.freeMarking);
   autoRestoreCheck_->setChecked(cfg.autoRestore);
+  dictCheck_->setChecked(cfg.dict);
   showPreeditCheck_->setChecked(cfg.showPreedit);
 
   debugCheck_->setChecked(cfg.debug);
@@ -152,6 +160,7 @@ SKeyConfig GeneralTab::collectConfig() const {
   cfg.bracketUO = bracketUOCheck_->isChecked();
   cfg.freeMarking = freeMarkingCheck_->isChecked();
   cfg.autoRestore = autoRestoreCheck_->isChecked();
+  cfg.dict = dictCheck_->isChecked();
   cfg.showPreedit = showPreeditCheck_->isChecked();
   cfg.debug = debugCheck_->isChecked();
   cfg.modeMenuKey = modeMenuKeyEdit_->fcitx5Value();

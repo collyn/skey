@@ -32,6 +32,7 @@ VietnameseEngine::VietnameseEngine(VietnameseEngine &&other) noexcept
       toneStyle_(other.toneStyle_),
       freeMarking_(other.freeMarking_),
       autoRestore_(other.autoRestore_),
+      dict_(other.dict_),
       shortW_(other.shortW_),
       bracketUO_(other.bracketUO_),
       rawInput_(std::move(other.rawInput_)),
@@ -52,6 +53,7 @@ VietnameseEngine &VietnameseEngine::operator=(VietnameseEngine &&other) noexcept
         toneStyle_ = other.toneStyle_;
         freeMarking_ = other.freeMarking_;
         autoRestore_ = other.autoRestore_;
+        dict_ = other.dict_;
         shortW_ = other.shortW_;
         bracketUO_ = other.bracketUO_;
         rawInput_ = std::move(other.rawInput_);
@@ -87,6 +89,11 @@ void VietnameseEngine::setFreeMarking(bool free) {
 void VietnameseEngine::setAutoRestore(bool restore) {
     autoRestore_ = restore;
     skey_engine_set_auto_restore(handle_, restore ? 1 : 0);
+}
+
+void VietnameseEngine::setDict(bool enabled) {
+    dict_ = enabled;
+    skey_engine_set_dict(handle_, enabled ? 1 : 0);
 }
 
 void VietnameseEngine::setShortW(bool enabled) {
@@ -140,7 +147,24 @@ ProcessResult VietnameseEngine::processKey(char ch) {
 void VietnameseEngine::backspace() {
     if (rawInput_.empty()) return;
 
-    rawInput_.pop_back();
+    // Pop one full UTF-8 character — raw input can hold precomposed
+    // Vietnamese text (see setRawInput), so a byte-wise pop would
+    // split a multi-byte character.
+    size_t last = rawInput_.size() - 1;
+    while (last > 0 &&
+           (static_cast<unsigned char>(rawInput_[last]) & 0xC0) == 0x80) {
+        --last;
+    }
+    rawInput_.resize(last);
+    if (rawInput_.empty()) {
+        composed_.clear();
+    } else {
+        recompose();
+    }
+}
+
+void VietnameseEngine::setRawInput(const std::string &raw) {
+    rawInput_ = raw;
     if (rawInput_.empty()) {
         composed_.clear();
     } else {

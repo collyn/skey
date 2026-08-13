@@ -92,6 +92,7 @@ SKeyConfig readSkeyConfig() {
         else if (key == "BracketUO")    cfg.bracketUO     = parseBool(val);
         else if (key == "FreeMarking")  cfg.freeMarking   = parseBool(val);
         else if (key == "AutoRestore")  cfg.autoRestore   = parseBool(val);
+        else if (key == "Dict")         cfg.dict          = parseBool(val);
         else if (key == "ShowPreedit")  cfg.showPreedit   = parseBool(val);
         else if (key == "ChromiumAddressBarMode") cfg.chromiumAddressBarMode = val;
         else if (key == "Debug")        cfg.debug         = parseBool(val);
@@ -129,6 +130,8 @@ bool writeSkeyConfig(const SKeyConfig &cfg) {
     out << "FreeMarking="   << boolStr(cfg.freeMarking)     << "\n";
     out << "# Auto restore non-Vietnamese" << "\n";
     out << "AutoRestore="   << boolStr(cfg.autoRestore)     << "\n";
+    out << "# Dictionary mode (restore checks real words)" << "\n";
+    out << "Dict="          << boolStr(cfg.dict)            << "\n";
     out << "# Show preedit"                << "\n";
     out << "ShowPreedit="   << boolStr(cfg.showPreedit)     << "\n";
     out << "# Chromium address bar mode (Uinput / Surrounding Text / Preedit / No Vietnamese)" << "\n";

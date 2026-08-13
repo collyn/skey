@@ -24,6 +24,7 @@ struct SKeyConfig {
     bool bracketUO    = false;   // Telex: '[' → 'ơ', ']' → 'ư'
     bool freeMarking  = false;
     bool autoRestore  = true;
+    bool dict         = false;  // auto-restore checks the word list, not rules
     bool showPreedit  = true;
     std::string chromiumAddressBarMode = "Auto";  // "Auto", "Uinput", "Surrounding Text", "Preedit", "No Vietnamese"
     bool debug        = false;
