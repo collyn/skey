@@ -23,50 +23,65 @@ add_definitions(-DFCITX_GETTEXT_DOMAIN=\"fcitx5-skey\" -D_GNU_SOURCE)
 fcitx5_add_i18n_definition()
 
 # ── Build skey-engine Rust static library ────────────────────────────────
-set(SKEY_ENGINE_VERSION "v0.1.16")
+# Two modes:
+#   Dev:    cmake .. -DSKEY_ENGINE_SOURCE_DIR=/path/to/skey-engine
+#           → builds directly from that source tree (no copy, always fresh).
+#             Cargo artifacts go to <build>/skey-engine-target so the source
+#             tree stays clean.  skey_engine.h is also taken from the source.
+#   CI:     no SKEY_ENGINE_SOURCE_DIR
+#           → clones the pinned tag from GitHub (used by GitHub Actions).
+set(SKEY_ENGINE_VERSION "v0.1.17")
 set(SKEY_ENGINE_DIR "${CMAKE_CURRENT_BINARY_DIR}/skey-engine")
-set(SKEY_ENGINE_LIB "${SKEY_ENGINE_DIR}/target/release/libskey_engine.a")
 
-# Populate skey-engine source into build dir.
-# - PPA / offline: pass -DSKEY_ENGINE_SOURCE_DIR=/path/to/skey-engine
-# - Normal builds: auto-clone from GitHub (requires internet)
 if(DEFINED SKEY_ENGINE_SOURCE_DIR)
     if(NOT EXISTS "${SKEY_ENGINE_SOURCE_DIR}/Cargo.toml")
         message(FATAL_ERROR "SKEY_ENGINE_SOURCE_DIR=${SKEY_ENGINE_SOURCE_DIR} "
                             "but Cargo.toml not found there")
     endif()
-    message(STATUS "Using skey-engine from ${SKEY_ENGINE_SOURCE_DIR} (offline mode)")
-    execute_process(
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${SKEY_ENGINE_SOURCE_DIR}" "${SKEY_ENGINE_DIR}"
+    message(STATUS "Using skey-engine from ${SKEY_ENGINE_SOURCE_DIR} (dev mode)")
+    set(SKEY_ENGINE_DIR "${SKEY_ENGINE_SOURCE_DIR}")
+    set(SKEY_ENGINE_LIB
+        "${CMAKE_CURRENT_BINARY_DIR}/skey-engine-target/release/libskey_engine.a")
+    # Always run cargo (no-op ≈0.02s when unchanged).  This avoids the stale
+    # DEPENDS file-list problem when new source files are added to the engine.
+    add_custom_target(skey_engine_build ALL
+        COMMAND cargo build --release
+            --manifest-path "${SKEY_ENGINE_DIR}/Cargo.toml"
+            --target-dir "${CMAKE_CURRENT_BINARY_DIR}/skey-engine-target"
+        WORKING_DIRECTORY ${SKEY_ENGINE_DIR}
+        COMMENT "Building skey-engine from ${SKEY_ENGINE_DIR} (dev mode)"
+        VERBATIM
     )
-elseif(NOT EXISTS "${SKEY_ENGINE_DIR}/Cargo.toml")
-    find_package(Git REQUIRED)
-    execute_process(
-        COMMAND ${GIT_EXECUTABLE} clone --branch ${SKEY_ENGINE_VERSION} --depth 1
-            https://github.com/collyn/skey-engine.git ${SKEY_ENGINE_DIR}
-        RESULT_VARIABLE CLONE_RESULT
-    )
-    if(NOT CLONE_RESULT EQUAL 0)
-        message(FATAL_ERROR "Failed to clone skey-engine ${SKEY_ENGINE_VERSION}")
+else()
+    set(SKEY_ENGINE_LIB "${SKEY_ENGINE_DIR}/target/release/libskey_engine.a")
+    if(NOT EXISTS "${SKEY_ENGINE_DIR}/Cargo.toml")
+        find_package(Git REQUIRED)
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} clone --branch ${SKEY_ENGINE_VERSION} --depth 1
+                https://github.com/collyn/skey-engine.git ${SKEY_ENGINE_DIR}
+            RESULT_VARIABLE CLONE_RESULT
+        )
+        if(NOT CLONE_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to clone skey-engine ${SKEY_ENGINE_VERSION}")
+        endif()
     endif()
+
+    add_custom_command(
+        OUTPUT ${SKEY_ENGINE_LIB}
+        COMMAND cargo build --release
+        WORKING_DIRECTORY ${SKEY_ENGINE_DIR}
+        COMMENT "Building skey-engine ${SKEY_ENGINE_VERSION}"
+        DEPENDS
+            ${SKEY_ENGINE_DIR}/Cargo.toml
+            ${SKEY_ENGINE_DIR}/src/lib.rs
+            ${SKEY_ENGINE_DIR}/src/engine.rs
+            ${SKEY_ENGINE_DIR}/src/tables.rs
+            ${SKEY_ENGINE_DIR}/src/spelling.rs
+            ${SKEY_ENGINE_DIR}/src/charset.rs
+            ${SKEY_ENGINE_DIR}/src/vseq.rs
+    )
+    add_custom_target(skey_engine_build DEPENDS ${SKEY_ENGINE_LIB})
 endif()
-
-add_custom_command(
-    OUTPUT ${SKEY_ENGINE_LIB}
-    COMMAND cargo build --release
-    WORKING_DIRECTORY ${SKEY_ENGINE_DIR}
-    COMMENT "Building skey-engine ${SKEY_ENGINE_VERSION}"
-    DEPENDS
-        ${SKEY_ENGINE_DIR}/Cargo.toml
-        ${SKEY_ENGINE_DIR}/src/lib.rs
-        ${SKEY_ENGINE_DIR}/src/engine.rs
-        ${SKEY_ENGINE_DIR}/src/tables.rs
-        ${SKEY_ENGINE_DIR}/src/spelling.rs
-        ${SKEY_ENGINE_DIR}/src/charset.rs
-)
-
-add_custom_target(skey_engine_build DEPENDS ${SKEY_ENGINE_LIB})
 
 # Create an imported static library target for skey-engine
 add_library(skey_engine STATIC IMPORTED)

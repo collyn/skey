@@ -584,7 +584,7 @@ Log bao gồm: trạng thái activation/deactivation, phím nhấn (old/new comp
 
 ## License
 
-Phát hành theo giấy phép [MIT](LICENSE).
+Phát hành theo giấy phép [GPL-3.0](LICENSE).
 
 ---
 
