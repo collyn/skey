@@ -20,6 +20,9 @@ static std::string joinPath(const std::string &dir, const std::string &name) {
 const char *presetIconBaseName(const std::string &theme) {
     if (theme == kIconThemeVBlue) return "fcitx-skey-v-blue";
     if (theme == kIconThemeVDark) return "fcitx-skey-v-dark";
+    if (theme == kIconThemeVLight) return "fcitx-skey-v-light";
+    if (theme == kIconThemeVRed) return "fcitx-skey-v-red";
+    if (theme == kIconThemeVnFlag) return "fcitx-skey-vn-flag";
     // default and unknown themes map to the original icon
     return "fcitx-skey";
 }

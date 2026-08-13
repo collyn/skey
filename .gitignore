@@ -64,9 +64,6 @@ out/
 .cache/
 .claude/
 
-# Rust/Cargo
-bamboo/target/
-
 # OS-specific files
 .DS_Store
 Thumbs.db
@@ -86,7 +83,8 @@ __pycache__/
 .pytest_cache/
 
 Testing/
-bamboo/Testing/
 
 # GitNexus
 .gitnexus/
+AGENTS.md
+CLAUDE.md

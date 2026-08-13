@@ -10,12 +10,18 @@ namespace skey {
 inline constexpr const char *kIconThemeDefault = "default";
 inline constexpr const char *kIconThemeVBlue   = "v-blue";
 inline constexpr const char *kIconThemeVDark   = "v-dark";
+inline constexpr const char *kIconThemeVLight  = "v-light";
+inline constexpr const char *kIconThemeVRed    = "v-red";
+inline constexpr const char *kIconThemeVnFlag  = "vn-flag";
 
 // Returns true if the theme is one of the built-in presets.
 inline bool isPresetTheme(const std::string &theme) {
     return theme == kIconThemeDefault ||
            theme == kIconThemeVBlue ||
-           theme == kIconThemeVDark;
+           theme == kIconThemeVDark ||
+           theme == kIconThemeVLight ||
+           theme == kIconThemeVRed ||
+           theme == kIconThemeVnFlag;
 }
 
 // Returns the base file name (no extension) of the system-installed preset

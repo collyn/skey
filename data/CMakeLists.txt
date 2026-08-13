@@ -53,8 +53,8 @@ install(FILES icons/fcitx-skey.svg
     DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/breeze-dark/apps/48"
     RENAME "fcitx-skey.svg")
 
-# ── Preset icons (v-blue, v-dark) — SVG installs (always, no rsvg-convert needed) ──
-foreach(PRESET fcitx-skey-v-blue fcitx-skey-v-dark)
+# ── Preset icons (v-blue, v-dark, v-light, v-red, vn-flag) — SVG installs (always, no rsvg-convert needed) ──
+foreach(PRESET fcitx-skey-v-blue fcitx-skey-v-dark fcitx-skey-v-light fcitx-skey-v-red fcitx-skey-vn-flag)
     # apps/ — app launcher and IM list popup
     install(FILES icons/${PRESET}.svg
         DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps")
@@ -109,7 +109,7 @@ if(RSVG_CONVERT)
     endforeach()
 
     # ── Preset icon PNG generation (rsvg-convert required) ──
-    foreach(PRESET fcitx-skey-v-blue fcitx-skey-v-dark)
+    foreach(PRESET fcitx-skey-v-blue fcitx-skey-v-dark fcitx-skey-v-light fcitx-skey-v-red fcitx-skey-vn-flag)
         set(PRESET_SVG "${CMAKE_CURRENT_SOURCE_DIR}/icons/${PRESET}.svg")
         # 128px pixmaps PNG (last-resort fallback for all DEs)
         set(PRESET_PIXMAPS_PNG "${CMAKE_CURRENT_BINARY_DIR}/pixmaps/${PRESET}.png")

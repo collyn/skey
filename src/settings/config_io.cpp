@@ -143,7 +143,7 @@ bool writeSkeyConfig(const SKeyConfig &cfg) {
     out << "CapitalizeMacro=" << boolStr(cfg.capitalizeMacro) << "\n";
     out << "MacroInOffMode=" << boolStr(cfg.macroInOffMode)  << "\n";
     out << "ModeMenuKey="   << maybeQuote(cfg.modeMenuKey)   << "\n";
-    out << "# Icon theme (default / v-blue / v-dark / custom)" << "\n";
+    out << "# Icon theme (default / v-blue / v-dark / v-light / v-red / vn-flag / custom)" << "\n";
     out << "IconTheme="      << maybeQuote(cfg.iconTheme)      << "\n";
     out << "# Custom icon path (only when IconTheme=custom)"    << "\n";
     out << "CustomIconPath=" << maybeQuote(cfg.customIconPath)  << "\n";

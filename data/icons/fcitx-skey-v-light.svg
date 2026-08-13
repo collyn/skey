@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
-  <!-- White "V" on transparent background — suitable for dark themes -->
+  <!-- Black "V" on transparent background — suitable for light themes -->
   <text x="24" y="39" font-family="sans-serif" font-size="42" font-weight="bold"
-        text-anchor="middle" fill="white">V</text>
+        text-anchor="middle" fill="black">V</text>
 </svg>

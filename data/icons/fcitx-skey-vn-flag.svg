@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <!-- Vietnam flag: yellow star on red -->
+  <rect x="2" y="2" width="44" height="44" rx="8" ry="8" fill="#DA251D"/>
+  <path d="M 24 8.5 L 27.6 19.6 L 39.2 19.6 L 29.8 26.4 L 33.4 37.4
+           L 24 30.6 L 14.6 37.4 L 18.2 26.4 L 8.8 19.6 L 20.4 19.6 Z"
+        fill="#FFFF00"/>
+</svg>

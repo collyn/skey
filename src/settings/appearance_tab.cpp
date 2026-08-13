@@ -249,6 +249,12 @@ void AppearanceTab::rebuildGrid() {
                      QString::fromUtf8("Chữ V trên nền xanh"), true});
     specs.push_back({QString::fromUtf8(skey::kIconThemeVDark),
                      QString::fromUtf8("Chữ V trắng trong suốt\nPhù hợp dark theme"), true});
+    specs.push_back({QString::fromUtf8(skey::kIconThemeVLight),
+                     QString::fromUtf8("Chữ V đen trong suốt\nPhù hợp light theme"), true});
+    specs.push_back({QString::fromUtf8(skey::kIconThemeVRed),
+                     QString::fromUtf8("Chữ V trên nền đỏ"), true});
+    specs.push_back({QString::fromUtf8(skey::kIconThemeVnFlag),
+                     QString::fromUtf8("Ngôi sao vàng trên nền đỏ\nQuốc kỳ Việt Nam"), true});
 
     for (const auto &fn : customIcons_) {
         QString fname = QString::fromStdString(fn);
@@ -259,10 +265,13 @@ void AppearanceTab::rebuildGrid() {
     int cols = 3;
     int row = 0, col = 0;
     for (const auto &s : specs) {
-        // All tiles use dark bg; v-dark gets a slightly different tone
-        QColor bg = (s.themeKey == QString::fromUtf8(skey::kIconThemeVDark))
-                        ? QColor(0x3A, 0x3A, 0x3A)
-                        : QColor(0x2d, 0x2d, 0x2d);
+        // All tiles use dark bg; v-dark gets a slightly different tone,
+        // v-light needs a light bg so the black V is visible
+        QColor bg = QColor(0x2d, 0x2d, 0x2d);
+        if (s.themeKey == QString::fromUtf8(skey::kIconThemeVDark))
+            bg = QColor(0x3A, 0x3A, 0x3A);
+        else if (s.themeKey == QString::fromUtf8(skey::kIconThemeVLight))
+            bg = QColor(0xE8, 0xE8, 0xE8);
         QPushButton *tile = makeTile(themeToPath(s.themeKey.toStdString()),
                                      s.themeKey, s.tooltip, s.isPreset, bg);
         grid_->addWidget(tile, row, col, Qt::AlignCenter);
