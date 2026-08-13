@@ -177,7 +177,7 @@ fi
 %{_datadir}/icons/breeze-dark/status/*/fcitx-skey.svg
 %{_datadir}/icons/breeze-dark/apps/*/fcitx-skey.svg
 %{_datadir}/pixmaps/fcitx-skey.*
-# Preset icons (v-blue, v-dark)
+# Preset icons (v-blue, v-dark, v-light, v-red, vn-flag)
 %{_datadir}/icons/hicolor/scalable/apps/fcitx-skey-v-blue.svg
 %{_datadir}/icons/hicolor/scalable/status/fcitx-skey-v-blue.svg
 %{_datadir}/icons/hicolor/*/apps/fcitx-skey-v-blue.png
@@ -196,6 +196,33 @@ fi
 %{_datadir}/icons/breeze-dark/status/*/fcitx-skey-v-dark.svg
 %{_datadir}/icons/breeze-dark/apps/*/fcitx-skey-v-dark.svg
 %{_datadir}/pixmaps/fcitx-skey-v-dark.*
+%{_datadir}/icons/hicolor/scalable/apps/fcitx-skey-v-light.svg
+%{_datadir}/icons/hicolor/scalable/status/fcitx-skey-v-light.svg
+%{_datadir}/icons/hicolor/*/apps/fcitx-skey-v-light.png
+%{_datadir}/icons/hicolor/*/status/fcitx-skey-v-light.png
+%{_datadir}/icons/breeze/status/*/fcitx-skey-v-light.svg
+%{_datadir}/icons/breeze/apps/*/fcitx-skey-v-light.svg
+%{_datadir}/icons/breeze-dark/status/*/fcitx-skey-v-light.svg
+%{_datadir}/icons/breeze-dark/apps/*/fcitx-skey-v-light.svg
+%{_datadir}/pixmaps/fcitx-skey-v-light.*
+%{_datadir}/icons/hicolor/scalable/apps/fcitx-skey-v-red.svg
+%{_datadir}/icons/hicolor/scalable/status/fcitx-skey-v-red.svg
+%{_datadir}/icons/hicolor/*/apps/fcitx-skey-v-red.png
+%{_datadir}/icons/hicolor/*/status/fcitx-skey-v-red.png
+%{_datadir}/icons/breeze/status/*/fcitx-skey-v-red.svg
+%{_datadir}/icons/breeze/apps/*/fcitx-skey-v-red.svg
+%{_datadir}/icons/breeze-dark/status/*/fcitx-skey-v-red.svg
+%{_datadir}/icons/breeze-dark/apps/*/fcitx-skey-v-red.svg
+%{_datadir}/pixmaps/fcitx-skey-v-red.*
+%{_datadir}/icons/hicolor/scalable/apps/fcitx-skey-vn-flag.svg
+%{_datadir}/icons/hicolor/scalable/status/fcitx-skey-vn-flag.svg
+%{_datadir}/icons/hicolor/*/apps/fcitx-skey-vn-flag.png
+%{_datadir}/icons/hicolor/*/status/fcitx-skey-vn-flag.png
+%{_datadir}/icons/breeze/status/*/fcitx-skey-vn-flag.svg
+%{_datadir}/icons/breeze/apps/*/fcitx-skey-vn-flag.svg
+%{_datadir}/icons/breeze-dark/status/*/fcitx-skey-vn-flag.svg
+%{_datadir}/icons/breeze-dark/apps/*/fcitx-skey-vn-flag.svg
+%{_datadir}/pixmaps/fcitx-skey-vn-flag.*
 %{_datadir}/applications/fcitx5-skey-settings.desktop
 /lib/systemd/system/fcitx5-skey-uinput-server@.service
 %config %{_sysconfdir}/profile.d/fcitx5-skey.sh
