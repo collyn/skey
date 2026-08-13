@@ -31,7 +31,13 @@ static FILE *logFile() {
         if (g_debugFlag && g_debugFlag->load(std::memory_order_relaxed)) {      \
             FILE *f = logFile();                                                \
             if (f) {                                                            \
-                fprintf(f, "[a11y] " fmt "\n", ##__VA_ARGS__);                  \
+                struct timespec ts;                                             \
+                clock_gettime(CLOCK_REALTIME, &ts);                             \
+                struct tm tmv;                                                  \
+                localtime_r(&ts.tv_sec, &tmv);                                  \
+                fprintf(f, "[a11y %02d:%02d:%02d.%03ld] " fmt "\n",             \
+                        tmv.tm_hour, tmv.tm_min, tmv.tm_sec,                    \
+                        ts.tv_nsec / 1000000, ##__VA_ARGS__);                   \
                 fflush(f);                                                      \
             }                                                                   \
         }                                                                       \
@@ -214,6 +220,36 @@ static bool queryParent(DBusConnection *bus, const char *sender,
     return ok;
 }
 
+// Human-readable names for AT-SPI2 roles observed in practice (values from
+// atspi-constants.h ATSPI_ROLE_*).  Used for debug logging only.
+static const char *roleName(int role) {
+    switch (role) {
+    case 11: return "combo_box";
+    case 20: return "filler";
+    case 23: return "frame";
+    case 30: return "layered_pane";
+    case 31: return "list";
+    case 32: return "list_item";
+    case 35: return "menu_item";
+    case 37: return "page_tab";
+    case 39: return "panel";
+    case 40: return "password_text";
+    case 41: return "popup_menu";
+    case 43: return "button";
+    case 55: return "table";
+    case 56: return "table_cell";
+    case 61: return "text";
+    case 73: return "paragraph";
+    case 79: return "entry";
+    case 82: return "document_frame";
+    case 85: return "section";
+    case 94: return "document_text";
+    case 95: return "document_web";
+    case 110: return "description_list";
+    default: return "?";
+    }
+}
+
 static bool hasDocumentWebAncestor(DBusConnection *bus,
                                    const char *sender,
                                    const char *path) {
@@ -240,6 +276,70 @@ static bool hasDocumentWebAncestor(DBusConnection *bus,
         curPath = parentPath;
     }
     return false;
+}
+
+// Query the focused node's state set.  org.a11y.atspi.Accessible.GetState
+// returns an array of two uint32 — low and high halves of the ATSPI_STATE_*
+// bitmask (atspi-constants.h).  Fills the interesting flags and a debug
+// string of the set states.
+static bool queryStates(DBusConnection *bus, const char *sender,
+                        const char *path, bool &editable, bool &multiline,
+                        bool &singleLine, std::string &outNames) {
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *msg = dbus_message_new_method_call(
+        sender, path, "org.a11y.atspi.Accessible", "GetState");
+    if (!msg) return false;
+
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
+        bus, msg, 500, &err);
+    dbus_message_unref(msg);
+
+    if (!reply || dbus_error_is_set(&err)) {
+        if (reply) dbus_message_unref(reply);
+        dbus_error_free(&err);
+        return false;
+    }
+
+    uint64_t states = 0;
+    DBusMessageIter iter, arr;
+    if (dbus_message_iter_init(reply, &iter) &&
+        dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_ARRAY) {
+        dbus_message_iter_recurse(&iter, &arr);
+        int shift = 0;
+        while (dbus_message_iter_get_arg_type(&arr) == DBUS_TYPE_UINT32 &&
+               shift < 64) {
+            dbus_uint32_t v = 0;
+            dbus_message_iter_get_basic(&arr, &v);
+            states |= static_cast<uint64_t>(v) << shift;
+            shift += 32;
+            dbus_message_iter_next(&arr);
+        }
+    }
+    dbus_message_unref(reply);
+    dbus_error_free(&err);
+
+    // ATSPI_STATE_* bit positions (see atspi-constants.h enum order).
+    static constexpr struct { int bit; const char *name; } kStateBits[] = {
+        {6, "editable"},  {7, "enabled"},   {10, "focusable"},
+        {11, "focused"},  {16, "multi-line"}, {17, "multiselectable"},
+        {23, "sensitive"}, {24, "showing"}, {25, "single-line"},
+        {30, "manages_descendants"},
+    };
+    editable = false;
+    multiline = false;
+    singleLine = false;
+    outNames.clear();
+    for (const auto &sb : kStateBits) {
+        if (states & (1ULL << sb.bit)) {
+            if (!outNames.empty()) outNames += ",";
+            outNames += sb.name;
+            if (sb.bit == 6) editable = true;
+            if (sb.bit == 16) multiline = true;
+            if (sb.bit == 25) singleLine = true;
+        }
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -528,14 +628,40 @@ void A11yMonitor::threadFunc() {
                     bool hasDocWeb =
                         hasDocumentWebAncestor(bus, sender, path);
                     bool isUI = !hasDocWeb;
-                    browserUIFocused_.store(isUI,
-                                           std::memory_order_relaxed);
                     // Also check if this is a password field
                     int role = queryRole(bus, sender, path);
+                    bool editable = false, multiline = false,
+                         singleLine = false;
+                    std::string states;
+                    queryStates(bus, sender, path, editable, multiline,
+                                singleLine, states);
+                    browserUIFocused_.store(isUI,
+                                           std::memory_order_relaxed);
                     passwordFocused_.store(role == ROLE_PASSWORD_TEXT,
                                           std::memory_order_relaxed);
-                    A11Y_LOG("Focus: browserUI=%d password=%d role=%d path=%s",
-                             isUI, role == ROLE_PASSWORD_TEXT, role, path);
+                    // Snapshot for the engine: role + text-entry states +
+                    // monotonic timestamp.  Taken AFTER the ancestor walk so
+                    // the snapshot reflects the completed analysis.
+                    focusRole_.store(role, std::memory_order_relaxed);
+                    focusEditable_.store(editable,
+                                         std::memory_order_relaxed);
+                    focusMultiline_.store(multiline,
+                                          std::memory_order_relaxed);
+                    focusSingleLine_.store(singleLine,
+                                           std::memory_order_relaxed);
+                    focusInWebDoc_.store(hasDocWeb,
+                                         std::memory_order_relaxed);
+                    focusSnapshotUsec_.store(
+                        static_cast<uint64_t>(
+                            std::chrono::steady_clock::now()
+                                .time_since_epoch()
+                                .count() /
+                            1000),
+                        std::memory_order_relaxed);
+                    A11Y_LOG("Focus: webDoc=%d role=%d(%s) editable=%d "
+                             "multiline=%d singleLine=%d states=[%s] path=%s",
+                             hasDocWeb, role, roleName(role), editable,
+                             multiline, singleLine, states.c_str(), path);
                 }
             }
 

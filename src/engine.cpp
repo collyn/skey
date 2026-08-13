@@ -1127,13 +1127,67 @@ bool SKeyState::useUinputMode() const {
   return effectiveMode() == SKeyOutputMode::Uinput;
 }
 
+// Content-hint capability bits that indicate a real, trusted editor in a
+// Chromium-family app (SpellCheck, Alpha, ...).  UppercaseWords (bit 19) is
+// deliberately excluded: Google Sheets adds it on re-focus but still needs
+// Uinput, while Facebook chat adds SpellCheck and works with SurroundingText.
+static constexpr uint64_t kChromiumStrongHints =
+    (1ULL << 3)  |  // Password
+    (1ULL << 7)  |  // Email
+    (1ULL << 8)  |  // Digit
+    (1ULL << 9)  |  // Uppercase
+    (1ULL << 10) |  // Lowercase
+    (1ULL << 14) |  // Number
+    (1ULL << 16) |  // SpellCheck
+    (1ULL << 17) |  // NoSpellCheck
+    (1ULL << 18) |  // WordCompletion
+    (1ULL << 20) |  // UppercaseSentences
+    (1ULL << 21) |  // Alpha
+    (1ULL << 22);   // Name
+
+/// How long a bare-caps decision stays deferred (microseconds).  The window
+/// only needs to cover focus → click → first keystroke: either the caps get
+/// updated (some apps re-sync their text-input state) or the AT-SPI2 focus
+/// event lands and provides the web-editor signal (see a11yFreshWebEditor).
+static constexpr uint64_t kBareCapsDecisionWindowUsec = 2000000; // 2s
+
+bool SKeyState::a11yFreshWebEditor() const {
+  auto *mon = engine_->a11yMonitor();
+  if (!mon || !mon->isRunning())
+    return false;
+  // Snapshot must be recent: the focus event fires on click, and the mode
+  // decision is re-evaluated at the next word boundary.
+  if (!mon->isFocusSnapshotFresh(5000000)) // 5s
+    return false;
+  if (!mon->isWebContentFocused())
+    return false;
+  switch (mon->focusRole()) {
+  case 61: // ATSPI_ROLE_TEXT
+  case 73: // ATSPI_ROLE_PARAGRAPH
+  case 79: // ATSPI_ROLE_ENTRY
+  case 85: // ATSPI_ROLE_SECTION
+  case 94: // ATSPI_ROLE_DOCUMENT_TEXT
+  case 95: // ATSPI_ROLE_DOCUMENT_WEB
+    return true;
+  default:
+    return false;
+  }
+}
+
 SKeyOutputMode SKeyState::detectAutoMode() const {
   // Sticky Uinput: Chromium browsers (e.g. Google Sheets) may initially
   // report bare caps (0x72), then add content hints on re-focus without
   // actually providing a working SurroundingText editor.
+  //
+  // Exception: a fresh AT-SPI2 focus snapshot of a text-entry inside a web
+  // document means the user just clicked a real editor (Facebook chat,
+  // comments, web forms) — Chrome's caps are stale there, so bypass sticky.
   if (chromiumBareCapsUinput_) {
-    SKEY_DEBUG() << "Auto: sticky bare caps → Uinput";
-    return SKeyOutputMode::Uinput;
+    if (!a11yFreshWebEditor()) {
+      SKEY_DEBUG() << "Auto: sticky bare caps → Uinput";
+      return SKeyOutputMode::Uinput;
+    }
+    SKEY_DEBUG() << "Auto: sticky bypassed by fresh web-editor focus";
   }
 
   auto caps = ic_->capabilityFlags();
@@ -1162,9 +1216,15 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   // (no content hints whatsoever) → Uinput.  Any content hint (including
   // UppercaseWords) indicates a real editor — SurroundingText.
   //
-  // Google Sheets first focus reports 0x72 (bare) → Uinput + sticky flag.
-  // Re-focus adds UppercaseWords (0x80072) → sticky flag keeps Uinput.
-  // Facebook chat (0x90072, includes UppercaseWords) → SurroundingText.
+  // Bare caps at window focus are often stale: Chrome does NOT push updated
+  // content type when focus moves within the page — it only re-syncs caps
+  // when the text input is re-entered (an IC focus cycle, e.g. a second
+  // click).  Google Sheets keeps bare caps (0x72) while typing → Uinput +
+  // sticky flag.  Facebook chat shows 0x72 at window focus and 0x90072
+  // (SpellCheck + UppercaseWords) only after the IC re-syncs → should be
+  // SurroundingText.  The decision is therefore deferred and re-evaluated
+  // at word boundaries (see keyEvent), where the AT-SPI2 web-editor focus
+  // event (a11yFreshWebEditor) supplies the missing signal immediately.
   if (caps.test(CapabilityFlag::SurroundingText) && isChromiumCached() &&
       !caps.test(CapabilityFlag::Url)) {
     static constexpr uint64_t kContentHints =
@@ -1186,10 +1246,55 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
         (1ULL << 22);    // Name
     CapabilityFlags contentHints(kContentHints);
     if (!(caps & contentHints)) {
+      // Fresh AT-SPI2 web-editor focus (Facebook chat) wins over bare caps:
+      // Chrome fires the a11y focus event immediately on click, but its
+      // content-type caps may stay bare until a text-input re-sync.
+      if (a11yFreshWebEditor()) {
+        modeDecisionPending_ = false;
+        SKEY_DEBUG() << "Auto: bare caps + fresh web-editor focus → "
+                        "SurroundingText";
+        return SKeyOutputMode::SurroundingText;
+      }
+      // First sighting: defer instead of locking in.  If the deadline has
+      // already passed with caps still bare (Google Sheets), lock in the
+      // sticky Uinput flag now.
+      if (modeDecisionPending_ &&
+          now(CLOCK_MONOTONIC) >= modeDecisionDeadlineUsec_) {
+        modeDecisionPending_ = false;
+        chromiumBareCapsUinput_ = true;
+        engine_->chromiumBareCapsProgram_ = ic_->program();
+        engine_->chromiumHadBareCaps_ = true;
+        SKEY_DEBUG() << "Auto: bare caps confirmed after deferral → sticky Uinput";
+      } else if (!modeDecisionPending_) {
+        modeDecisionPending_ = true;
+        modeDecisionDeadlineUsec_ =
+            now(CLOCK_MONOTONIC) + kBareCapsDecisionWindowUsec;
+        SKEY_DEBUG() << "Auto: bare caps → Uinput (deferred, caps=0x"
+                     << std::hex
+                     << static_cast<uint64_t>(caps.toInteger()) << std::dec
+                     << ")";
+      }
+      return SKeyOutputMode::Uinput;
+    }
+  }
+
+  // A deferred decision can now be tested against updated caps: strong
+  // hints (SpellCheck, ...) mean a real editor — Facebook chat — upgrade
+  // to SurroundingText.  Weak hints only (UppercaseWords) match the Google
+  // Sheets re-focus pattern — lock in Uinput.
+  if (modeDecisionPending_) {
+    modeDecisionPending_ = false;
+    CapabilityFlags strong(kChromiumStrongHints);
+    if (caps & strong) {
+      SKEY_DEBUG() << "Auto: deferred decision → SurroundingText (caps=0x"
+                   << std::hex
+                   << static_cast<uint64_t>(caps.toInteger()) << std::dec
+                   << ")";
+    } else {
       chromiumBareCapsUinput_ = true;
       engine_->chromiumBareCapsProgram_ = ic_->program();
       engine_->chromiumHadBareCaps_ = true;
-      SKEY_DEBUG() << "Auto: bare caps without content hints → Uinput";
+      SKEY_DEBUG() << "Auto: deferred decision → sticky Uinput (weak hints only)";
       return SKeyOutputMode::Uinput;
     }
   }
@@ -1431,20 +1536,7 @@ void SKeyState::activate() {
   if (engine_->chromiumHadBareCaps_ &&
       ic_->program() == engine_->chromiumBareCapsProgram_ &&
       !ic_->program().empty() && isChromiumCached()) {
-    static constexpr uint64_t kStrongHints =
-        (1ULL << 3)  |  // Password
-        (1ULL << 7)  |  // Email
-        (1ULL << 8)  |  // Digit
-        (1ULL << 9)  |  // Uppercase
-        (1ULL << 10) |  // Lowercase
-        (1ULL << 14) |  // Number
-        (1ULL << 16) |  // SpellCheck
-        (1ULL << 17) |  // NoSpellCheck
-        (1ULL << 18) |  // WordCompletion
-        (1ULL << 20) |  // UppercaseSentences
-        (1ULL << 21) |  // Alpha
-        (1ULL << 22);    // Name
-    CapabilityFlags strong(kStrongHints);
+    CapabilityFlags strong(kChromiumStrongHints);
     if (!(caps & strong)) {
       chromiumBareCapsUinput_ = true;
       SKEY_DEBUG() << "Activate: engine sticky bare caps → Uinput";
@@ -1940,6 +2032,19 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
   // Refresh per-app mode in case IC is shared across apps
   refreshAppMode();
+
+  // Deferred mode decision (bare Chromium caps): re-evaluate at word
+  // boundaries so a content-type update that arrived after focus (e.g.
+  // clicking into the Facebook chat editor) can upgrade Uinput →
+  // SurroundingText before the next word starts.  Mid-word the cached
+  // decision is kept so the composition path never switches half-way.
+  // A fresh AT-SPI2 web-editor snapshot also forces re-evaluation — the
+  // a11y focus event fires on click, but may land after activate() already
+  // cached a sticky-Uinput decision.
+  if (viet_.getRawInput().empty() &&
+      (modeDecisionPending_ || a11yFreshWebEditor())) {
+    modeCacheValid_ = false;
+  }
 
   // Track current word state so reclaim targets the right word
   // (not a stale previously-saved one after backspace).

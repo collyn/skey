@@ -59,6 +59,12 @@ private:
     bool useHiddenComposition() const;
     bool useUinputMode() const;
     bool isChromiumCached() const;
+    /// True when the AT-SPI2 monitor has a fresh focus snapshot of a
+    /// text-entry node inside a web document (Facebook chat, comments, web
+    /// forms).  Chrome fires that focus event immediately on click, while
+    /// its content-type caps may lag behind — used to upgrade bare-caps
+    /// Uinput to SurroundingText.
+    bool a11yFreshWebEditor() const;
     SKeyOutputMode detectAutoMode() const;
     bool connectUinputServer();
     void sendBackspaceUinput(int count, const std::string &text = "",
@@ -122,6 +128,15 @@ private:
     // (0x72, no content hints).  Caps may later gain hints after the app
     // enters edit mode, but commitString still won't work without Uinput.
     mutable bool chromiumBareCapsUinput_ = false;
+    // Deferred mode decision: bare Chromium caps may be a stale
+    // window-focus state — Chrome only re-syncs caps on text-input re-entry
+    // (an IC focus cycle), not when focus moves within the page (Facebook
+    // chat: 0x72 at window focus, 0x90072 after re-entry).  While pending,
+    // detectAutoMode() is re-evaluated at word boundaries; strong hints or
+    // the AT-SPI2 web-editor signal upgrade to SurroundingText, otherwise
+    // Uinput locks in at the deadline.
+    mutable bool modeDecisionPending_ = false;
+    mutable uint64_t modeDecisionDeadlineUsec_ = 0;
     bool isFirefoxOrSnap() const;
     std::unique_ptr<EventSourceTime> deferredCommitTimer_;
     std::string deferredCommitText_;
