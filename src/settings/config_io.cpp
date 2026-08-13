@@ -411,43 +411,22 @@ bool reloadFcitx5() {
 }
 
 bool restartFcitx5() {
-    // Restart fcitx5 process to pick up updated skey.so.
-    bool ok = QProcess::startDetached("fcitx5", {"-r", "-d"});
+    // Restart fcitx5 through the packaged helper script: it waits for the
+    // new instance to finish loading (waylandim addon registers ~1s after
+    // the main D-Bus name) and then toggles KWin's VirtualKeyboard so
+    // zwp_input_method_v2 reconnects without apps losing their text-input
+    // registration (see scripts/skey-restart-fcitx5).  Fallback: bare
+    // restart — apps may need a focus toggle to reconnect.
+    QString script = QStandardPaths::findExecutable("skey-restart-fcitx5");
+    bool ok = script.isEmpty()
+                  ? QProcess::startDetached("fcitx5", {"-r", "-d"})
+                  : QProcess::startDetached(script, {});
 
     // Restart uinput server to pick up updated binary.
     QString user = qgetenv("USER");
     if (!user.isEmpty()) {
         QProcess::startDetached("systemctl", {"try-restart",
             QString("fcitx5-skey-uinput-server@%1.service").arg(user)});
-    }
-
-    // KDE Plasma Wayland: gently reconnect KWin's zwp_input_method_v2.
-    // After fcitx5 restarts, KWin does NOT auto-reconnect — we toggle
-    // VirtualKeyboard with a minimal 100ms off window.  This is short
-    // enough that most apps keep their text input registration intact,
-    // unlike the old 600ms gap that caused STerm and Electron apps to
-    // permanently lose IM connection.
-    if (qgetenv("XDG_SESSION_TYPE") == "wayland") {
-        QString de = qgetenv("XDG_CURRENT_DESKTOP");
-        if (de.contains("KDE", Qt::CaseInsensitive) ||
-            de.contains("plasma", Qt::CaseInsensitive)) {
-            QString qdbus = QStandardPaths::findExecutable("qdbus6");
-            if (qdbus.isEmpty())
-                qdbus = QStandardPaths::findExecutable("qdbus");
-            if (!qdbus.isEmpty()) {
-                // Wait for fcitx5 to finish restarting before toggling
-                QThread::msleep(400);
-                QProcess::startDetached(qdbus, {
-                    "org.kde.KWin", "/VirtualKeyboard",
-                    "org.freedesktop.DBus.Properties.Set",
-                    "org.kde.kwin.VirtualKeyboard", "enabled", "false"});
-                QThread::msleep(100);
-                QProcess::startDetached(qdbus, {
-                    "org.kde.KWin", "/VirtualKeyboard",
-                    "org.freedesktop.DBus.Properties.Set",
-                    "org.kde.kwin.VirtualKeyboard", "enabled", "true"});
-            }
-        }
     }
 
     return ok;

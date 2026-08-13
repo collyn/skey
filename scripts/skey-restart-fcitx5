@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Gentle fcitx5 restart — replaces the running instance and makes KWin
+# reconnect its zwp_input_method_v2 without apps losing their text-input
+# registration (STerm, Electron, ...).  Used by:
+#   - debian/postinst + spec %post (via `systemd-run --user --machine=$USER@.host`,
+#     which provides the graphical session environment from a root context)
+#   - the settings GUI "Khởi động lại Fcitx5" button (config_io.cpp)
+#   - scripts/dev-restart-fcitx5.sh (dev loop)
+#
+# Two timing requirements, both learned the hard way:
+#   1. `su -` (login shell) does NOT carry XDG_SESSION_TYPE /
+#      DBUS_SESSION_BUS_ADDRESS — the KWin toggle below silently never ran
+#      from postinst, so apps lost the IM connection.
+#   2. Toggling VirtualKeyboard too early (fcitx5's waylandim addon registers
+#      ~1s AFTER the main D-Bus name appears) left KWin connected to a
+#      half-initialized IM and apps could not type until a focus toggle.
+
+# Redirect BOTH streams: the daemon keeps stdout/stderr open across the
+# fork, and when this script runs under `systemd-run --wait --pipe`
+# (postinst), an open pipe FD makes --pipe never see EOF.
+fcitx5 -r -d >/dev/null 2>&1 || true
+
+# No Wayland / no KDE Plasma → nothing to reconnect.
+if [ "${XDG_SESSION_TYPE:-}" != "wayland" ]; then
+    exit 0
+fi
+case "${XDG_CURRENT_DESKTOP:-}" in
+    KDE|kde|KDE-Plasma|plasma) ;;
+    *) exit 0 ;;
+esac
+
+QBUS=$(command -v qdbus6 || command -v qdbus || true)
+[ -n "$QBUS" ] || exit 0
+
+# Wait for fcitx5 to come back (max ~10s), then a 1s margin for the
+# waylandim addon to finish loading.
+ready=0
+for _ in $(seq 1 40); do
+    if "$QBUS" org.fcitx.Fcitx5 / >/dev/null 2>&1; then
+        ready=1
+        break
+    fi
+    sleep 0.25
+done
+if [ "$ready" = 1 ]; then
+    sleep 1
+fi
+
+# Minimal 100ms off window: short enough that apps keep their text input
+# registration, long enough for KWin to tear down and re-spawn the
+# fcitx5-wayland-launcher against the new instance.
+"$QBUS" org.kde.KWin /VirtualKeyboard \
+    org.freedesktop.DBus.Properties.Set \
+    org.kde.kwin.VirtualKeyboard enabled false 2>/dev/null || true
+sleep 0.1
+"$QBUS" org.kde.KWin /VirtualKeyboard \
+    org.freedesktop.DBus.Properties.Set \
+    org.kde.kwin.VirtualKeyboard enabled true 2>/dev/null || true

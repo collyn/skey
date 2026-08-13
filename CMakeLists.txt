@@ -113,5 +113,6 @@ else()
     message(STATUS "Qt6 not found — skey settings GUI will not be built")
 endif()
 
-# ── Install setup script ──
-install(PROGRAMS scripts/skey-setup DESTINATION ${CMAKE_INSTALL_BINDIR})
+# ── Install setup / restart scripts ──
+install(PROGRAMS scripts/skey-setup scripts/skey-restart-fcitx5
+    DESTINATION ${CMAKE_INSTALL_BINDIR})

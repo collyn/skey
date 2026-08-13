@@ -1,0 +1,18 @@
+// Allow the owning user to restart their own fcitx5-skey-uinput-server
+// instance without an admin password.
+//
+// The service runs as root by design (it injects keystrokes via
+// /dev/uinput, mode 0660 root:input per 99-skey-uinput.rules).  The
+// settings GUI and skey-setup call `systemctl try-restart
+// fcitx5-skey-uinput-server@$USER.service`; without this rule that
+// triggers a polkit password prompt (or fails silently).  Only the
+// exact instance for the requesting user is whitelisted.
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        subject.isInSession()) {
+        var unit = action.lookup("unit");
+        if (unit == "fcitx5-skey-uinput-server@" + subject.user + ".service") {
+            return polkit.Result.YES;
+        }
+    }
+});

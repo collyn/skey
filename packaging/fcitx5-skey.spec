@@ -98,36 +98,49 @@ if [ "$1" -eq 1 ]; then
     # ── First install ──
     # Run full skey-setup: configures fcitx5 profile, shell env vars,
     # KWin virtual keyboard, autostart, ibus disable, etc.
+    #
+    # It must run INSIDE the user's graphical session — su loses
+    # XDG_SESSION_TYPE / XDG_CURRENT_DESKTOP, which made the KDE-Wayland
+    # blocks (KWin reconnect, session env files) silently skip.  Route
+    # through the user's systemd manager instead.
     if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ -x /usr/bin/skey-setup ]; then
-        su -s /bin/bash "$CONSOLE_USER" -c /usr/bin/skey-setup >/dev/null 2>&1 || :
+        if [ -x /usr/bin/systemd-run ] && \
+           /usr/bin/systemd-run --user --machine="${CONSOLE_USER}@.host" \
+               --wait --pipe true 2>/dev/null; then
+            # KillMode=none: skey-setup starts fcitx5 -d, which
+            # daemonizes inside the transient unit.
+            /usr/bin/systemd-run --user --machine="${CONSOLE_USER}@.host" \
+                --wait --pipe -p KillMode=none /usr/bin/skey-setup \
+                2>/dev/null || :
+        else
+            su -s /bin/bash "$CONSOLE_USER" -c /usr/bin/skey-setup >/dev/null 2>&1 || :
+        fi
     fi
 elif [ "$1" -ge 2 ]; then
     # ── Upgrade ──
-    # Restart fcitx5 to load the new skey.so, then gently reconnect
-    # KWin's zwp_input_method_v2 with a minimal 100ms toggle.
+    # Restart fcitx5 to load the new skey.so and gently reconnect KWin's
+    # zwp_input_method_v2.  The helper script must run INSIDE the user's
+    # graphical session — `su -` loses XDG_SESSION_TYPE /
+    # DBUS_SESSION_BUS_ADDRESS (the reconnect toggle silently never ran),
+    # so route through the user's systemd manager.
     if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
         # Restart uinput server first
         if [ -x /usr/bin/systemctl ]; then
             /usr/bin/systemctl try-restart "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
         fi
-        # Restart fcitx5 to load new skey.so
-        su -s /bin/bash "$CONSOLE_USER" -c "fcitx5 -r -d 2>/dev/null" 2>/dev/null || :
-        # KDE Plasma Wayland: gentle KWin reconnect
-        su -s /bin/bash "$CONSOLE_USER" -c '
-            if [ "$XDG_SESSION_TYPE" = wayland ]; then
-                case "${XDG_CURRENT_DESKTOP:-}" in
-                    KDE|kde|KDE-Plasma|plasma)
-                        QDBUS=$(command -v qdbus6 || command -v qdbus || echo "")
-                        if [ -n "$QDBUS" ]; then
-                            sleep 0.4
-                            $QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set org.kde.kwin.VirtualKeyboard enabled false 2>/dev/null || true
-                            sleep 0.1
-                            $QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set org.kde.kwin.VirtualKeyboard enabled true 2>/dev/null || true
-                        fi
-                        ;;
-                esac
-            fi
-        ' 2>/dev/null || :
+        if [ -x /usr/bin/systemd-run ] && \
+           /usr/bin/systemd-run --user --machine="${CONSOLE_USER}@.host" \
+               --wait --pipe true 2>/dev/null; then
+            # KillMode=none: fcitx5 -r -d daemonizes inside the transient
+            # unit — default KillMode would kill it when the unit finishes.
+            /usr/bin/systemd-run --user --machine="${CONSOLE_USER}@.host" \
+                --wait --pipe -p KillMode=none \
+                /usr/bin/skey-restart-fcitx5 2>/dev/null || :
+        else
+            # Fallback: no user systemd manager — bare restart (apps may
+            # need a focus toggle to reconnect).
+            su -s /bin/bash "$CONSOLE_USER" -c "fcitx5 -r -d 2>/dev/null" 2>/dev/null || :
+        fi
     fi
 fi
 

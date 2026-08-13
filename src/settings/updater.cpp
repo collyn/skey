@@ -270,9 +270,10 @@ void Updater::onDownloadFinished() {
                 proc->deleteLater();
 
                 if (exitCode == 0) {
-                    // Restart fcitx5 to load the new .so, with Wayland
-                    // compositor reconnect so virtual keyboard stays bound.
-                    restartFcitx5();
+                    // No restart here: the package's postinst already
+                    // restarted fcitx5 and reconnected KWin (it runs
+                    // inside pkexec).  A second restart here would tear
+                    // down app text-input connections a second time.
                     emit installFinished(
                         true,
                         QString::fromUtf8(

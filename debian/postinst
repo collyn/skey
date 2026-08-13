@@ -19,41 +19,55 @@ case "$1" in
             # ── First install ──
             # Run full skey-setup: configures fcitx5 profile, shell env vars,
             # KWin virtual keyboard, autostart, ibus disable, etc.
+            #
+            # It must run INSIDE the user's graphical session — `su -`
+            # loses XDG_SESSION_TYPE / XDG_CURRENT_DESKTOP, which made the
+            # KDE-Wayland blocks (KWin reconnect, session env files) silently
+            # skip.  Route through the user's systemd manager instead.
             if [ -n "$SUDO_USER" ]; then
-                su - "$SUDO_USER" -c "skey-setup" 2>/dev/null || true
+                if command -v systemd-run >/dev/null 2>&1 && \
+                   systemd-run --user --machine="${SUDO_USER}@.host" \
+                       --wait --pipe true 2>/dev/null; then
+                    # KillMode=none: skey-setup starts fcitx5 -d, which
+                    # daemonizes inside the transient unit.
+                    systemd-run --user --machine="${SUDO_USER}@.host" \
+                        --wait --pipe -p KillMode=none /usr/bin/skey-setup \
+                        2>/dev/null || true
+                else
+                    su - "$SUDO_USER" -c "skey-setup" 2>/dev/null || true
+                fi
                 if command -v systemctl >/dev/null 2>&1; then
                     systemctl enable --now "fcitx5-skey-uinput-server@${SUDO_USER}.service" 2>/dev/null || true
                 fi
             fi
         else
             # ── Upgrade ──
-            # Restart fcitx5 to load the new skey.so, then gently
-            # reconnect KWin's zwp_input_method_v2 with a minimal
-            # 100ms VirtualKeyboard toggle (vs the old 600ms that
-            # caused apps like STerm to permanently lose IM).
+            # Restart fcitx5 to load the new skey.so and gently reconnect
+            # KWin's zwp_input_method_v2.  The helper script must run
+            # INSIDE the user's graphical session — `su -` loses
+            # XDG_SESSION_TYPE / DBUS_SESSION_BUS_ADDRESS (the reconnect
+            # toggle silently never ran), so route through the user's
+            # systemd manager, which carries the session environment.
             if [ -n "$SUDO_USER" ]; then
                 # Restart uinput server first (picks up new binary)
                 if command -v systemctl >/dev/null 2>&1; then
                     systemctl try-restart "fcitx5-skey-uinput-server@${SUDO_USER}.service" 2>/dev/null || true
                 fi
-                # Restart fcitx5 to load new skey.so
-                su - "$SUDO_USER" -c "fcitx5 -r -d 2>/dev/null" 2>/dev/null || true
-                # KDE Plasma Wayland: gentle KWin reconnect
-                su - "$SUDO_USER" -c "
-                    if [ \"\$XDG_SESSION_TYPE\" = wayland ]; then
-                        case \"\${XDG_CURRENT_DESKTOP:-}\" in
-                            KDE|kde|KDE-Plasma|plasma)
-                                QDBUS=\$(command -v qdbus6 || command -v qdbus || echo '')
-                                if [ -n \"\$QDBUS\" ]; then
-                                    sleep 0.4
-                                    \$QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set org.kde.kwin.VirtualKeyboard enabled false 2>/dev/null || true
-                                    sleep 0.1
-                                    \$QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set org.kde.kwin.VirtualKeyboard enabled true 2>/dev/null || true
-                                fi
-                                ;;
-                        esac
-                    fi
-                " 2>/dev/null || true
+                if command -v systemd-run >/dev/null 2>&1 && \
+                   systemd-run --user --machine="${SUDO_USER}@.host" \
+                       --wait --pipe true 2>/dev/null; then
+                    # KillMode=none: fcitx5 -r -d daemonizes inside the
+                    # transient unit — default KillMode would kill it when
+                    # the unit finishes.
+                    systemd-run --user --machine="${SUDO_USER}@.host" \
+                        --wait --pipe -p KillMode=none \
+                        /usr/bin/skey-restart-fcitx5 \
+                        2>/dev/null || true
+                else
+                    # Fallback: no user systemd manager — bare restart
+                    # (apps may need a focus toggle to reconnect).
+                    su - "$SUDO_USER" -c "fcitx5 -r -d 2>/dev/null" 2>/dev/null || true
+                fi
             fi
         fi
         ;;

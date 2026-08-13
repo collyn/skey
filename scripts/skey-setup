@@ -348,7 +348,10 @@ if pidof fcitx5 > /dev/null 2>&1; then
 fi
 
 echo "→ Starting fcitx5 daemon..."
-fcitx5 -d 2>&1
+# Redirect both streams: the daemon keeps stdio open across the fork —
+# under `systemd-run --wait --pipe` (package postinst) an open pipe FD
+# makes --pipe never see EOF.
+fcitx5 -d >/dev/null 2>&1
 
 # Poll for fcitx5 to be fully ready: D-Bus service registered + active.
 # fcitx5-remote returns 2 when active, 1 when inactive, 0 when not running.

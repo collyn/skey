@@ -156,6 +156,11 @@ configure_file(
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/fcitx5-skey-uinput-server@.service"
     DESTINATION "/lib/systemd/system")
 
+# Polkit rule: lets each user restart their own uinput server instance
+# (systemd manage-units for fcitx5-skey-uinput-server@<user>.service only).
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/60-fcitx5-skey-uinput.rules"
+    DESTINATION "/etc/polkit-1/rules.d")
+
 # ── Settings GUI .desktop file ──
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/fcitx5-skey-settings.desktop.in"
