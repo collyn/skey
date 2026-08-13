@@ -460,10 +460,10 @@ int main(int argc, char **argv) {
                  skey::InputMethod::Telex, "resstore", "restore",
                  "ss cancels é (P5), engine auto-restore fixes the rest", false, false, true});
 
-        // "ressponse": P5 fires twice; the leftover ASCII output is kept
-        // (all-ASCII guard skips auto-restore).
-        runTest({cat, "ressponse → respone (P5 undo, ASCII kept)",
-                 skey::InputMethod::Telex, "ressponse", "respone",
+        // "ressponse": P5 fires on the double-s; the tone on 'o' survives
+        // the trailing 'e' (consonant-gap fix) — full word recovered.
+        runTest({cat, "ressponse → response (P5 undo, tone kept)",
+                 skey::InputMethod::Telex, "ressponse", "response",
                  "P4 bypass removed — P5 handles double tone keys", false, false, true});
 
         // "result": res → ré → undo → bypass → ult
