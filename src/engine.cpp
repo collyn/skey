@@ -972,6 +972,7 @@ SKeyState::SKeyState(SKeyEngine *engine, InputContext *ic)
   viet_.setFreeMarking(*cfg.freeMarking);
   viet_.setAutoRestore(*cfg.autoRestore);
   viet_.setDict(*cfg.dict);
+  loadUserDict();
 }
 
 void SKeyState::commitText(const std::string &utf8) {
@@ -1319,6 +1320,7 @@ void SKeyState::activate() {
   viet_.setFreeMarking(*cfg.freeMarking);
   viet_.setAutoRestore(*cfg.autoRestore);
   viet_.setDict(*cfg.dict);
+  loadUserDict();
 
   // Reactivate after spurious cycle: cancel the genuine-loss timer.
   if (addrBarExpectCycle_) {
@@ -3673,6 +3675,32 @@ void SKeyState::surroundingBackspace() {
   // Reset engine so next keystroke starts fresh composition.
   // The old committed chars (before cursor) stay in the app untouched.
   viet_.reset();
+}
+
+void SKeyState::loadUserDict() {
+  // User dictionary — one word per line, '#' starts a comment.
+  // Words are added to the engine and checked before the embedded list,
+  // so users can keep words the built-in dictionary lacks.
+  viet_.clearWords();
+  std::string userDir = fcitx::StandardPath::global().userDirectory(
+      fcitx::StandardPath::Type::PkgData);
+  std::string path = userDir + "/skey/user-dict.txt";
+  std::ifstream in(path);
+  if (!in.is_open()) return;
+  std::string line;
+  int count = 0;
+  while (std::getline(in, line)) {
+    size_t b = line.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos || line[b] == '#') continue;
+    size_t e = line.find_last_not_of(" \t\r\n");
+    std::string word = line.substr(b, e - b + 1);
+    if (word.empty()) continue;
+    viet_.addWord(word);
+    ++count;
+  }
+  if (count > 0) {
+    SKEY_INFO() << "User dict: loaded " << count << " word(s) from " << path;
+  }
 }
 
 void SKeyState::armUinputSafetyTimer() {

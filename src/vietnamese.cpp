@@ -96,6 +96,14 @@ void VietnameseEngine::setDict(bool enabled) {
     skey_engine_set_dict(handle_, enabled ? 1 : 0);
 }
 
+void VietnameseEngine::addWord(const std::string &word) {
+    skey_engine_add_word(handle_, word.c_str());
+}
+
+void VietnameseEngine::clearWords() {
+    skey_engine_clear_words(handle_);
+}
+
 void VietnameseEngine::setShortW(bool enabled) {
     shortW_ = enabled;
     skey_engine_set_short_w(handle_, enabled ? 1 : 0);

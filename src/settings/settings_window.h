@@ -7,6 +7,7 @@ class AppearanceTab;
 class GeneralTab;
 class AppModesTab;
 class MacroTab;
+class DictTab;
 class InfoTab;
 class QPushButton;
 class QTabWidget;
@@ -32,6 +33,7 @@ private:
     GeneralTab    *generalTab_;
     AppModesTab   *appModesTab_;
     MacroTab      *macroTab_;
+    DictTab       *dictTab_;
     InfoTab       *infoTab_;
     QTabWidget   *tabWidget_;
     QPushButton  *applyButton_;

@@ -74,6 +74,10 @@ private:
     /// force-committing early — an early commit plus late BS deletions
     /// corrupts the text on screen.
     void armUinputSafetyTimer();
+    /// Load the user dictionary file (~/.local/share/fcitx5/skey/user-dict.txt,
+    /// one word per line, # comments) into the engine.  Called when the
+    /// dictionary option is applied.
+    void loadUserDict();
     void reclaimLastWord();
     bool hasDeferredCommitPending() const;
     void scheduleDeferredCommit(const std::string &text,

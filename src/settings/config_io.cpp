@@ -465,6 +465,41 @@ std::string userIconDir() {
     return userDataDir() + "/skey/icons";
 }
 
+// ── User dictionary ───────────────────────────────────────────────────────
+
+std::string userDictPath() {
+    return userDataDir() + "/skey/user-dict.txt";
+}
+
+std::vector<std::string> readUserDict() {
+    std::vector<std::string> words;
+    std::ifstream in(userDictPath());
+    if (!in.is_open()) return words;
+    std::string line;
+    while (std::getline(in, line)) {
+        rtrim(line);
+        if (line.empty() || line[0] == '#') continue;
+        words.push_back(line);
+    }
+    return words;
+}
+
+bool writeUserDict(const std::vector<std::string> &words) {
+    QString dir = QString::fromStdString(userDataDir() + "/skey");
+    if (!QDir().mkpath(dir)) return false;
+    std::ofstream out(userDictPath());
+    if (!out.is_open()) return false;
+
+    out << "# Từ điển cá nhân — mỗi từ một dòng\n";
+    out << "# Các từ này được thêm vào từ điển tiếng Việt khi bật\n";
+    out << "# \"Dùng từ điển\" ở tab Chung.  Sửa xong nhấn Áp dụng.\n";
+    out << "\n";
+    for (const auto &w : words) {
+        out << w << "\n";
+    }
+    return true;
+}
+
 std::vector<std::string> listCustomIcons() {
     std::vector<std::string> result;
     QDir dir(QString::fromStdString(userIconDir()));

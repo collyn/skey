@@ -49,6 +49,10 @@ public:
     /// Dictionary mode: auto-restore validates against the embedded
     /// Vietnamese word list instead of syllable rules.
     void setDict(bool enabled);
+    /// Add a user word to the dictionary (checked before the embedded list).
+    void addWord(const std::string &word);
+    /// Remove all user words (user dictionary file reload).
+    void clearWords();
     /// Telex only: bare 'w' → 'ư' (switches skey-engine to telex_w).
     void setShortW(bool enabled);
     /// Telex only: '[' → 'ơ', ']' → 'ư' (translated to ow/uw for skey-engine).

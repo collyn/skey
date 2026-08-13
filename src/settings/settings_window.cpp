@@ -2,19 +2,47 @@
 #include "app_modes_tab.h"
 #include "appearance_tab.h"
 #include "config_io.h"
+#include "dict_tab.h"
 #include "general_tab.h"
 #include "info_tab.h"
 #include "macro_tab.h"
 
 #include <QApplication>
 #include <QHBoxLayout>
-#include <QShowEvent>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScreen>
+#include <QShowEvent>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QVBoxLayout>
+
+namespace {
+
+/// QTabBar with narrower clickable tabs — native style painting is kept
+/// intact; only the preferred tab width is trimmed.
+class CompactTabBar : public QTabBar {
+public:
+  using QTabBar::QTabBar;
+
+protected:
+  QSize tabSizeHint(int index) const override {
+    QSize s = QTabBar::tabSizeHint(index);
+    return QSize(s.width() - 5, s.height());
+  }
+};
+
+/// QTabWidget using the compact tab bar (setTabBar is protected).
+class CompactTabWidget : public QTabWidget {
+public:
+  using QTabWidget::QTabWidget;
+  explicit CompactTabWidget(QWidget *parent = nullptr) : QTabWidget(parent) {
+    setTabBar(new CompactTabBar(this));
+  }
+};
+
+} // namespace
 
 SkeySettingsWindow::SkeySettingsWindow(QWidget *parent) : QWidget(parent) {
   setupUI();
@@ -29,23 +57,29 @@ SkeySettingsWindow::SkeySettingsWindow(QWidget *parent) : QWidget(parent) {
 
 void SkeySettingsWindow::setupUI() {
   setWindowTitle(QString::fromUtf8("Skey - Tùy chỉnh"));
-  setFixedSize(460, 600);
+  setFixedSize(480, 600);
 
   auto *mainLayout = new QVBoxLayout(this);
   mainLayout->setContentsMargins(12, 12, 12, 12);
   mainLayout->setSpacing(8);
 
   // ── Tab widget ──
-  tabWidget_ = new QTabWidget(this);
+  tabWidget_ = new CompactTabWidget(this);
+  // No right-scroll arrows: tabs shrink to fit a single row instead.
+  // (QTabBar has no native multi-row mode.)
+  tabWidget_->setUsesScrollButtons(false);
+  tabWidget_->tabBar()->setElideMode(Qt::ElideNone);
   generalTab_ = new GeneralTab(this);
   appModesTab_ = new AppModesTab(this);
   macroTab_ = new MacroTab(this);
+  dictTab_ = new DictTab(this);
   appearanceTab_ = new AppearanceTab(this);
   infoTab_ = new InfoTab(this);
   tabWidget_->addTab(generalTab_, QString::fromUtf8("Chung"));
-  tabWidget_->addTab(appModesTab_, QString::fromUtf8("Ứng dụng"));
+  tabWidget_->addTab(appModesTab_, QString::fromUtf8("Apps"));
   tabWidget_->addTab(macroTab_, QString::fromUtf8("Gõ tắt"));
-  tabWidget_->addTab(appearanceTab_, QString::fromUtf8("Giao diện"));
+  tabWidget_->addTab(dictTab_, QString::fromUtf8("Từ điển"));
+  tabWidget_->addTab(appearanceTab_, QString::fromUtf8("Icons"));
   tabWidget_->addTab(infoTab_, QString::fromUtf8("Info"));
   mainLayout->addWidget(tabWidget_);
 
@@ -110,6 +144,8 @@ void SkeySettingsWindow::loadSettings() {
   macroData.entries = macroCfg.entries;
   macroTab_->loadFromConfig(macroData);
 
+  dictTab_->loadFromConfig(readUserDict());
+
   appearanceTab_->loadFromConfig(cfg);
 }
 
@@ -137,8 +173,9 @@ void SkeySettingsWindow::onApply() {
   bool ok2 = writeAppModesConfig(appModes);
   bool ok3 = writeMacroConfig(macroCfg);
   bool ok4 = writeTriggerKey(trigger);
+  bool ok5 = writeUserDict(dictTab_->collectConfig());
 
-  if (ok1 && ok2 && ok3 && ok4) {
+  if (ok1 && ok2 && ok3 && ok4 && ok5) {
     reloadFcitx5();
     QMessageBox::information(
         this, QString::fromUtf8("Đã áp dụng"),
@@ -159,6 +196,7 @@ void SkeySettingsWindow::onDefaults() {
     generalTab_->setDefaults();
     appModesTab_->setDefaults();
     macroTab_->setDefaults();
+    dictTab_->setDefaults();
     appearanceTab_->setDefaults();
   }
 }

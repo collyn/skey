@@ -50,6 +50,13 @@ struct MacroConfig {
     std::vector<std::pair<std::string, std::string>> entries;
 };
 
+// ── User dictionary (skey/user-dict.txt) ─────────────────────────────────
+// One word per line; loaded by the addon and merged into the built-in
+// Vietnamese dictionary when the "Dùng từ điển" option is enabled.
+std::string userDictPath();
+std::vector<std::string> readUserDict();
+bool writeUserDict(const std::vector<std::string> &words);
+
 // ── Read helpers ────────────────────────────────────────────────────────
 SKeyConfig      readSkeyConfig();
 AppModesConfig  readAppModesConfig();
