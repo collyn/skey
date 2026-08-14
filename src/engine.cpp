@@ -210,6 +210,40 @@ static size_t commonUtf8PrefixBytes(const std::string &a,
   return prefix;
 }
 
+/// True when the surrounding-text cache verifiably ends (right before the
+/// cursor) with `expected` — i.e. the cache still reflects the text we
+/// believe is on screen.  After BackSpace storms or key re-delivery,
+/// Chromium (Wayland) may not push fresh surrounding text; a stale cache
+/// makes deleteSurroundingText remove the wrong characters (or nothing),
+/// and the follow-up commit then duplicates text (retyping "thật" after
+/// deleting it ends up as "thâtật").
+/// SurroundingText::cursor() is a character offset into text().
+static bool surroundingCacheEndsWith(const fcitx::SurroundingText &st,
+                                     const std::string &expected) {
+  if (!st.isValid() || expected.empty()) {
+    return false;
+  }
+  const std::string &txt = st.text();
+  if (txt.size() < expected.size()) {
+    return false;
+  }
+  // Convert the character cursor position to a byte offset.
+  size_t curBytes = 0;
+  for (unsigned int charsLeft = st.cursor();
+       charsLeft > 0 && curBytes < txt.size(); --charsLeft) {
+    ++curBytes;
+    while (curBytes < txt.size() &&
+           (static_cast<unsigned char>(txt[curBytes]) & 0xC0) == 0x80) {
+      ++curBytes;
+    }
+  }
+  if (curBytes < expected.size()) {
+    return false;
+  }
+  return txt.compare(curBytes - expected.size(), expected.size(), expected) ==
+         0;
+}
+
 static std::string outputModeName(SKeyOutputMode mode) {
   switch (mode) {
   case SKeyOutputMode::SurroundingText:
@@ -410,6 +444,10 @@ static bool isChromiumBasedApp(const std::string &prog) {
 static bool isTerminalApp(const std::string &prog) {
   // Terminals have their own internal buffer — SurroundingText API
   // doesn't sync correctly, so Uinput raw key pass-through works better.
+  // Electron terminals (Tabby, Hyper) advertise the SurroundingText
+  // capability but apply delete_surrounding_text unreliably (deletes
+  // dropped or reordered against commitString), corrupting every toned
+  // word — route them to Uinput like native terminals.
   static const char *const patterns[] = {
       "konsole",        "org.kde.konsole",
       "alacritty",      "kitty",
@@ -419,6 +457,7 @@ static bool isTerminalApp(const std::string &prog) {
       "wezterm",        "foot",
       "urxvt",          "rxvt",
       "xterm",
+      "tabby",          "hyper",
   };
   for (const char *p : patterns) {
     if (prog.find(p) != std::string::npos) {
@@ -1178,6 +1217,15 @@ bool SKeyState::a11yFreshWebEditor() const {
 }
 
 SKeyOutputMode SKeyState::detectAutoMode() const {
+  // Runtime override: if the surrounding text API was verified as
+  // non-functional during a previous replacement attempt (cache invalid),
+  // stick with Uinput for this IC — the per-replacement fallback cannot
+  // be verified and corrupts text in apps that drop forwarded keys.
+  if (surroundingTextFailed_) {
+    SKEY_DEBUG() << "Auto: surrounding text previously failed → Uinput";
+    return SKeyOutputMode::Uinput;
+  }
+
   // Sticky Uinput: Chromium browsers (e.g. Google Sheets) may initially
   // report bare caps (0x72), then add content hints on re-focus without
   // actually providing a working SurroundingText editor.
@@ -1459,6 +1507,7 @@ void SKeyState::activate() {
     preeditWasPending_ = false;
     viet_.reset();
     committedLen_ = 0;
+    surroundingTextFailed_ = false; // fresh focus, re-verify
 
     // Detect spurious focus cycles that arrived when addrBarExpectCycle_
     // was not armed (e.g. asynchronous omnibox updates).  If reactivation
@@ -2430,12 +2479,16 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                    << "' len=" << committedLen_;
       if (useNativeSurroundingApi()) {
         const auto &surrounding = ic_->surroundingText();
-        if (surrounding.isValid()) {
+        if (surrounding.isValid() &&
+            surroundingCacheEndsWith(surrounding, oldComposed)) {
           ic_->deleteSurroundingText(-1, 1);
           if (ic_->surroundingText().isValid()) {
             ic_->surroundingText().deleteText(-1, 1);
           }
         } else {
+          // Invalid or stale cache (e.g. Chromium after key re-delivery):
+          // let the app delete the character itself.  Native deletes
+          // against a stale cache remove the wrong characters.
           ic_->forwardKey(Key(FcitxKey_BackSpace));
         }
       } else {
@@ -3710,7 +3763,21 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         }
         committedLen_ = newLen;
         if (!addedPart.empty()) {
-          commitText(addedPart);
+          if (isWayland() && isChromiumCached()) {
+            // Wayland has no D-Bus FIFO between forwardKey and
+            // commitString — an immediate commit races the forwarded
+            // BackSpace keys and eats characters (observed in Chromium).
+            // Commit only after the app has had time to process them.
+            // Pass the stable prefix (already on screen after the BS
+            // deletes): follow-up keystrokes then extend only the pending
+            // suffix, otherwise the whole word would be re-committed over
+            // the prefix ("chào" → "chchào").
+            scheduleDeferredCommit(addedPart, stablePrefix);
+          } else {
+            // Non-Chromium apps process forwarded BS + commit in order
+            // (Telegram etc.) — commit immediately, no extra latency.
+            commitText(addedPart);
+          }
         }
       };
 
@@ -3722,22 +3789,39 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       // deletion as real keystrokes before we commit the replacement.
       if (useNativeSurroundingApi() && !inChromiumAddressBar()) {
         const auto &surrounding = ic_->surroundingText();
+        bool cacheStale = !surroundingCacheEndsWith(surrounding, oldComposed);
         if (!surrounding.isValid() ||
-            surrounding.cursor() < static_cast<unsigned int>(deleteLen)) {
+            surrounding.cursor() < static_cast<unsigned int>(deleteLen) ||
+            cacheStale) {
           // SurroundingText capability was advertised but the runtime
-          // data is invalid or missing.  Fall back to forwardKey/Uinput
-          // for this replacement.
+          // data is invalid, missing, or stale (does not end with the text
+          // we are replacing).  Fall back to forwardKey/Uinput for this
+          // replacement — deleting via a stale cache removes the wrong
+          // characters and duplicates the committed text.
           if (!surrounding.isValid()) {
+            // The app never reports surrounding text (LibreOffice,
+            // Telegram...).  Mark as failed so subsequent replacements use
+            // Uinput instead of retrying a dead API.
+            surroundingTextFailed_ = true;
+            modeCacheValid_ = false;
             SKEY_DEBUG()
-                << "Surr: surrounding text invalid, falling back";
+                << "Surr: surrounding text invalid, downgrading to uinput";
+          } else if (cacheStale) {
+            SKEY_DEBUG() << "Surr: surrounding cache stale, falling back";
           } else {
             SKEY_DEBUG() << "Surr: native surrounding not ready";
           }
           deleteViaBackspace();
         } else {
-          ic_->deleteSurroundingText(-deleteLen, deleteLen);
-          if (surrounding.isValid()) {
-            ic_->surroundingText().deleteText(-deleteLen, deleteLen);
+          // Delete one character at a time.  Chrome has been observed to
+          // drop multi-char delete_surrounding_text requests (the commit
+          // then duplicates text), while single-char deletes share the
+          // commitString protocol channel and are reliable.
+          for (int i = 0; i < deleteLen; ++i) {
+            ic_->deleteSurroundingText(-1, 1);
+            if (ic_->surroundingText().isValid()) {
+              ic_->surroundingText().deleteText(-1, 1);
+            }
           }
           committedLen_ = newLen;
           if (!addedPart.empty()) {
@@ -3770,8 +3854,10 @@ void SKeyState::surroundingBackspace() {
     const auto &surrounding = ic_->surroundingText();
     if (!surrounding.isValid()) {
       // Surrounding text advertised but not actually available.
-      // Fall back to forwardKey.
-      SKEY_DEBUG() << "SurrBS: surrounding text invalid, falling back to forwardKey";
+      // Mark as failed and fall back to forwardKey.
+      surroundingTextFailed_ = true;
+      modeCacheValid_ = false;
+      SKEY_DEBUG() << "SurrBS: surrounding text invalid, downgrading to uinput";
       ic_->forwardKey(Key(FcitxKey_BackSpace));
     } else {
       ic_->deleteSurroundingText(-1, 1);

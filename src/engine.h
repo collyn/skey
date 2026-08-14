@@ -128,6 +128,11 @@ private:
     // (0x72, no content hints).  Caps may later gain hints after the app
     // enters edit mode, but commitString still won't work without Uinput.
     mutable bool chromiumBareCapsUinput_ = false;
+    // SurroundingText capability was advertised but the runtime cache is
+    // invalid — the app never reports surrounding text (LibreOffice,
+    // Telegram...).  The per-replacement fallback cannot be verified, so
+    // downgrade the session to Uinput (re-checked on each focus).
+    mutable bool surroundingTextFailed_ = false;
     // Deferred mode decision: bare Chromium caps may be a stale
     // window-focus state — Chrome only re-syncs caps on text-input re-entry
     // (an IC focus cycle), not when focus moves within the page (Facebook
