@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
-  <!-- White "V" on transparent background — suitable for dark themes -->
-  <text x="24" y="39" font-family="sans-serif" font-size="42" font-weight="bold"
-        text-anchor="middle" fill="white">V</text>
+  <!-- White "V" glyph as path (baked from DejaVu Sans Bold) on transparent
+     background — suitable for dark themes -->
+  <path fill="white" d="M 8.72 8.84 L 16.28 8.84 L 24.01 30.36 L 31.72 8.84 L 39.28 8.84 L 28.48 38.00 L 19.52 38.00 Z"/>
 </svg>

@@ -2,21 +2,36 @@
 # Build: makepkg -f
 
 pkgname=fcitx5-skey
-pkgver=0.4.4
+pkgver=0.6.6
 pkgrel=1
 pkgdesc="Vietnamese SKey input method addon for Fcitx5 (skey-engine)"
 arch=('x86_64')
 url="https://github.com/collyn/skey"
 license=('MIT')
-depends=('fcitx5' 'hicolor-icon-theme' 'qt6-base' 'systemd')
-makedepends=('cmake' 'extra-cmake-modules' 'gettext' 'dbus' 'rust' 'gcc' 'libxcb')
+depends=('fcitx5' 'hicolor-icon-theme' 'qt6-base' 'qt6-svg' 'systemd')
+makedepends=('cmake' 'extra-cmake-modules' 'gettext' 'dbus' 'rust' 'gcc' 'libxcb' 'librsvg')
 # source is the git checkout itself — CI populates src/ before invoking makepkg -e
 source=()
+
+# pkgver is derived from CMakeLists.txt (single source of truth) so it can
+# never drift from the project version.  pkgrel still resets to 1 by hand
+# when the version actually changes.
+pkgver() {
+    local cm
+    cm=$(ls "$srcdir"/fcitx5-skey-*/CMakeLists.txt 2>/dev/null | head -1)
+    if [ -n "$cm" ]; then
+        sed -n 's/^project(fcitx5-skey VERSION \([0-9.]*\)).*/\1/p' "$cm" | head -1
+    else
+        echo "$pkgver"
+    fi
+}
 
 build() {
     export CARGO_HOME="$srcdir/.cargo"
     mkdir -p "$CARGO_HOME"
-    cmake -B build -S "$srcdir/fcitx5-skey-$pkgver" \
+    local src_dir
+    src_dir=$(ls -d "$srcdir"/fcitx5-skey-*/ 2>/dev/null | head -1)
+    cmake -B build -S "$src_dir" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/usr \
         -DSKEY_SYSTEMD_UNIT_DIR=/usr/lib/systemd/system
