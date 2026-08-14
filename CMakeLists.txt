@@ -32,6 +32,16 @@ fcitx5_add_i18n_definition()
 #           → clones the pinned tag from GitHub (used by GitHub Actions).
 set(SKEY_ENGINE_VERSION "v0.1.20")
 set(SKEY_ENGINE_DIR "${CMAKE_CURRENT_BINARY_DIR}/skey-engine")
+# Point to a prebuilt libskey_engine.a to skip the cargo build entirely —
+# for build sandboxes without network access (e.g. NixOS/nixpkgs), where the
+# engine is built by a separate derivation.  Requires SKEY_ENGINE_SOURCE_DIR
+# as well (skey_engine.h is taken from the source tree).
+set(SKEY_ENGINE_PREBUILT_LIB "" CACHE FILEPATH
+    "Path to a prebuilt libskey_engine.a (skips the cargo build)")
+if(SKEY_ENGINE_PREBUILT_LIB AND NOT DEFINED SKEY_ENGINE_SOURCE_DIR)
+    message(FATAL_ERROR "SKEY_ENGINE_PREBUILT_LIB requires "
+                        "SKEY_ENGINE_SOURCE_DIR (for skey_engine.h)")
+endif()
 
 if(DEFINED SKEY_ENGINE_SOURCE_DIR)
     if(NOT EXISTS "${SKEY_ENGINE_SOURCE_DIR}/Cargo.toml")
@@ -46,22 +56,32 @@ if(DEFINED SKEY_ENGINE_SOURCE_DIR)
     # automatically (no stale DEPENDS list), and cargo only runs when
     # something actually changed — so `sudo make install` (root, no cargo
     # in PATH) never needs to invoke cargo for an up-to-date build.
-    file(GLOB_RECURSE SKEY_ENGINE_SOURCES CONFIGURE_DEPENDS
-        "${SKEY_ENGINE_DIR}/src/*.rs"
-        "${SKEY_ENGINE_DIR}/data/*"
-        "${SKEY_ENGINE_DIR}/Cargo.toml"
-    )
-    add_custom_command(
-        OUTPUT ${SKEY_ENGINE_LIB}
-        COMMAND cargo build --release
-            --manifest-path "${SKEY_ENGINE_DIR}/Cargo.toml"
-            --target-dir "${CMAKE_CURRENT_BINARY_DIR}/skey-engine-target"
-        WORKING_DIRECTORY ${SKEY_ENGINE_DIR}
-        COMMENT "Building skey-engine from ${SKEY_ENGINE_DIR} (dev mode)"
-        DEPENDS ${SKEY_ENGINE_SOURCES}
-        VERBATIM
-    )
-    add_custom_target(skey_engine_build DEPENDS ${SKEY_ENGINE_LIB})
+    if(SKEY_ENGINE_PREBUILT_LIB)
+        if(NOT EXISTS "${SKEY_ENGINE_PREBUILT_LIB}")
+            message(FATAL_ERROR "SKEY_ENGINE_PREBUILT_LIB set but file not "
+                                "found: ${SKEY_ENGINE_PREBUILT_LIB}")
+        endif()
+        message(STATUS "Using prebuilt skey-engine: ${SKEY_ENGINE_PREBUILT_LIB}")
+        set(SKEY_ENGINE_LIB "${SKEY_ENGINE_PREBUILT_LIB}")
+        add_custom_target(skey_engine_build)
+    else()
+        file(GLOB_RECURSE SKEY_ENGINE_SOURCES CONFIGURE_DEPENDS
+            "${SKEY_ENGINE_DIR}/src/*.rs"
+            "${SKEY_ENGINE_DIR}/data/*"
+            "${SKEY_ENGINE_DIR}/Cargo.toml"
+        )
+        add_custom_command(
+            OUTPUT ${SKEY_ENGINE_LIB}
+            COMMAND cargo build --release
+                --manifest-path "${SKEY_ENGINE_DIR}/Cargo.toml"
+                --target-dir "${CMAKE_CURRENT_BINARY_DIR}/skey-engine-target"
+            WORKING_DIRECTORY ${SKEY_ENGINE_DIR}
+            COMMENT "Building skey-engine from ${SKEY_ENGINE_DIR} (dev mode)"
+            DEPENDS ${SKEY_ENGINE_SOURCES}
+            VERBATIM
+        )
+        add_custom_target(skey_engine_build DEPENDS ${SKEY_ENGINE_LIB})
+    endif()
 else()
     set(SKEY_ENGINE_LIB "${SKEY_ENGINE_DIR}/target/release/libskey_engine.a")
     if(NOT EXISTS "${SKEY_ENGINE_DIR}/Cargo.toml")

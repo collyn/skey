@@ -1,3 +1,13 @@
+# Install destinations for distro-specific files.  Overridable at configure
+# time so NixOS (whose sandbox forbids writing to /lib and /etc) can point
+# them inside the install prefix.  Defaults match Debian/Ubuntu/Fedora.
+set(SKEY_SYSTEMD_UNIT_DIR "/lib/systemd/system" CACHE PATH
+    "Systemd system unit install directory")
+set(SKEY_POLKIT_RULES_DIR "/etc/polkit-1/rules.d" CACHE PATH
+    "Polkit rules install directory")
+set(SKEY_PROFILE_D_DIR "/etc/profile.d" CACHE PATH
+    "profile.d snippet install directory")
+
 # SVG icons
 # apps/ — app launcher and IM list popup
 install(FILES icons/fcitx-skey.svg
@@ -154,12 +164,12 @@ configure_file(
     @ONLY
 )
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/fcitx5-skey-uinput-server@.service"
-    DESTINATION "/lib/systemd/system")
+    DESTINATION "${SKEY_SYSTEMD_UNIT_DIR}")
 
 # Polkit rule: lets each user restart their own uinput server instance
 # (systemd manage-units for fcitx5-skey-uinput-server@<user>.service only).
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/60-fcitx5-skey-uinput.rules"
-    DESTINATION "/etc/polkit-1/rules.d")
+    DESTINATION "${SKEY_POLKIT_RULES_DIR}")
 
 # ── Settings GUI .desktop file ──
 configure_file(
@@ -172,4 +182,4 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/fcitx5-skey-settings.desktop"
 
 # Environment variables for X11/Wayland (sourced by login shells and display managers)
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/fcitx5-skey.sh"
-    DESTINATION "/etc/profile.d")
+    DESTINATION "${SKEY_PROFILE_D_DIR}")
