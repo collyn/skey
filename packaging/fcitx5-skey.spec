@@ -180,6 +180,7 @@ fi
 %{_bindir}/fcitx5-skey-uinput-server
 %{_bindir}/fcitx5-skey-settings
 %{_bindir}/skey-setup
+%{_bindir}/skey-restart-fcitx5
 %{_datadir}/fcitx5/addon/skey.conf
 %{_datadir}/fcitx5/inputmethod/skey-im.conf
 %{_datadir}/icons/hicolor/scalable/apps/fcitx-skey.svg
@@ -239,6 +240,7 @@ fi
 %{_datadir}/pixmaps/fcitx-skey-vn-flag.*
 %{_datadir}/applications/fcitx5-skey-settings.desktop
 /lib/systemd/system/fcitx5-skey-uinput-server@.service
+%config(noreplace) /etc/polkit-1/rules.d/60-fcitx5-skey-uinput.rules
 %config %{_sysconfdir}/profile.d/fcitx5-skey.sh
 
 %changelog
