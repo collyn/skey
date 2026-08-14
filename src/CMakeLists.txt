@@ -12,22 +12,26 @@ set(SKEY_SOURCES
     charset.cpp
     a11y_monitor.cpp
     icon_resolver.cpp
+    x11_app_name.cpp
 )
 
-# Find dbus-1 for AT-SPI2 accessibility monitoring
+# Find dbus-1 for AT-SPI2 accessibility monitoring, and xcb for the
+# focused-window WM_CLASS lookup (empty-program IBus-frontend apps).
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(DBUS REQUIRED dbus-1)
+pkg_check_modules(XCB REQUIRED xcb)
 
 add_library(skey MODULE ${SKEY_SOURCES})
 target_link_libraries(skey
     Fcitx5::Core
     skey_engine
     ${DBUS_LIBRARIES}
+    ${XCB_LIBRARIES}
     pthread
     dl
     m
 )
-target_include_directories(skey PRIVATE ${DBUS_INCLUDE_DIRS})
+target_include_directories(skey PRIVATE ${DBUS_INCLUDE_DIRS} ${XCB_INCLUDE_DIRS})
 target_compile_features(skey PRIVATE cxx_std_17)
 target_compile_definitions(skey PRIVATE
     FCITX_SKEY_ICON_PATH="${CMAKE_INSTALL_PREFIX}/share/icons/hicolor/scalable/apps/fcitx-skey.svg"

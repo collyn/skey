@@ -59,6 +59,12 @@ private:
     bool useHiddenComposition() const;
     bool useUinputMode() const;
     bool isChromiumCached() const;
+    /// Per-app identity key.  The IBus frontend reports an empty program
+    /// name for apps that only speak the ibus protocol (AppImages, some
+    /// Electron apps) — resolve the real name from the focused X11
+    /// window's WM_CLASS so per-app mode config doesn't collide under one
+    /// shared "(IBus app)" key.  Resolution is attempted once per focus.
+    const std::string &appProgram() const;
     /// True when the AT-SPI2 monitor has a fresh focus snapshot of a
     /// text-entry node inside a web document (Facebook chat, comments, web
     /// forms).  Chrome fires that focus event immediately on click, while
@@ -120,6 +126,10 @@ private:
     bool appExcluded_ = false;
     SKeyOutputMode appModeOverride_ = SKeyOutputMode::SurroundingText;
     std::string cachedProgram_{"\x01"};  // sentinel ≠ any real program name, incl. empty
+    // X11 WM_CLASS resolution for empty-program (IBus frontend) apps.
+    // Cleared on each activate(); see appProgram().
+    mutable bool appNameAttempted_ = false;
+    mutable std::string resolvedProgram_;
     mutable bool modeCacheValid_ = false;
     mutable SKeyOutputMode cachedMode_ = SKeyOutputMode::SurroundingText;
     mutable int cachedIsChromium_ = -1;  // tristate: -1=unset, 0=false, 1=true

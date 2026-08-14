@@ -2,6 +2,7 @@
 
 #include "charset.h"
 #include "icon_resolver.h"
+#include "x11_app_name.h"
 
 #include <fcitx-config/iniparser.h>
 #include <fcitx-utils/log.h>
@@ -512,7 +513,7 @@ public:
     state_->appModeOverride_ = mode_;
     state_->hasAppModeOverride_ = true;
     state_->modeCacheValid_ = false;
-    engine_->saveAppMode(state_->ic_->program(), mode_);
+    engine_->saveAppMode(state_->appProgram(), mode_);
     SKEY_INFO() << "Mode switched to " << outputModeName(mode_);
     state_->dismissModeMenu();
   }
@@ -553,8 +554,8 @@ public:
   void select(InputContext *) const override {
     bool newExcluded = !state_->appExcluded_;
     state_->appExcluded_ = newExcluded;
-    engine_->saveAppExcluded(state_->ic_->program(), newExcluded);
-    SKEY_INFO() << "App '" << state_->ic_->program()
+    engine_->saveAppExcluded(state_->appProgram(), newExcluded);
+    SKEY_INFO() << "App '" << state_->appProgram()
                 << (newExcluded ? "' excluded" : "' included");
     state_->dismissModeMenu();
   }
@@ -1023,8 +1024,30 @@ void SKeyState::commitText(const std::string &utf8) {
   ic_->commitString(skey::convertCharset(utf8, charset_));
 }
 
+const std::string &SKeyState::appProgram() const {
+  const std::string &prog = ic_->program();
+  if (!prog.empty()) {
+    return prog;
+  }
+  // The IBus frontend reports an empty program name for apps that only
+  // speak the ibus protocol (AppImages etc.) — all such apps would share
+  // one "(IBus app)" config key, so per-app mode settings leak between
+  // them.  Resolve the real name from the focused X11 window's WM_CLASS,
+  // attempted once per focus (see activate()).
+  if (appNameAttempted_) {
+    return resolvedProgram_;
+  }
+  appNameAttempted_ = true;
+  resolvedProgram_ = x11FocusedWmClass();
+  if (!resolvedProgram_.empty()) {
+    SKEY_INFO() << "App: resolved program name via X11: '" << resolvedProgram_
+                << "'";
+  }
+  return resolvedProgram_;
+}
+
 void SKeyState::refreshAppMode() {
-  std::string prog = ic_->program();
+  std::string prog = appProgram();
   if (prog == cachedProgram_)
     return;
   cachedProgram_ = prog;
@@ -1032,9 +1055,9 @@ void SKeyState::refreshAppMode() {
   hasAppModeOverride_ = false;
   appExcluded_ = false;
 
-  // IBus frontend reports empty program name (AppImages etc.).
-  // Still try to load saved per-app config — the entry is keyed
-  // by program name, which may be empty.
+  // Per-app config is keyed by the resolved app name — appProgram()
+  // falls back to X11 WM_CLASS when the IBus frontend reports an empty
+  // program name (AppImages etc.).
   RawConfig cfg;
   readAsIni(cfg, "conf/skey-app-modes.conf");
   auto *val = cfg.valueByPath(prog);
@@ -1078,7 +1101,7 @@ bool SKeyState::inChromiumAddressBar() const {
   // Escape-key autocomplete dismissal to close the find bar.
   if (!isWayland() && engine_->a11yMonitor() &&
       engine_->a11yMonitor()->isBrowserUIFocused() &&
-      isChromiumBrowser(ic_->program())) {
+      isChromiumBrowser(appProgram())) {
     return true;
   }
   return false;
@@ -1251,7 +1274,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   // Terminal apps (Konsole, Alacritty, etc.) have their own internal
   // buffer — SurroundingText API doesn't sync correctly, so Uinput
   // raw key pass-through works better.
-  if (caps.test(CapabilityFlag::Terminal) || isTerminalApp(ic_->program())) {
+  if (caps.test(CapabilityFlag::Terminal) || isTerminalApp(appProgram())) {
     SKEY_DEBUG() << "Auto: terminal app → Uinput";
     return SKeyOutputMode::Uinput;
   }
@@ -1313,7 +1336,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
           now(CLOCK_MONOTONIC) >= modeDecisionDeadlineUsec_) {
         modeDecisionPending_ = false;
         chromiumBareCapsUinput_ = true;
-        engine_->chromiumBareCapsProgram_ = ic_->program();
+        engine_->chromiumBareCapsProgram_ = appProgram();
         engine_->chromiumHadBareCaps_ = true;
         SKEY_DEBUG() << "Auto: bare caps confirmed after deferral → sticky Uinput";
       } else if (!modeDecisionPending_) {
@@ -1343,7 +1366,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
                    << ")";
     } else {
       chromiumBareCapsUinput_ = true;
-      engine_->chromiumBareCapsProgram_ = ic_->program();
+      engine_->chromiumBareCapsProgram_ = appProgram();
       engine_->chromiumHadBareCaps_ = true;
       SKEY_DEBUG() << "Auto: deferred decision → sticky Uinput (weak hints only)";
       return SKeyOutputMode::Uinput;
@@ -1361,7 +1384,7 @@ bool SKeyState::canEditWithSurroundingText() const {
 
 bool SKeyState::isChromiumCached() const {
   if (cachedIsChromium_ < 0) {
-    cachedIsChromium_ = isChromiumBasedApp(ic_->program()) ? 1 : 0;
+    cachedIsChromium_ = isChromiumBasedApp(appProgram()) ? 1 : 0;
   }
   return cachedIsChromium_ == 1;
 }
@@ -1370,7 +1393,7 @@ bool SKeyState::isFirefoxOrSnap() const {
   if (cachedIsFirefoxOrSnap_ >= 0) {
     return cachedIsFirefoxOrSnap_ == 1;
   }
-  const std::string &prog = ic_->program();
+  const std::string &prog = appProgram();
   // Firefox program name (native or Snap)
   if (prog.find("firefox") != std::string::npos) {
     cachedIsFirefoxOrSnap_ = 1;
@@ -1478,6 +1501,11 @@ void SKeyState::activate() {
   viet_.setDict(*cfg.dict);
   loadUserDict();
 
+  // Fresh focus: re-resolve the app name for empty-program (IBus frontend)
+  // apps — the focused X11 window may have changed.
+  appNameAttempted_ = false;
+  resolvedProgram_.clear();
+
   // Reactivate after spurious cycle: cancel the genuine-loss timer.
   if (addrBarExpectCycle_) {
     SKEY_DEBUG() << "Activate: spurious cycle, cancel loss timer";
@@ -1487,10 +1515,10 @@ void SKeyState::activate() {
     // activating program matches, the same IC is being reactivated —
     // the app auto-committed on focus loss (e.g., LibreOffice).
     // Don't double-commit; just clean up the engine entry.
-    auto it = engine_->pendingPreedits_.find(ic_->program());
-    if (preeditWasPending_ && preeditPendingProgram_ == ic_->program()) {
+    auto it = engine_->pendingPreedits_.find(appProgram());
+    if (preeditWasPending_ && preeditPendingProgram_ == appProgram()) {
       SKEY_DEBUG() << "Activate: spurious cycle for '"
-                   << ic_->program() << "', discarding saved preedit";
+                   << appProgram() << "', discarding saved preedit";
       if (it != engine_->pendingPreedits_.end()) {
         engine_->pendingPreedits_.erase(it);
       }
@@ -1498,7 +1526,7 @@ void SKeyState::activate() {
       // Genuine return — the IC was destroyed and recreated, or the
       // activating program differs from the one that saved the text.
       SKEY_DEBUG() << "Activate: committing saved preedit '"
-                   << it->second << "' for program '" << ic_->program()
+                   << it->second << "' for program '" << appProgram()
                    << "'";
       commitText(it->second);
       engine_->pendingPreedits_.erase(it);
@@ -1536,14 +1564,14 @@ void SKeyState::activate() {
   deferredCommitText_.clear();
   deferredPrefix_.clear();
 
-  // Load per-app mode preference / exclusion.
-  // IBus frontend reports empty program name — still try to load saved config.
+  // Load per-app mode preference / exclusion, keyed by the resolved app
+  // name (X11 WM_CLASS fallback for empty-program IBus-frontend apps).
   hasAppModeOverride_ = false;
   appExcluded_ = false;
   {
     RawConfig cfg;
     readAsIni(cfg, "conf/skey-app-modes.conf");
-    auto *val = cfg.valueByPath(ic_->program());
+    auto *val = cfg.valueByPath(appProgram());
     if (val) {
       // Normalize: strip quotes that safeSaveAsIni adds for values
       // containing spaces (e.g. "Surrounding Text" → Surrounding Text).
@@ -1586,8 +1614,8 @@ void SKeyState::activate() {
   // program — but only when the current caps lack "strong" content hints
   // (Alpha, SpellCheck, etc.) that indicate a real editor like Facebook chat.
   if (engine_->chromiumHadBareCaps_ &&
-      ic_->program() == engine_->chromiumBareCapsProgram_ &&
-      !ic_->program().empty() && isChromiumCached()) {
+      appProgram() == engine_->chromiumBareCapsProgram_ &&
+      !appProgram().empty() && isChromiumCached()) {
     CapabilityFlags strong(kChromiumStrongHints);
     if (!(caps & strong)) {
       chromiumBareCapsUinput_ = true;
@@ -1606,7 +1634,7 @@ void SKeyState::activate() {
                << " nativeSurrounding=" << useNativeSurroundingApi()
                << " frontend=" << ic_->display()
                << " display=" << ic_->display() << " wayland=" << isWayland()
-               << " app=" << ic_->program() << " caps=0x" << std::hex
+               << " app=" << appProgram() << " caps=0x" << std::hex
                << static_cast<uint64_t>(caps.toInteger()) << std::dec
                << " cursor=(" << ic_->cursorRect().left() << ","
                << ic_->cursorRect().top() << "," << ic_->cursorRect().width()
@@ -1985,8 +2013,8 @@ void SKeyState::deactivate() {
             if (!viet_.getComposed().empty() && !useSurroundingText()) {
               if (!preeditWasPending_) {
                 preeditWasPending_ = true;
-                preeditPendingProgram_ = ic_->program();
-                engine_->pendingPreedits_[ic_->program()] =
+                preeditPendingProgram_ = appProgram();
+                engine_->pendingPreedits_[appProgram()] =
                     viet_.getComposed();
               }
             }
@@ -2015,11 +2043,11 @@ void SKeyState::deactivate() {
   if (!viet_.getComposed().empty() && !useSurroundingText()) {
     if (!preeditWasPending_) {
       preeditWasPending_ = true;
-      preeditPendingProgram_ = ic_->program();
-      engine_->pendingPreedits_[ic_->program()] = viet_.getComposed();
+      preeditPendingProgram_ = appProgram();
+      engine_->pendingPreedits_[appProgram()] = viet_.getComposed();
       SKEY_DEBUG() << "Deactivate: saved preedit '"
                    << viet_.getComposed() << "' for program '"
-                   << ic_->program() << "'";
+                   << appProgram() << "'";
     }
   }
   viet_.reset();
@@ -2030,7 +2058,7 @@ void SKeyState::deactivate() {
 
 void SKeyState::reset() {
   SKEY_DEBUG() << "Reset: entered uinputFwd=" << uinputKeyForwarded_
-               << " ffSnap=" << isFirefoxOrSnap() << " prog=" << ic_->program();
+               << " ffSnap=" << isFirefoxOrSnap() << " prog=" << appProgram();
   if (addrBarExpectCycle_) {
     SKEY_DEBUG() << "Reset: expecting cycle, skip";
     return;
@@ -2053,10 +2081,10 @@ void SKeyState::reset() {
   // Wayland compositors (GNOME Mutter).
   if (!viet_.getComposed().empty() && !useSurroundingText()) {
     preeditWasPending_ = true;
-    preeditPendingProgram_ = ic_->program();
-    engine_->pendingPreedits_[ic_->program()] = viet_.getComposed();
+    preeditPendingProgram_ = appProgram();
+    engine_->pendingPreedits_[appProgram()] = viet_.getComposed();
     SKEY_DEBUG() << "Reset: saved preedit '" << viet_.getComposed()
-                 << "' for program '" << ic_->program() << "'";
+                 << "' for program '" << appProgram() << "'";
   }
   viet_.reset();
   bufferedUinputKeys_.clear();
@@ -2134,7 +2162,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
        ic_->capabilityFlags().test(CapabilityFlag::Password) ||
        (engine_->a11yMonitor() &&
         engine_->a11yMonitor()->isPasswordFocused()) ||
-       programIsLockScreen(ic_->program()))) {
+       programIsLockScreen(appProgram()))) {
     return;
   }
 
@@ -2257,11 +2285,11 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         break; // unreachable
       }
       appExcluded_ = false;
-      engine_->saveAppExcluded(ic_->program(), false);
+      engine_->saveAppExcluded(appProgram(), false);
       appModeOverride_ = newMode;
       hasAppModeOverride_ = true;
       modeCacheValid_ = false;
-      engine_->saveAppMode(ic_->program(), newMode);
+      engine_->saveAppMode(appProgram(), newMode);
       SKEY_INFO() << "Mode switched to " << outputModeName(newMode);
       dismissModeMenu();
       keyEvent.filterAndAccept();
@@ -2269,8 +2297,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     } else if (choice == 5) {
       bool newExcluded = !appExcluded_;
       appExcluded_ = newExcluded;
-      engine_->saveAppExcluded(ic_->program(), newExcluded);
-      SKEY_INFO() << "App '" << ic_->program()
+      engine_->saveAppExcluded(appProgram(), newExcluded);
+      SKEY_INFO() << "App '" << appProgram()
                   << (newExcluded ? "' excluded" : "' included");
       dismissModeMenu();
       keyEvent.filterAndAccept();

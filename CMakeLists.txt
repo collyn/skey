@@ -30,7 +30,7 @@ fcitx5_add_i18n_definition()
 #             tree stays clean.  skey_engine.h is also taken from the source.
 #   CI:     no SKEY_ENGINE_SOURCE_DIR
 #           → clones the pinned tag from GitHub (used by GitHub Actions).
-set(SKEY_ENGINE_VERSION "v0.1.19")
+set(SKEY_ENGINE_VERSION "v0.1.20")
 set(SKEY_ENGINE_DIR "${CMAKE_CURRENT_BINARY_DIR}/skey-engine")
 
 if(DEFINED SKEY_ENGINE_SOURCE_DIR)
