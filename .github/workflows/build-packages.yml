@@ -154,8 +154,14 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          pacman -Syu --noconfirm base-devel sudo cmake extra-cmake-modules \
-            fcitx5 gettext dbus rust qt6-base libxcb
+          pacman -Syu --noconfirm base-devel sudo tar git
+          # Install everything PKGBUILD declares in depends and makedepends —
+          # makepkg runs as a non-root builder and cannot resolve them itself,
+          # so parsing the lists straight out of PKGBUILD keeps this in sync.
+          # (Keep the array declarations single-line for this to work.)
+          grep -E '^(depends|makedepends)=\(' packaging/PKGBUILD | \
+            sed "s/^[a-z]*=//; s/[()']//g" | tr ' ' '\n' | grep -v '^$' | \
+            sort -u | xargs pacman -Syu --noconfirm --needed
 
       - name: Create builder user (makepkg refuses root)
         run: |
