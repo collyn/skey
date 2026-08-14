@@ -11,9 +11,10 @@
 #   1. `su -` (login shell) does NOT carry XDG_SESSION_TYPE /
 #      DBUS_SESSION_BUS_ADDRESS — the KWin toggle below silently never ran
 #      from postinst, so apps lost the IM connection.
-#   2. Toggling VirtualKeyboard too early (fcitx5's waylandim addon registers
-#      ~1s AFTER the main D-Bus name appears) left KWin connected to a
-#      half-initialized IM and apps could not type until a focus toggle.
+#   2. Toggling VirtualKeyboard before the skey addon finished registering
+#      left KWin reconnected to a half-initialized IM: text-input-v3 clients
+#      that never re-commit (STerm) stayed dead until the app was restarted,
+#      while Chromium apps recovered on their own and masked the race.
 
 # Redirect BOTH streams: the daemon keeps stdout/stderr open across the
 # fork, and when this script runs under `systemd-run --wait --pipe`
@@ -32,8 +33,7 @@ esac
 QBUS=$(command -v qdbus6 || command -v qdbus || true)
 [ -n "$QBUS" ] || exit 0
 
-# Wait for fcitx5 to come back (max ~10s), then a 1s margin for the
-# waylandim addon to finish loading.
+# Wait for fcitx5 to come back (max ~10s).
 ready=0
 for _ in $(seq 1 40); do
     if "$QBUS" org.fcitx.Fcitx5 / >/dev/null 2>&1; then
@@ -42,8 +42,19 @@ for _ in $(seq 1 40); do
     fi
     sleep 0.25
 done
+# Wait for the skey addon to fully register (the last addon to load,
+# ~2s after daemon start) before toggling.  A fixed 1s margin raced with
+# it: toggling KWin while fcitx5 was half-initialized left text-input-v3
+# clients that never re-commit (STerm) dead until app restart, while
+# Chromium apps recovered on their own and masked the problem.
 if [ "$ready" = 1 ]; then
-    sleep 1
+    for _ in $(seq 1 40); do
+        if [ -n "$("$QBUS" org.fcitx.Fcitx5 /controller \
+                org.fcitx.Fcitx.Controller1.AddonForIM skey-im 2>/dev/null)" ]; then
+            break
+        fi
+        sleep 0.25
+    done
 fi
 
 # Minimal 100ms off window: short enough that apps keep their text input

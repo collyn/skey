@@ -487,6 +487,20 @@ if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
                 if ! command -v qdbus6 >/dev/null 2>&1; then
                     QDBUS="qdbus"  # fallback for Plasma 5
                 fi
+                # Wait for the skey addon to fully register (the last addon
+                # to load, ~2s after daemon start) before forcing KWin to
+                # reconnect.  Toggling too early reconnects the IM while
+                # fcitx5 is still half-initialized: text-input-v3 clients
+                # that never re-commit (STerm, ...) stay dead until the app
+                # is restarted, while Chromium apps recover on their own and
+                # mask the race.
+                for _ in $(seq 1 40); do
+                    if [ -n "$($QDBUS org.fcitx.Fcitx5 /controller \
+                            org.fcitx.Fcitx.Controller1.AddonForIM skey-im 2>/dev/null)" ]; then
+                        break
+                    fi
+                    sleep 0.25
+                done
                 $QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set \
                     org.kde.kwin.VirtualKeyboard enabled false 2>/dev/null || true
                 sleep 0.1
