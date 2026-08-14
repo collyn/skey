@@ -18,7 +18,8 @@ build() {
     mkdir -p "$CARGO_HOME"
     cmake -B build -S "$srcdir/fcitx5-skey-$pkgver" \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX=/usr
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DSKEY_SYSTEMD_UNIT_DIR=/usr/lib/systemd/system
     cmake --build build -j"$(nproc)"
 }
 
