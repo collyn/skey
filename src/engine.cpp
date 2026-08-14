@@ -7,7 +7,19 @@
 #include <fcitx-config/iniparser.h>
 #include <fcitx-utils/log.h>
 #include <fcitx-utils/standardpath.h>
+// StandardPaths (fcitx5 >= 5.1) replaces the deprecated StandardPath API.
+// Older distros (Ubuntu 22.04 CI, fcitx5 5.0.x) only ship standardpath.h —
+// detect at compile time and fall back (see userPkgDataDir()).
+#ifndef SKEY_HAVE_STANDARDPATHS
+#if defined(__has_include)
+#if __has_include(<fcitx-utils/standardpaths.h>)
+#define SKEY_HAVE_STANDARDPATHS 1
+#endif
+#endif
+#endif
+#ifdef SKEY_HAVE_STANDARDPATHS
 #include <fcitx-utils/standardpaths.h>
+#endif
 
 // StandardPath is deprecated in favour of StandardPaths in newer fcitx5,
 // but we use it for compatibility with older versions (CI / LTS distros).
@@ -287,6 +299,20 @@ static std::string skeySocketPath(const char *suffix) {
 FCITX_DEFINE_LOG_CATEGORY(skey_log, "skey");
 #define SKEY_DEBUG() SKeyLogger()
 #define SKEY_INFO() SKeyLogger()
+
+/// Path to fcitx5's per-user package-data directory
+/// (~/.local/share/fcitx5).  fcitx5 >= 5.1 provides StandardPaths;
+/// older distros only have the legacy StandardPath API.
+static std::string userPkgDataDir() {
+#ifdef SKEY_HAVE_STANDARDPATHS
+  return fcitx::StandardPaths::global()
+      .userDirectory(fcitx::StandardPathsType::PkgData)
+      .string();
+#else
+  return fcitx::StandardPath::global().userDirectory(
+      fcitx::StandardPath::Type::PkgData);
+#endif
+}
 
 /// Check if a program name is a known Chromium-based browser.
 // Matches actual Chromium-family browser programs.
@@ -976,10 +1002,7 @@ std::string SKeyEngine::subModeIconImpl(const InputMethodEntry &entry,
   // hicolor and breeze fallback directories.
   skey::IconSearchPaths paths;
   // fcitx5's PkgData = "$XDG_DATA_HOME/fcitx5" (~/.local/share/fcitx5)
-  paths.userDataDir =
-      fcitx::StandardPaths::global()
-          .userDirectory(fcitx::StandardPathsType::PkgData)
-          .string();
+  paths.userDataDir = userPkgDataDir();
   // SVG-first: DE compositors render SVGs natively for tray icons
   paths.systemDirs = {
       "/usr/share/icons/hicolor/scalable/apps",
@@ -3910,10 +3933,7 @@ void SKeyState::loadUserDict() {
   // Words are added to the engine and checked before the embedded list,
   // so users can keep words the built-in dictionary lacks.
   viet_.clearWords();
-  std::string userDir =
-      fcitx::StandardPaths::global()
-          .userDirectory(fcitx::StandardPathsType::PkgData)
-          .string();
+  std::string userDir = userPkgDataDir();
   std::string path = userDir + "/skey/user-dict.txt";
   std::ifstream in(path);
   if (!in.is_open()) return;

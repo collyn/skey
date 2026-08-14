@@ -26,6 +26,7 @@ BuildRequires:  gettext
 BuildRequires:  gcc-c++
 BuildRequires:  make
 BuildRequires:  pkgconfig(dbus-1)
+BuildRequires:  pkgconfig(xcb)
 # rust + cargo provided by rustup in CI; use distro packages for local builds:
 # BuildRequires:  rust
 # BuildRequires:  cargo

@@ -26,7 +26,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake extra-cmake-modules libfcitx5core-dev \
             fcitx5 pkg-config gettext dpkg-dev apt-utils librsvg2-bin libdbus-1-dev \
-            libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev qt6-base-dev
+            libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev libxcb1-dev qt6-base-dev
 
       - name: Install Rust toolchain
         run: |
@@ -55,7 +55,7 @@ jobs:
             pre_install: dnf install -y tar git
             install: |
               dnf install -y cmake extra-cmake-modules fcitx5-devel fcitx5 \
-                dbus-devel gettext gcc-c++ make \
+                dbus-devel libxcb-devel gettext gcc-c++ make \
                 qt6-qtbase-devel librsvg2-tools \
                 rpm-build rpm-sign gpg createrepo_c
           - distro: opensuse
@@ -65,7 +65,7 @@ jobs:
             install: |
               zypper --non-interactive install --force-resolution \
                 cmake extra-cmake-modules \
-                fcitx5-devel fcitx5 dbus-1-devel gettext gcc-c++ make \
+                fcitx5-devel fcitx5 dbus-1-devel libxcb-devel gettext gcc-c++ make \
                 qt6-base-devel rsvg-convert \
                 rpm-build gpg2 createrepo_c
 
@@ -155,7 +155,7 @@ jobs:
       - name: Install build dependencies
         run: |
           pacman -Syu --noconfirm base-devel sudo cmake extra-cmake-modules \
-            fcitx5 gettext dbus rust qt6-base
+            fcitx5 gettext dbus rust qt6-base libxcb
 
       - name: Create builder user (makepkg refuses root)
         run: |

@@ -9,7 +9,7 @@ arch=('x86_64')
 url="https://github.com/collyn/skey"
 license=('MIT')
 depends=('fcitx5' 'hicolor-icon-theme' 'qt6-base' 'systemd')
-makedepends=('cmake' 'extra-cmake-modules' 'gettext' 'dbus' 'rust' 'gcc')
+makedepends=('cmake' 'extra-cmake-modules' 'gettext' 'dbus' 'rust' 'gcc' 'libxcb')
 # source is the git checkout itself — CI populates src/ before invoking makepkg -e
 source=()
 
