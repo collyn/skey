@@ -18,31 +18,6 @@
 #include <QTabWidget>
 #include <QVBoxLayout>
 
-namespace {
-
-/// QTabBar with narrower clickable tabs — native style painting is kept
-/// intact; only the preferred tab width is trimmed.
-class CompactTabBar : public QTabBar {
-public:
-  using QTabBar::QTabBar;
-
-protected:
-  QSize tabSizeHint(int index) const override {
-    QSize s = QTabBar::tabSizeHint(index);
-    return QSize(s.width() - 5, s.height());
-  }
-};
-
-/// QTabWidget using the compact tab bar (setTabBar is protected).
-class CompactTabWidget : public QTabWidget {
-public:
-  using QTabWidget::QTabWidget;
-  explicit CompactTabWidget(QWidget *parent = nullptr) : QTabWidget(parent) {
-    setTabBar(new CompactTabBar(this));
-  }
-};
-
-} // namespace
 
 SkeySettingsWindow::SkeySettingsWindow(QWidget *parent) : QWidget(parent) {
   setupUI();
@@ -64,11 +39,12 @@ void SkeySettingsWindow::setupUI() {
   mainLayout->setSpacing(8);
 
   // ── Tab widget ──
-  tabWidget_ = new CompactTabWidget(this);
+  tabWidget_ = new QTabWidget(this);
   // No right-scroll arrows: tabs shrink to fit a single row instead.
   // (QTabBar has no native multi-row mode.)
   tabWidget_->setUsesScrollButtons(false);
-  tabWidget_->tabBar()->setElideMode(Qt::ElideNone);
+  // Elide rather than overlap if space is ever genuinely short.
+  tabWidget_->tabBar()->setElideMode(Qt::ElideRight);
   generalTab_ = new GeneralTab(this);
   appModesTab_ = new AppModesTab(this);
   macroTab_ = new MacroTab(this);
@@ -81,6 +57,11 @@ void SkeySettingsWindow::setupUI() {
   tabWidget_->addTab(dictTab_, QString::fromUtf8("Từ điển"));
   tabWidget_->addTab(appearanceTab_, QString::fromUtf8("Icons"));
   tabWidget_->addTab(infoTab_, QString::fromUtf8("Info"));
+  // Tab size hints vary per platform theme (GTK themes want wider tabs
+  // than Fusion/KDE). Grow the window to fit the tabs at their natural
+  // size instead of crushing the tab text.
+  const int tabBarWidth = tabWidget_->tabBar()->sizeHint().width();
+  setFixedWidth(qBound(480, tabBarWidth + 28, 640));
   mainLayout->addWidget(tabWidget_);
 
   // ── Hint label ──
