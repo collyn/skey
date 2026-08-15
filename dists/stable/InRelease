@@ -4,41 +4,40 @@ Hash: SHA512
 Architectures: amd64
 Codename: stable
 Components: main
-Date: Fri, 14 Aug 2026 11:49:37 +0000
+Date: Sat, 15 Aug 2026 08:28:57 +0000
 Description: Vietnamese SKey input method addon for Fcitx5
 Label: fcitx5-skey
 Origin: fcitx5-skey
 Suite: stable
 MD5Sum:
- 2974c45edd50b3c5cc318c508c25c890              205 Release
+ b7cc40861e9ba0ea37859d421f93de07              205 Release
  71d7ae5c9a9e09b4ba19fe2f85e92421              626 main/binary-amd64/Packages
- 66ab9a3830d97f2841c1df6c2e11d19b              450 main/binary-amd64/Packages.gz
+ a0d378443371bdc636d254f9e48f5371              450 main/binary-amd64/Packages.gz
 SHA1:
- 301dece9fa089c2b2a388a24b278ae9bb13f6d49              205 Release
+ 5815a921c106e2a11793701606b8b68de446434a              205 Release
  73a2c88b99263ab6177807060f43a5735c68ea4e              626 main/binary-amd64/Packages
- 93560f1944ea598b584060cbdc732d9b577059cd              450 main/binary-amd64/Packages.gz
+ 76b02a44e67a119befbc79e0046232bb54e91fd4              450 main/binary-amd64/Packages.gz
 SHA256:
- ab1d2b69b2c41e082d9950813445fa4ec95d1edac9cb80ab59a11245a9335120              205 Release
+ eec56ee2ba3069fd5172a221d808196c04b3df7f9e787e8fca531fc07923fb5d              205 Release
  4b96ed9b41de24790c8ee271bc8b820a679c3976da9fccc1987ae6d180ea6bba              626 main/binary-amd64/Packages
- c510b63a1b0a8f7f818ce9c8189cb6e89b102b83fd3b07784e37a8c4176ff517              450 main/binary-amd64/Packages.gz
+ eb5f28a630edfbe9c9b012b48e01e3cebfdefe9eef3679d62570464ed9b57fae              450 main/binary-amd64/Packages.gz
 SHA512:
- daf7d11ff3dd6aea24fd962fb027ed8b392e09729beb4b629ad7aefc1874d51b46904781a00135f72402df4935be472c57f59c6cb996dfc891e3987d87bdc739              205 Release
+ 4b54ee38ede222e15a788a690108f79c04126f5f154d6aa4f34a8f814e18db312c54ec388d91240d9c745bf6f13fb22f661dfed31889dde7ffcb1a6d58942cb9              205 Release
  c32930ceed4cdc9d7fe02e1d18427e90b6de7713b0a41fddd05d13cb54ac3130ddefb68a0c68d7c2026107cf93dfd129d9cb5d2fda1765ed5bd2d2cf664e067b              626 main/binary-amd64/Packages
- 51389c58ff9885a8acc0c036d95f73e314f8193a35d1d4a655fb9d3f0faf90bcb8945bf24a782e2f0b44f7da8e257b807bd6789229f1938f6854eaa4256577db              450 main/binary-amd64/Packages.gz
+ c02d9b0eca0c5f5233a3b227b2779371363686a91d00f36d18f600d288d52d8c8ea944e69c43d4601a77561cbcb7c9a98ebe13e30c1425f4dbbe97890e1f8019              450 main/binary-amd64/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iQJIBAEBCgAyFiEEV9IGoVl2ekUJmC5+KaCOQ0c97jIFAmp/ANEUHGNvbGx5bjA5
-NEBnbWFpbC5jb20ACgkQKaCOQ0c97jLggBAAnQDI8/AfrrDHZdMs2/vQSyW+G5jJ
-34WPk+YP19wMUnFdgehkTrGqHbxWDTIBkkpqKu+uiLKz3KjPQ2wOxvflIlnPUGfU
-AhuNpPAZmAzLjl2x8luKQVeLy9zgY3EMLMgebiJC9iyrAcQA2A2XDEQcWtXa/hRI
-XWbej5UDxbeFLznuHjlRiBr+nGLZk8NawNm3eeR0zEEtYjTqOGcqlxtg85hFISPU
-cn8aJUrI3ohDbjCytbznFl1ZtKhUHRl1SDTbo5dmE66etNIHH7/rGwYxuuVslOgh
-QfNaXM9dfKA1+Sj9qMWT/7Er05Jkp2tTB5ZbFz95Uj3p5gO6Y78dMO94ZGTTLUbv
-4DNo89iyPfKYeEzy9BAyVXU7rwPHB6untCRQkdkMdWuOwWBpqhINF350mv7AT+fO
-P1sp3F+Z7lGnhhE4X+2XmkwMdIEIyeTXtfmkXC9oa6NCHaACZp9k3YECcDoBa/0A
-aHzxVLP97f96DQt4fvqgFeltzBcM0ypSXRZIXv8tbakhuMQnMyHMp7R4sf7KXL0a
-HaS6xOGOWR86Et272SOIqj6EPfMmTVaPxFi1TQBj6M4SYwFR47qiUxLlm+dM1d2d
-ECtbsttcnw7dQBaACEDjb2VLQ29yjt/+5s8runUHLp329eTKyTvhKTNEWag7CT4z
-YAtkTqNSRUJfk+Q=
-=gEhR
+iQIzBAEBCgAdFiEEV9IGoVl2ekUJmC5+KaCOQ0c97jIFAmqAI0kACgkQKaCOQ0c9
+7jIYiA/+NayvPMavgfa6ar4T3RzAlDsugTpqaW6USOocDLlqzvVb0BzOW+/yEuSF
+i1aacFg/kfCyd7Tnjh8EQvavJ8ciiif06ct3hmqYUk8UuAK5Vhztnmw8PhkrQQET
+nPEWYtlYJeDh9cS5H7AN7JaXBEdBrzmabMbUg6e8HvPzY529zK5ZnGfrM65P7pFy
+6+XpDDCIsaCXkpJ0l+/lymbhTmtqjb5qGtX5Y7RKTfZ4ufAEAxteVWXTnkpEZgx+
+G4uEFY7j7ZKONGpguWbxfE1Q4lpduvKR920K0ej1XgOQ/qV7SePezdtydVOO0XGd
+ip8BQU5HY+jVbMZAWszrb4GHDlWS40pzdcXDn+QlE4Wsv3r493MQtFA1SvgF/PEP
+tZvOL+K8wqIRJWzxUA3CNJAqcwQtdakQPio0ytAkwkA8jyEOsTG401WZCapFQg5Z
+nVRZ0+IRklyXHXQrEeOT3d8/eFKgqPmmo1dWXtCA6UcIBhfoPsB5BTRFHY7NLeVA
+mdLsj9uaUKk6+44K0HHcGGYPozjqfhCkTLlQpVXAyJo6h5i4ASyGDnQiTvFOhT1L
+Y407/EzZWEKftkpLqzpgvbpgCatIUXrqSpo15gFyMWnohA/biJrykCM8wQS2Najm
+jykdL7FAQmTV5ObMH+ya7Ixl3/nxhbjvxLMnXkxcRP1IHbi4RyQ=
+=k8ii
 -----END PGP SIGNATURE-----
