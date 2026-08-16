@@ -8,7 +8,7 @@
 
 [![Release](https://img.shields.io/github/v/release/collyn/skey?label=release&sort=semver)](https://github.com/collyn/skey/releases)
 [![License](https://img.shields.io/github/license/collyn/skey?label=license)](LICENSE)
-[![Downloads](https://img.shields.io/github/downloads/collyn/skey/total?label=downloads)](https://github.com/collyn/skey/releases)
+[![Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcollyn%2Fskey%2Fmain%2Fdownloads-badge.json)](https://github.com/collyn/skey/releases)
 
 </div>
 

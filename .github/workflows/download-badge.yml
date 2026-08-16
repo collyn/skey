@@ -1,0 +1,45 @@
+name: Update Download Badge
+
+# Snapshot GitHub release download counts so the README badge survives
+# release pruning (see scripts/update-download-badge.sh).
+on:
+  schedule:
+    # daily, off-peak minute
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  update-badge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main (not the tag that triggered this run)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update downloads-badge.json and downloads-cache.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x scripts/update-download-badge.sh
+          scripts/update-download-badge.sh
+
+      - name: Commit and push if changed
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add downloads-badge.json downloads-cache.json
+          if git diff --cached --quiet; then
+            echo "No change in download counts."
+            exit 0
+          fi
+          git commit -m "chore: update download badge"
+          # retry once on race with a concurrent run
+          git pull --rebase origin main || true
+          git push origin main
