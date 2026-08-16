@@ -43,6 +43,40 @@ fi
 
 cd "$WORKDIR"
 
+# ── Prune old versions (gh-pages storage hygiene) ────────────────────
+# Runs BEFORE the copy loops: the release being published is copied in
+# next, so keeping 2 here leaves 3 versions on the repo after publish.
+# Only files with a version in the name are pruned — repo db files
+# (fcitx5-skey.db.tar.gz, *.files*) and repodata/ are left untouched.
+prune_keep_newest() {
+    local dir="$1" keep="$2" versions file version
+    [ -d "$dir" ] || return 0
+    versions=$(find "$dir" -maxdepth 1 -type f | \
+        sed -nE 's#^.*/fcitx5-skey(-[a-z]+)?[-_]([0-9]+(\.[0-9]+)*).*#\2#p' | \
+        sort -Vu | tail -n "$keep")
+    [ -n "$versions" ] || return 0
+    find "$dir" -maxdepth 1 -type f | while read -r file; do
+        version=$(basename "$file" | \
+            sed -nE 's/^fcitx5-skey(-[a-z]+)?[-_]([0-9]+(\.[0-9]+)*).*/\2/p')
+        [ -n "$version" ] || continue
+        if ! grep -qxF "$version" <<<"$versions"; then
+            echo "→ Prune: $(basename "$file")"
+            rm -f "$file"
+        fi
+    done
+}
+prune_keep_newest pool/main/f/fcitx5-skey 2
+prune_keep_newest rpm/fedora 2
+prune_keep_newest rpm/opensuse 2
+prune_keep_newest arch/x86_64 2
+
+# Debug packages are never published to the repos (kept in CI artifacts
+# only) — this also sweeps ones published before that rule existed.
+find pool/main/f/fcitx5-skey rpm/fedora rpm/opensuse arch/x86_64 \
+    -maxdepth 1 -type f \
+    \( -name '*debuginfo*' -o -name '*debugsource*' -o -name '*debug-*' \) \
+    -delete 2>/dev/null || true
+
 # ── APT: .deb → pool/ + dists/ ───────────────────────────────────────
 for deb in "$ORIG_DIR"/*.deb; do
     [ -f "$deb" ] || continue
@@ -81,6 +115,7 @@ fi
 for rpm in "$ORIG_DIR"/*.rpm; do
     [ -f "$rpm" ] || continue
     case "$rpm" in
+        *debuginfo*|*debugsource*) continue ;;  # debug pkgs stay in CI artifacts only
         *fedora*|*.fc[0-9]*|*.fc[0-9][0-9]*) DISTRO="fedora" ;;
         *opensuse*|*.suse*|*tumbleweed*) DISTRO="opensuse" ;;
         *)
@@ -110,6 +145,9 @@ for pkg in "$ORIG_DIR"/*.pkg.tar.zst "$ORIG_DIR"/*.pkg.tar.zst.sig \
             "$ORIG_DIR"/*.db.tar.gz "$ORIG_DIR"/*.db.tar.gz.sig \
             "$ORIG_DIR"/*.files.tar.gz "$ORIG_DIR"/*.files.tar.gz.sig; do
     [ -f "$pkg" ] || continue
+    case "$pkg" in
+        *debug-*) continue ;;  # debug pkgs stay in CI artifacts only
+    esac
     cp "$pkg" "$ARCH_DIR/"
     echo "→ Arch: $(basename "$pkg")"
 done

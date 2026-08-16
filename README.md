@@ -211,7 +211,9 @@ sudo zypper install rsvg-convert
 #### Build & Install
 
 ```bash
-git clone https://github.com/collyn/skey.git
+# --single-branch: chỉ lấy nhánh main — gh-pages chứa package repo (~vài trăm MB),
+# clone thường sẽ kéo cả nhánh đó xuống rất lâu. --depth=1 lấy nông cho nhanh.
+git clone --depth=1 --single-branch https://github.com/collyn/skey.git
 cd skey
 cmake -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)

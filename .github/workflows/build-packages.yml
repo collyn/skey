@@ -198,7 +198,8 @@ jobs:
         env:
           APT_GPG_KEY_EMAIL: ${{ secrets.APT_GPG_KEY_EMAIL }}
         run: |
-          sudo -u builder bash -c "export GPGKEY='$APT_GPG_KEY_EMAIL' && repo-add -s -R fcitx5-skey.db.tar.gz ./*.pkg.tar.zst"
+          # repo database lists main packages only — debug pkgs stay out of the repo
+          sudo -u builder bash -c "export GPGKEY='$APT_GPG_KEY_EMAIL' && repo-add -s -R fcitx5-skey.db.tar.gz \$(ls ./*.pkg.tar.zst | grep -v -- '-debug-')"
 
       - name: Upload Arch artifact
         uses: actions/upload-artifact@v4
@@ -226,10 +227,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            # main packages only — [0-9] excludes the -debug*/-debuginfo*/-debugsource* variants
             fcitx5-skey_*.deb
-            *.rpm
-            *.pkg.tar.zst
-            *.pkg.tar.zst.sig
+            fcitx5-skey-[0-9]*.rpm
+            fcitx5-skey-[0-9]*.pkg.tar.zst
+            fcitx5-skey-[0-9]*.pkg.tar.zst.sig
           draft: false
           prerelease: false
 
