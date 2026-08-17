@@ -33,7 +33,12 @@ jobs:
           else
             VER=$(grep -oP 'project\(fcitx5-skey VERSION \K[0-9.]+' CMakeLists.txt)
           fi
+          if [ -z "$VER" ]; then
+            echo "Error: could not resolve package version from CMakeLists.txt" >&2
+            exit 1
+          fi
           echo "PKG_VERSION=$VER" >> $GITHUB_ENV
+          echo "Resolved package version: $VER"
 
       - name: Import GPG key
         env:
