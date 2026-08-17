@@ -248,6 +248,11 @@ private:
     // current word.  Rect updates lag one key, which is fine — it still
     // reflects the word-start region.  -1 = not recorded.
     int addrBarWordStartCaretX_ = -1;
+    // True when the user pressed BackSpace since the current word began.
+    // Gates the a11y desync guard — only backspace-driven edits can
+    // desync the engine from the screen, so the guard must not run
+    // (and risk a stale-snapshot false reset) during normal typing.
+    bool addrBarSawBsInWord_ = false;
     // True while processing a reclaimed-word replacement — forces
     // surroundingCommit to use forwardKey instead of the native
     // surrounding-text API, which may be out-of-sync after reclaim.

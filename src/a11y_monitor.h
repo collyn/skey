@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -71,6 +72,17 @@ public:
     bool a11yState(std::string &text, int &selStart, int &selEnd,
                    uint64_t maxAgeUsec) const;
 
+    /// Enable/disable the snapshot polling.  The engine enables it only
+    /// while the current input context is the Chromium address bar on
+    /// X11 — polling any other focused entry is wasted DBus traffic.
+    void setPollingEnabled(bool enabled) {
+        pollEnabled_.store(enabled, std::memory_order_relaxed);
+    }
+
+    /// Block until the snapshot is updated (or `timeoutUsec` elapses).
+    /// Used by the engine's replacement path instead of usleep polling.
+    void waitForSnapshotUpdate(uint64_t timeoutUsec) const;
+
     /// AT-SPI2 bus address (from the X11 root property or session bus).
     /// Empty when unavailable.
     static std::string atspiBusAddress();
@@ -114,6 +126,8 @@ private:
     uint64_t a11ySnapshotUsec_ = 0;
     uint64_t lastA11yPollUsec_ = 0;
     bool a11yPollDirty_ = false; // monitor-thread only
+    std::atomic<bool> pollEnabled_{false};
+    mutable std::condition_variable snapshotCv_;
 };
 
 #endif // FCITX5_SKEY_A11Y_MONITOR_H

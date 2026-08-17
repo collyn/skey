@@ -612,6 +612,18 @@ bool A11yMonitor::a11yState(std::string &text, int &selStart, int &selEnd,
     return true;
 }
 
+void A11yMonitor::waitForSnapshotUpdate(uint64_t timeoutUsec) const {
+    uint64_t snap;
+    {
+        std::lock_guard<std::mutex> lock(a11ySnapshotMutex_);
+        snap = a11ySnapshotUsec_;
+    }
+    std::unique_lock<std::mutex> lock(a11ySnapshotMutex_);
+    snapshotCv_.wait_for(
+        lock, std::chrono::microseconds(timeoutUsec),
+        [&] { return a11ySnapshotUsec_ != snap; });
+}
+
 void A11yMonitor::start() {
     if (running_.load()) return;
     stopRequested_.store(false);
@@ -867,8 +879,9 @@ void A11yMonitor::threadFunc() {
                 std::chrono::steady_clock::now().time_since_epoch().count() /
                 1000);
             static constexpr uint64_t kSnapshotPollUsec = 150000;
-            if (a11yPollDirty_ ||
-                nowUsec - lastA11yPollUsec_ >= kSnapshotPollUsec) {
+            if (pollEnabled_.load(std::memory_order_relaxed) &&
+                (a11yPollDirty_ ||
+                 nowUsec - lastA11yPollUsec_ >= kSnapshotPollUsec)) {
                 a11yPollDirty_ = false;
                 lastA11yPollUsec_ = nowUsec;
                 std::string busName, path;
@@ -900,6 +913,8 @@ void A11yMonitor::threadFunc() {
                     }
                 }
             }
+            // Wake any engine thread waiting on a fresh snapshot.
+            snapshotCv_.notify_all();
         }
 
         auto now = Clock::now();

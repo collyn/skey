@@ -1563,19 +1563,21 @@ void SKeyState::activate() {
       ic_->updatePreedit();
     }
     preeditWasPending_ = false;
-    viet_.reset();
-    committedLen_ = 0;
-    surroundingTextFailed_ = false; // fresh focus, re-verify
 
     // Detect spurious focus cycles that arrived when addrBarExpectCycle_
     // was not armed (e.g. asynchronous omnibox updates).  If reactivation
     // happens within 500ms of deactivate in the same Chromium address bar,
-    // preserve first-word/space tracking — otherwise the next replacement
-    // gets fullReplace treatment and deletes text before the cursor.
+    // preserve the composition AND first-word/space tracking — resetting
+    // here would silently commit the word mid-typing and break tone
+    // editing after a slow pause, or give the next replacement fullReplace
+    // treatment that deletes text before the cursor.
     bool spuriousCycle = inChromiumAddressBar() && lastDeactivateTime_ > 0 &&
                          (now(CLOCK_MONOTONIC) - lastDeactivateTime_) < 500000;
 
     if (!spuriousCycle) {
+      viet_.reset();
+      committedLen_ = 0;
+      surroundingTextFailed_ = false; // fresh focus, re-verify
       addrBarIsFirstWord_ = true;
       addrBarHadSpace_ = false;
       // Genuine focus change (cross-app or ≥500ms away): the omnibox
@@ -1584,15 +1586,16 @@ void SKeyState::activate() {
       // evidence proves the typed word replaced a selection.
       addrBarContentUnknown_ = true;
       addrBarWordStartCaretX_ = -1;
+      addrBarHadFirstWord_ = false;
+      addrBarDidFullReplace_ = false;
+      addrBarKeepState_ = false;
+      addrBarPrevCommittedLen_ = 0;
     } else {
       SKEY_DEBUG() << "Activate: spurious cycle (unarmed), preserving"
                    << " firstWord=" << addrBarIsFirstWord_
-                   << " hadSpace=" << addrBarHadSpace_;
+                   << " hadSpace=" << addrBarHadSpace_
+                   << " composed='" << viet_.getComposed() << "'";
     }
-    addrBarHadFirstWord_ = false;
-    addrBarDidFullReplace_ = false;
-    addrBarKeepState_ = false;
-    addrBarPrevCommittedLen_ = 0;
   }
   clearLastWord();
   modeMenuActive_ = false;
@@ -1996,6 +1999,10 @@ void SKeyState::deactivate() {
                << pendingUinputCommit_ << "'";
   lastDeactivateTime_ = now(CLOCK_MONOTONIC);
   forceFlushDeferredCommit();
+  // Stop a11y snapshot polling — re-enabled on the next addrbar key.
+  if (auto *mon = engine_->a11yMonitor()) {
+    mon->setPollingEnabled(false);
+  }
 
   // Chrome address bar (and other apps) can trigger focus changes during
   // BS round-trips.  If all BS events have passed but the 5ms commit
@@ -2215,6 +2222,13 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
+  // Enable the a11y snapshot polling only while typing in the Chromium
+  // address bar on X11 (see A11yMonitor::setPollingEnabled) — polling
+  // any other focused entry is wasted DBus traffic.
+  if (auto *mon = engine_->a11yMonitor()) {
+    mon->setPollingEnabled(!isWayland() && inChromiumAddressBar());
+  }
+
   // Late uinput BS loopbacks — BS we injected that arrive after the
   // deletion window closed (slow apps).  Swallow them: treating them as
   // fresh user backspaces would pop composition chars and forward stray
@@ -2416,6 +2430,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     // of sending forwardKey via D-Bus (which triggers focus changes).
     // Just update bamboo state and let the keystroke reach the app.
     if (inChromiumAddressBar()) {
+      // A backspace may desync the engine from the screen (autofill can
+      // eat the BS) — arm the a11y desync guard for the next keys.
+      addrBarSawBsInWord_ = true;
       if (addrBarDidFullReplace_) {
         addrBarDidFullReplace_ = false;
         addrBarKeepState_ = false;
@@ -2675,6 +2692,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     // Re-arm cycle protection for address bar (see composing BS handler).
     if (inChromiumAddressBar()) {
       addrBarExpectCycle_ = true;
+      // A backspace may desync the engine from the screen — arm the
+      // a11y desync guard for the next keys.
+      addrBarSawBsInWord_ = true;
       // X11 Uinput: manually decrement committedLen_ (no SurroundingText).
       // The addrBarPrevCommittedLen_ snapshot in scheduleAddrBarReplacement
       // determines FullReplace safety — no complex delete-target logic needed.
@@ -2933,6 +2953,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       addrBarIsFirstWord_ = false;
       addrBarHadSpace_ = true;
       addrBarHadFirstWord_ = true;
+      addrBarSawBsInWord_ = false;
     } else if (reclaimReady_) {
       // Space typed after backspacing the separator but before a tone
       // key — user wants a new word, not to edit the previous word's
@@ -3099,6 +3120,42 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       // Flush any pending address bar replacement before processing
       // a new key, so the screen state matches viet_'s expectation.
       flushAddrBarReplacement();
+
+      // Desync guard (Chromium address bar, X11): if the bar's text no
+      // longer contains the word the engine is tracking (e.g. Chrome's
+      // autofill ate a user backspace during deletion, leaving a stale
+      // composition), reset the composition so new keystrokes start
+      // from the screen's real state instead of appending to a ghost
+      // word.  Gated on addrBarSawBsInWord_ — only backspace-driven
+      // edits can desync, and the snapshot may briefly lag a fresh
+      // commit (which would otherwise cause a false reset).
+      if (inChromiumAddressBar() && !isWayland() && useUinputMode() &&
+          addrBarSawBsInWord_ && !viet_.getRawInput().empty()) {
+        std::string comp = viet_.getComposed();
+        std::string txt;
+        int ss = -1, se = -1;
+        auto *mon = engine_->a11yMonitor();
+        uint64_t waitUntil = now(CLOCK_MONOTONIC) + 30000;
+        for (;;) {
+          if (!mon ||
+              !mon->a11yState(txt, ss, se, kA11ySnapshotMaxAgeUsec))
+            break;
+          if (txt.find(comp) != std::string::npos)
+            break; // word still on screen — in sync
+          uint64_t remaining = waitUntil - now(CLOCK_MONOTONIC);
+          if (now(CLOCK_MONOTONIC) >= waitUntil)
+            break;
+          mon->waitForSnapshotUpdate(remaining);
+        }
+        if (mon && txt.find(comp) == std::string::npos) {
+          SKEY_DEBUG() << "AddrBar: desync — bar text '" << txt
+                       << "' lacks composed '" << comp << "', resetting";
+          viet_.reset();
+          committedLen_ = -1;
+          addrBarContentUnknown_ = true;
+          addrBarSawBsInWord_ = false;
+        }
+      }
 
       std::string oldComposed = viet_.getComposed();
 
@@ -3375,6 +3432,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       // Like space, a separator commits the current word — the next
       // word is not the first and must not trigger fullReplace.
       addrBarHadFirstWord_ = true;
+      addrBarSawBsInWord_ = false;
     } else if (reclaimReady_) {
       // User typed space/punctuation after backspacing the separator
       // but before a tone key — they want to start a new word, not
@@ -3398,6 +3456,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     }
     viet_.reset();
     committedLen_ = 0;
+    addrBarSawBsInWord_ = false;
   } else {
     // Non-composing key (Home, End, etc.) invalidates retroactive editing
     clearLastWord();
@@ -3460,8 +3519,8 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
         int a11ySelStart = -1, a11ySelEnd = -1;
         // Wait briefly for a snapshot that includes all forwarded keys
         // (the monitor re-polls on text-change signals, so it catches
-        // up within ~50ms).
-        uint64_t waitUntil = now(CLOCK_MONOTONIC) + 50000;
+        // up within ~30ms).
+        uint64_t waitUntil = now(CLOCK_MONOTONIC) + 30000;
         for (;;) {
           if (!mon ||
               !mon->a11yState(a11yText, a11ySelStart, a11ySelEnd,
@@ -3473,9 +3532,10 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
             wordAtStart = true;
             break;
           }
+          uint64_t remaining = waitUntil - now(CLOCK_MONOTONIC);
           if (now(CLOCK_MONOTONIC) >= waitUntil)
             break;
-          usleep(5000);
+          mon->waitForSnapshotUpdate(remaining);
         }
       }
       if (wordAtStart) {
