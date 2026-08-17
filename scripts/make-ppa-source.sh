@@ -121,8 +121,14 @@ fi
 popd > /dev/null
 
 # ── Create the orig tarball ──────────────────────────────────────────────
+# Deterministic tar + gzip (sorted entries, zeroed mtimes, no gzip header
+# timestamp) so rebuilding the same version produces bit-identical tarballs.
+# Launchpad rejects same-name files with different contents — even after the
+# package is deleted from the PPA — so reproducibility keeps re-uploads possible.
 echo "→ Creating ${TARBALL}..."
-tar czf "${REPO_ROOT}/../${TARBALL}" -C "$WORKDIR" "${PKG_NAME}-${VERSION}"
+tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+    -cf - -C "$WORKDIR" "${PKG_NAME}-${VERSION}" | \
+    gzip -n > "${REPO_ROOT}/../${TARBALL}"
 
 echo ""
 echo "=== Done ==="

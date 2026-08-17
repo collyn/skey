@@ -44,6 +44,9 @@ DEOF
 
 set -o pipefail
 # Launchpad accepts ONE series per .changes — build and upload each series separately.
+# Honor SOURCE_DATE_EPOCH (set by the workflow from the HEAD commit time) so the
+# generated changelog — and thus the .debian.tar.xz — is reproducible.
+CHLOG_DATE=$(date -R ${SOURCE_DATE_EPOCH:+-d @"$SOURCE_DATE_EPOCH"})
 SA_FLAG="-sa"
 for SERIES in ${SERIES_LIST}; do
     echo "=== Series: ${SERIES} (${SA_FLAG}) ==="
@@ -53,7 +56,7 @@ fcitx5-skey (${VERSION}-1) ${SERIES}; urgency=medium
 
   * Release ${VERSION} with skey-engine ${ENGINE_VER}.
 
- -- Nguyen Tien Huy <collyn094@gmail.com>  $(date -R)
+ -- Nguyen Tien Huy <collyn094@gmail.com>  ${CHLOG_DATE}
 CHLOG
 
     debuild -k"$KEYID" -S ${SA_FLAG} -d 2>&1 | tee /tmp/debuild-${SERIES}.log

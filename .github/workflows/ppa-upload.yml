@@ -43,6 +43,10 @@ jobs:
           fi
           echo "PKG_VERSION=$VER" >> $GITHUB_ENV
           echo "Resolved package version: $VER"
+          # Pin artifact timestamps to the HEAD commit so re-uploading the same
+          # version produces bit-identical files (Launchpad rejects same-name
+          # files with different contents, even after deleting the package).
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> $GITHUB_ENV
 
       - name: Import GPG key
         env:
