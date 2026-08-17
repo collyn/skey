@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(fcitx5-skey VERSION 0.6.7)
+project(fcitx5-skey VERSION 0.6.8)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
