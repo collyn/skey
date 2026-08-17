@@ -7,6 +7,10 @@ on:
         description: 'Package version (leave blank to use version from CMakeLists.txt)'
         required: false
         default: ''
+      series:
+        description: 'Series list (space-separated; leave blank for noble resolute)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -52,6 +56,9 @@ jobs:
           gpg --list-secret-keys --keyid-format LONG
 
       - name: Build & upload for all series
+        env:
+          SERIES_INPUT: ${{ github.event.inputs.series }}
         run: |
           chmod +x scripts/make-ppa-source.sh scripts/ppa-build-upload.sh
-          ./scripts/ppa-build-upload.sh "$PKG_VERSION"
+          # Empty SERIES_INPUT → script falls back to "noble resolute"
+          ./scripts/ppa-build-upload.sh "$PKG_VERSION" "$SERIES_INPUT"

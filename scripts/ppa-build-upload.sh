@@ -58,14 +58,13 @@ CHLOG
 
     debuild -k"$KEYID" -S ${SA_FLAG} -d 2>&1 | tee /tmp/debuild-${SERIES}.log
 
-    # Copy files for dput
-    cp ../*.dsc ../*.orig.tar.* ../*.debian.tar.* ../*_source.changes ../*_source.buildinfo . 2>/dev/null || true
-    ls -la *.dsc *.debian.tar.* *_source.changes *.orig.tar.* 2>/dev/null
-
-    CHANGES=$(ls fcitx5-skey_*_source.changes 2>/dev/null | head -1)
+    # debuild writes the artifacts to the parent dir. Never copy them into the
+    # source tree: the next iteration's dpkg-source would trip over the binary
+    # .orig.tar.gz/.debian.tar.xz ("unrepresentable changes to source").
+    CHANGES=$(ls ../fcitx5-skey_*_source.changes 2>/dev/null | head -1)
     if [ -z "$CHANGES" ]; then
         echo "Error: No .changes file found for ${SERIES}" >&2
-        ls -la
+        ls -la ..
         exit 1
     fi
 
