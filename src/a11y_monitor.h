@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -58,6 +59,22 @@ public:
         return passwordFocused_.load(std::memory_order_relaxed);
     }
 
+    /// Identity of the last focused text-entry element (bus name + object
+    /// path) for the engine's own AT-SPI2 queries (GetText/GetSelection).
+    /// Returns false when no text entry has been focused yet.
+    bool focusedTextEntry(std::string &busName, std::string &path,
+                          uint64_t &snapshotUsec) const;
+
+    /// Background snapshot of the focused entry's text + selection,
+    /// polled by the monitor thread.  Returns true when the snapshot is
+    /// at most `maxAgeUsec` old.
+    bool a11yState(std::string &text, int &selStart, int &selEnd,
+                   uint64_t maxAgeUsec) const;
+
+    /// AT-SPI2 bus address (from the X11 root property or session bus).
+    /// Empty when unavailable.
+    static std::string atspiBusAddress();
+
     /// Returns true if the monitor is connected and running.
     bool isRunning() const {
         return running_.load(std::memory_order_relaxed);
@@ -84,6 +101,19 @@ private:
     std::atomic<bool> focusMultiline_{false};
     std::atomic<bool> focusSingleLine_{false};
     std::atomic<uint64_t> focusSnapshotUsec_{0};
+    // Focused text-entry identity (guarded — strings are not atomic).
+    mutable std::mutex focusEntryMutex_;
+    std::string focusEntryBus_;
+    std::string focusEntryPath_;
+    std::atomic<uint64_t> focusEntrySnapshotUsec_{0};
+    // Polled text + selection snapshot (guarded — strings are not atomic).
+    mutable std::mutex a11ySnapshotMutex_;
+    std::string a11ySnapshotText_;
+    int a11ySnapshotSelStart_ = -1;
+    int a11ySnapshotSelEnd_ = -1;
+    uint64_t a11ySnapshotUsec_ = 0;
+    uint64_t lastA11yPollUsec_ = 0;
+    bool a11yPollDirty_ = false; // monitor-thread only
 };
 
 #endif // FCITX5_SKEY_A11Y_MONITOR_H

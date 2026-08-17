@@ -109,7 +109,8 @@ private:
                                      int oldComposedLen = 0,
                                      int triggerKeySym = 0,
                                      const std::string &fullComposed = {},
-                                     bool oldComposedIsAscii = false);
+                                     bool oldComposedIsAscii = false,
+                                     const std::string &oldComposed = {});
 
     SKeyEngine *engine_;
     InputContext *ic_;
@@ -237,6 +238,16 @@ private:
                                         // if text existed on screen.
                                         // <=0 = bar was empty → FullReplace
                                         // safe even when addrBarHadSpace_ set.
+    // Genuine cross-app focus change: the omnibox content is no longer
+    // tracked (it almost always holds the page URL).  Blocks first-word
+    // FullReplace unless the caret jumped far left since the word started
+    // — proof the typed word replaced a selection (e.g. Ctrl+L), leaving
+    // nothing before the cursor.
+    bool addrBarContentUnknown_ = false;
+    // Caret X (cursorRect().left()) at the first forwarded key of the
+    // current word.  Rect updates lag one key, which is fine — it still
+    // reflects the word-start region.  -1 = not recorded.
+    int addrBarWordStartCaretX_ = -1;
     // True while processing a reclaimed-word replacement — forces
     // surroundingCommit to use forwardKey instead of the native
     // surrounding-text API, which may be out-of-sync after reclaim.

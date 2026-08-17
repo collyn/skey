@@ -203,6 +203,13 @@ static constexpr UinputTiming kUinputTimingWayland = {
 static constexpr uint64_t dbusDeferredDefaultUsec = 15000;
 static constexpr uint64_t dbusDeferredMinUsec = 10000;
 
+// NOTE: AT-SPI2 queries for the Chromium address bar must NEVER run on
+// the fcitx5 main thread — a stuck DBus reply blocks all input handling
+// (observed 0.9–7.5s stalls).  The A11yMonitor thread polls the omnibox
+// text + selection in the background and the engine reads its atomic
+// snapshot instead.
+static constexpr uint64_t kA11ySnapshotMaxAgeUsec = 400000;
+
 static bool isUtf8ContinuationByte(char ch) {
   return (static_cast<unsigned char>(ch) & 0xC0) == 0x80;
 }
@@ -1571,6 +1578,12 @@ void SKeyState::activate() {
     if (!spuriousCycle) {
       addrBarIsFirstWord_ = true;
       addrBarHadSpace_ = false;
+      // Genuine focus change (cross-app or ≥500ms away): the omnibox
+      // content is no longer tracked — it almost always holds the page
+      // URL or earlier text.  Block first-word FullReplace until caret
+      // evidence proves the typed word replaced a selection.
+      addrBarContentUnknown_ = true;
+      addrBarWordStartCaretX_ = -1;
     } else {
       SKEY_DEBUG() << "Activate: spurious cycle (unarmed), preserving"
                    << " firstWord=" << addrBarIsFirstWord_
@@ -3176,6 +3189,11 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             // to check if the bar was empty before this word.
             if (oldComposed.empty()) {
               addrBarPrevCommittedLen_ = committedLen_;
+              // Caret X before this word's first key reaches Chrome —
+              // the caret-jump check compares against it to detect a
+              // replaced selection (Ctrl+L + type) after a genuine
+              // focus change.
+              addrBarWordStartCaretX_ = ic_->cursorRect().left();
             }
             committedLen_ = static_cast<int>(utf8::length(newComposed));
 
@@ -3236,7 +3254,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 scheduleAddrBarReplacement(
                     deleteLen, addPart,
                     static_cast<int>(utf8::length(oldComposed)),
-                    static_cast<int>(sym), newComposed, oldAscii);
+                    static_cast<int>(sym), newComposed, oldAscii,
+                    oldComposed);
                 return;
               }
               sendBackspaceUinput(deleteLen + 1); // +1 sync BS
@@ -3400,7 +3419,8 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
                                            int oldComposedLen,
                                            int triggerKeySym,
                                            const std::string &fullComposed,
-                                           bool oldComposedIsAscii) {
+                                           bool oldComposedIsAscii,
+                                           const std::string &oldComposed) {
   // Use uinput BS + adaptive EWMA timer delay before D-Bus commitString.
   // uinput BS goes through kernel → Chrome processes it as a real keystroke
   // (omnibox update, autocomplete dismissal).  The EWMA-based delay adapts
@@ -3420,7 +3440,65 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
     std::string commitText = text;
 
     if (!isWayland()) {
-      // ── X11: First-word FullReplace + autoRestore ──
+      // ── X11: AT-SPI2 word-at-start check, heuristic fallback ──
+      // Chrome's a11y tree exposes the omnibox's text INCLUDING inline
+      // autofill (which is appended after the caret and selected).
+      // When the composed word sits at the START of the bar text,
+      // nothing exists before the caret — FullReplace (delete whole
+      // word + 1 BS) is provably safe: the extra BS either eats the
+      // autofill selection or is a no-op, and any suffix after the
+      // caret is untouched because BS only deletes backwards.
+      // Otherwise the word sits after existing text (URL etc.) and
+      // plain replacement with the exact BS count is used.
+      // When AT-SPI2 is unavailable, fall back to the first-word
+      // FullReplace heuristics below.
+      bool a11yDecided = false;
+      bool wordAtStart = false;
+      if (!oldComposed.empty()) {
+        auto *mon = engine_->a11yMonitor();
+        std::string a11yText;
+        int a11ySelStart = -1, a11ySelEnd = -1;
+        // Wait briefly for a snapshot that includes all forwarded keys
+        // (the monitor re-polls on text-change signals, so it catches
+        // up within ~50ms).
+        uint64_t waitUntil = now(CLOCK_MONOTONIC) + 50000;
+        for (;;) {
+          if (!mon ||
+              !mon->a11yState(a11yText, a11ySelStart, a11ySelEnd,
+                              kA11ySnapshotMaxAgeUsec))
+            break;
+          a11yDecided = true; // fresh snapshot — decision authoritative
+          if (a11yText.size() >= oldComposed.size() &&
+              a11yText.compare(0, oldComposed.size(), oldComposed) == 0) {
+            wordAtStart = true;
+            break;
+          }
+          if (now(CLOCK_MONOTONIC) >= waitUntil)
+            break;
+          usleep(5000);
+        }
+      }
+      if (wordAtStart) {
+        totalBs = oldComposedLen + 1;
+        commitText = fullComposed;
+        {
+          std::string preRestore = commitText;
+          viet_.autoRestore();
+          std::string postRestore = viet_.getComposed();
+          if (preRestore != postRestore) {
+            SKEY_DEBUG() << "AddrBar: autoRestore '" << preRestore
+                         << "' -> '" << postRestore << "'";
+            commitText = postRestore;
+          }
+        }
+        addrBarHadFirstWord_ = true;
+        addrBarDidFullReplace_ =
+            !(oldComposedIsAscii && oldComposedLen == 1);
+        addrBarKeepState_ = (oldComposedIsAscii && oldComposedLen == 1);
+        SKEY_DEBUG() << "AddrBar: a11y word-at-start, fullReplace BS="
+                     << totalBs << " commit='" << commitText << "'"
+                     << (addrBarKeepState_ ? " [keep-state]" : "");
+      } else if (!a11yDecided) {
       // Only the first word after focus gets FullReplace (oldComposedLen
       // + 1 BS to dismiss Chrome autocomplete).  Subsequent words use
       // plain replacement (exact BS count, no Escape) — the forwarded
@@ -3429,13 +3507,14 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
       //
       // addrBarPrevCommittedLen_ is a snapshot of committedLen_ before the
       // current replacement.  If < 0 (sentinel -1 from backspacing past
-      // all tracked text), the bar is empty — reset first-word flag so
-      // FullReplace fires again.  Do NOT reset when == 0 (engine reset
-      // after space — text still exists on screen, FullReplace would
-      // delete the space and join words).
+      // all tracked text), tracking is lost — reset the first-word flag
+      // so FullReplace can fire again when safe.  Do NOT reset
+      // addrBarHadSpace_: a committed space means text may still exist
+      // before the cursor even when tracking is negative (e.g. "xin"
+      // survives after deleting "chào" from "xin chào ") — resetting it
+      // would let the next FullReplace delete the space and join words.
       if (addrBarPrevCommittedLen_ < 0) {
         addrBarHadFirstWord_ = false;
-        addrBarHadSpace_ = false;
       }
       if (!addrBarHadFirstWord_ && oldComposedLen > 0 &&
           !fullComposed.empty()) {
@@ -3445,13 +3524,29 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
           hasTextBefore =
               surrounding.cursor() >
               static_cast<unsigned int>(oldComposedLen);
-        } else if (addrBarHadSpace_ && addrBarPrevCommittedLen_ > 0) {
-          // Space was typed AND there were tracked chars on screen
-          // before this word → text exists before cursor → block
-          // FullReplace to avoid damaging it.  If prevCommittedLen
-          // <= 0 (bar was empty, all tracked text deleted), the
-          // space guard is stale — allow FullReplace.
+        } else if (addrBarHadSpace_ || addrBarPrevCommittedLen_ > 0) {
+          // A committed space or tracked chars before this word mean
+          // text exists before the cursor → FullReplace's extra BS
+          // (oldComposedLen + 1) would delete it.  Only allow
+          // FullReplace when the snapshot is exactly 0 (bar was empty
+          // at word start, e.g. fresh focus).  A negative snapshot is
+          // ambiguous (tracking lost after backspacing) — treat it as
+          // unsafe rather than corrupt text before the cursor.
           hasTextBefore = true;
+        } else if (addrBarContentUnknown_) {
+          // After a genuine cross-app focus change the bar usually
+          // holds the page URL.  Only trust FullReplace here if the
+          // caret jumped far LEFT since the word started — proof that
+          // typing replaced a selection (e.g. Ctrl+L select-all),
+          // leaving nothing before the cursor.  A stale/invalid rect
+          // (<= 0) is treated as unsafe.
+          static constexpr int kCaretJumpPx = 40;
+          int caretX = ic_->cursorRect().left();
+          bool jumpedLeft = addrBarWordStartCaretX_ > 0 && caretX > 0 &&
+                            caretX + kCaretJumpPx < addrBarWordStartCaretX_;
+          if (!jumpedLeft) {
+            hasTextBefore = true;
+          }
         }
         if (!hasTextBefore) {
           totalBs = oldComposedLen + 1;
@@ -3475,6 +3570,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
                        << " commit='" << commitText << "'"
                        << (addrBarKeepState_ ? " [keep-state]" : "");
         }
+      }
       }
     } else {
       // ── Wayland: First-word FullReplace + dynamic autocomplete ──
@@ -3769,7 +3865,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           scheduleAddrBarReplacement(
               deleteLen, addedPart,
               static_cast<int>(utf8::length(oldComposed)),
-              0, newComposed);
+              0, newComposed, false, oldComposed);
           return;
         }
         if (useUinputMode()) {

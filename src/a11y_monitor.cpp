@@ -164,6 +164,111 @@ static int queryRole(DBusConnection *bus, const char *sender,
     return role;
 }
 
+// ── TEMP PROBE: read the accessible text of the focused entry ──
+static std::string queryText(DBusConnection *bus, const char *sender,
+                             const char *path) {
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *msg = dbus_message_new_method_call(
+        sender, path, "org.a11y.atspi.Text", "GetText");
+    if (!msg) return {};
+    dbus_int32_t start = 0, end = -1;
+    dbus_message_append_args(msg, DBUS_TYPE_INT32, &start, DBUS_TYPE_INT32,
+                             &end, DBUS_TYPE_INVALID);
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
+        bus, msg, 500, &err);
+    dbus_message_unref(msg);
+    std::string text;
+    if (reply && !dbus_error_is_set(&err)) {
+        DBusMessageIter iter;
+        if (dbus_message_iter_init(reply, &iter) &&
+            dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING) {
+            const char *s = nullptr;
+            dbus_message_iter_get_basic(&iter, &s);
+            if (s) text = s;
+        }
+        dbus_message_unref(reply);
+    } else {
+        if (dbus_error_is_set(&err))
+            A11Y_LOG("TEXT PROBE: GetText failed: %s", err.message);
+    }
+    dbus_error_free(&err);
+    return text;
+}
+
+static int queryCaret(DBusConnection *bus, const char *sender,
+                      const char *path) {
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *msg = dbus_message_new_method_call(
+        sender, path, "org.a11y.atspi.Text", "GetCaretOffset");
+    if (!msg) return -1;
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
+        bus, msg, 500, &err);
+    dbus_message_unref(msg);
+    int caret = -1;
+    if (reply && !dbus_error_is_set(&err)) {
+        dbus_int32_t c = -1;
+        if (dbus_message_get_args(reply, &err, DBUS_TYPE_INT32, &c,
+                                  DBUS_TYPE_INVALID))
+            caret = static_cast<int>(c);
+        dbus_message_unref(reply);
+    }
+    dbus_error_free(&err);
+    return caret;
+}
+
+static bool querySelection(DBusConnection *bus, const char *sender,
+                           const char *path, int &selStart, int &selEnd) {
+    selStart = -1;
+    selEnd = -1;
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *msg = dbus_message_new_method_call(
+        sender, path, "org.a11y.atspi.Text", "GetSelection");
+    if (!msg) {
+        dbus_error_free(&err);
+        return false;
+    }
+    dbus_int32_t selNum = 0;
+    dbus_message_append_args(msg, DBUS_TYPE_INT32, &selNum, DBUS_TYPE_INVALID);
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
+        bus, msg, 500, &err);
+    dbus_message_unref(msg);
+    if (reply && !dbus_error_is_set(&err)) {
+        // Reply may be a struct (i, i) directly or wrapped in a variant.
+        DBusMessageIter rit, var, st;
+        DBusMessageIter *cur = &rit;
+        if (dbus_message_iter_init(reply, &rit)) {
+            if (dbus_message_iter_get_arg_type(cur) == DBUS_TYPE_VARIANT) {
+                dbus_message_iter_recurse(cur, &var);
+                cur = &var;
+            }
+            if (dbus_message_iter_get_arg_type(cur) == DBUS_TYPE_STRUCT) {
+                dbus_message_iter_recurse(cur, &st);
+                dbus_int32_t v1 = -1, v2 = -1;
+                if (dbus_message_iter_get_arg_type(&st) == DBUS_TYPE_INT32) {
+                    dbus_message_iter_get_basic(&st, &v1);
+                    dbus_message_iter_next(&st);
+                    if (dbus_message_iter_get_arg_type(&st) ==
+                        DBUS_TYPE_INT32)
+                        dbus_message_iter_get_basic(&st, &v2);
+                }
+                if (v1 >= 0 && v2 > v1) {
+                    selStart = static_cast<int>(v1);
+                    selEnd = static_cast<int>(v2);
+                }
+            }
+        }
+        dbus_message_unref(reply);
+        return true;
+    }
+    if (reply)
+        dbus_message_unref(reply);
+    dbus_error_free(&err);
+    return false;
+}
+
 static bool queryParent(DBusConnection *bus, const char *sender,
                         const char *path,
                         std::string &outSender, std::string &outPath) {
@@ -479,6 +584,34 @@ A11yMonitor::A11yMonitor() = default;
 
 A11yMonitor::~A11yMonitor() { stop(); }
 
+std::string A11yMonitor::atspiBusAddress() { return getAtspiBusAddress(); }
+
+bool A11yMonitor::focusedTextEntry(std::string &busName, std::string &path,
+                                   uint64_t &snapshotUsec) const {
+    std::lock_guard<std::mutex> lock(focusEntryMutex_);
+    if (focusEntryBus_.empty() || focusEntryPath_.empty())
+        return false;
+    busName = focusEntryBus_;
+    path = focusEntryPath_;
+    snapshotUsec = focusEntrySnapshotUsec_.load(std::memory_order_relaxed);
+    return true;
+}
+
+bool A11yMonitor::a11yState(std::string &text, int &selStart, int &selEnd,
+                            uint64_t maxAgeUsec) const {
+    std::lock_guard<std::mutex> lock(a11ySnapshotMutex_);
+    if (a11ySnapshotUsec_ == 0)
+        return false;
+    uint64_t nowUsec = static_cast<uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count() / 1000);
+    if (nowUsec - a11ySnapshotUsec_ > maxAgeUsec)
+        return false;
+    text = a11ySnapshotText_;
+    selStart = a11ySnapshotSelStart_;
+    selEnd = a11ySnapshotSelEnd_;
+    return true;
+}
+
 void A11yMonitor::start() {
     if (running_.load()) return;
     stopRequested_.store(false);
@@ -546,6 +679,20 @@ void A11yMonitor::threadFunc() {
                        "member='NameOwnerChanged'",
                        &err);
     dbus_error_free(&err);
+    // Text/selection events on the focused entry trigger an immediate
+    // snapshot re-poll (we don't parse the payloads — the signal only
+    // tells us "something changed, re-query now").
+    for (const char *member : {"TextChanged", "TextCaretMoved",
+                               "TextSelectionChanged"}) {
+        dbus_error_init(&err);
+        std::string match = std::string(
+                                "type='signal',"
+                                "interface='org.a11y.atspi.Event.Object',"
+                                "member='") +
+                            member + "'";
+        dbus_bus_add_match(bus, match.c_str(), &err);
+        dbus_error_free(&err);
+    }
 
     A11Y_LOG("A11yMonitor started");
 
@@ -599,6 +746,21 @@ void A11yMonitor::threadFunc() {
             if (iface && member &&
                 strcmp(iface, "org.a11y.atspi.Event.Focus") == 0)
                 isFocusEvent = true;
+
+            // Text/caret/selection changes on the tracked entry mark the
+            // snapshot dirty → re-poll immediately (payloads unparsed).
+            if (iface && member &&
+                strcmp(iface, "org.a11y.atspi.Event.Object") == 0 &&
+                (strcmp(member, "TextChanged") == 0 ||
+                 strcmp(member, "TextCaretMoved") == 0 ||
+                 strcmp(member, "TextSelectionChanged") == 0)) {
+                const char *sigPath = dbus_message_get_path(msg);
+                std::lock_guard<std::mutex> lock(focusEntryMutex_);
+                if (sigPath && !focusEntryPath_.empty() &&
+                    strcmp(sigPath, focusEntryPath_.c_str()) == 0) {
+                    a11yPollDirty_ = true;
+                }
+            }
 
             if (iface && member &&
                 strcmp(iface, "org.freedesktop.DBus") == 0 &&
@@ -662,10 +824,82 @@ void A11yMonitor::threadFunc() {
                              "multiline=%d singleLine=%d states=[%s] path=%s",
                              hasDocWeb, role, roleName(role), editable,
                              multiline, singleLine, states.c_str(), path);
+                    // TEMP PROBE: dump accessible text + caret of text
+                    // entries to verify omnibox content is readable.
+                    // Chrome does NOT set the "editable" state on the
+                    // omnibox entry — probe by role instead.
+                    static constexpr int ROLE_ENTRY = 79;
+                    static constexpr int ROLE_TEXT = 61;
+                    if (role == ROLE_ENTRY || role == ROLE_TEXT ||
+                        role == ROLE_PASSWORD_TEXT) {
+                        std::string txt = queryText(bus, sender, path);
+                        int caret = queryCaret(bus, sender, path);
+                        A11Y_LOG("TEXT PROBE: text='%s' caret=%d",
+                                 txt.c_str(), caret);
+                        // Track the focused text entry so the engine can
+                        // query its content directly at replacement time.
+                        {
+                            std::lock_guard<std::mutex> lock(
+                                focusEntryMutex_);
+                            focusEntryBus_ = sender;
+                            focusEntryPath_ = path;
+                        }
+                        focusEntrySnapshotUsec_.store(
+                            static_cast<uint64_t>(
+                                std::chrono::steady_clock::now()
+                                    .time_since_epoch()
+                                    .count() /
+                                1000),
+                            std::memory_order_relaxed);
+                    }
                 }
             }
 
             dbus_message_unref(msg);
+        }
+
+        // Poll the focused text entry's content + selection so the
+        // engine can compute exact BS counts without blocking the main
+        // thread.  Throttled; failures leave the previous snapshot (the
+        // engine treats stale snapshots as unavailable).
+        {
+            uint64_t nowUsec = static_cast<uint64_t>(
+                std::chrono::steady_clock::now().time_since_epoch().count() /
+                1000);
+            static constexpr uint64_t kSnapshotPollUsec = 150000;
+            if (a11yPollDirty_ ||
+                nowUsec - lastA11yPollUsec_ >= kSnapshotPollUsec) {
+                a11yPollDirty_ = false;
+                lastA11yPollUsec_ = nowUsec;
+                std::string busName, path;
+                uint64_t snapUsec = 0;
+                if (focusedTextEntry(busName, path, snapUsec)) {
+                    std::string txt =
+                        queryText(bus, busName.c_str(), path.c_str());
+                    int selStart = -1, selEnd = -1;
+                    if (querySelection(bus, busName.c_str(), path.c_str(),
+                                       selStart, selEnd)) {
+                        int oldSelStart, oldSelEnd;
+                        std::string oldText;
+                        {
+                            std::lock_guard<std::mutex> lock(
+                                a11ySnapshotMutex_);
+                            oldSelStart = a11ySnapshotSelStart_;
+                            oldSelEnd = a11ySnapshotSelEnd_;
+                            oldText = a11ySnapshotText_;
+                            a11ySnapshotText_ = txt;
+                            a11ySnapshotSelStart_ = selStart;
+                            a11ySnapshotSelEnd_ = selEnd;
+                            a11ySnapshotUsec_ = nowUsec;
+                        }
+                        if (selStart != oldSelStart ||
+                            selEnd != oldSelEnd || txt != oldText) {
+                            A11Y_LOG("Snapshot: text='%s' sel=%d,%d",
+                                     txt.c_str(), selStart, selEnd);
+                        }
+                    }
+                }
+            }
         }
 
         auto now = Clock::now();
