@@ -2,6 +2,7 @@
 #include <atomic>
 #include <cerrno>
 #include <csignal>
+#include <grp.h>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -67,7 +68,11 @@ private:
   int fd_;
 };
 
-std::string socketPath(const std::string &username) {
+// Legacy abstract socket name ("skeysocket-<user>-kb_socket").  Abstract
+// sockets live in a shared namespace any process can bind, so this is only a
+// fallback for old clients; the primary path is the filesystem socket under
+// /run (see fsSocketDir) whose parent dir is 0700 user-owned and squat-proof.
+std::string abstractSocketName(const std::string &username) {
   std::string path = "skeysocket-" + username + "-kb_socket";
   constexpr size_t maxAbstractSocketName =
       sizeof(((sockaddr_un *)0)->sun_path) - 1;
@@ -75,6 +80,14 @@ std::string socketPath(const std::string &username) {
     path.resize(maxAbstractSocketName);
   }
   return path;
+}
+
+std::string fsSocketDir(const std::string &username) {
+  return "/run/skey-uinput-" + username;
+}
+
+std::string fsSocketPath(const std::string &username) {
+  return fsSocketDir(username) + "/kb_socket";
 }
 
 passwd *lookupUser(const std::string &name, std::vector<char> &buf,
@@ -118,6 +131,137 @@ bool executableIsFcitx5(pid_t pid) {
   std::string path(exePath);
   return path == "/usr/bin/fcitx5" ||
          (path.size() >= 7 && path.compare(path.size() - 7, 7, "/fcitx5") == 0);
+}
+
+// Idempotent setup of the filesystem socket dir: mkdir 0700, chown to the
+// target user, chmod 0700.  EEXIST on mkdir is success (race between
+// instances), then chown/chmod repair wrong owner/mode from any previous
+// run.  Returns false if the fs socket must be skipped (e.g. manual non-root
+// run) — the server then falls back to the abstract socket only.
+bool setupFsSocketDir(const std::string &dir, uid_t uid, gid_t gid) {
+  struct stat st{};
+  if (lstat(dir.c_str(), &st) == 0) {
+    if (!S_ISDIR(st.st_mode)) {
+      // Not a directory (stale file from tampering): unlink, never open —
+      // safe against symlinks by design.
+      if (unlink(dir.c_str()) != 0) {
+        std::cerr << "fs socket dir " << dir
+                  << " is not a directory and cannot be removed: "
+                  << strerror(errno)
+                  << " — continuing with abstract socket only\n";
+        return false;
+      }
+    }
+  } else if (errno != ENOENT) {
+    std::cerr << "fs socket dir stat failed: " << strerror(errno)
+              << " — continuing with abstract socket only\n";
+    return false;
+  }
+  if (mkdir(dir.c_str(), 0700) != 0 && errno != EEXIST) {
+    std::cerr << "fs socket dir create failed: " << strerror(errno)
+              << " — continuing with abstract socket only\n";
+    return false;
+  }
+  if (chown(dir.c_str(), uid, gid) != 0 || chmod(dir.c_str(), 0700) != 0) {
+    std::cerr << "fs socket dir chown/chmod failed: " << strerror(errno)
+              << " — continuing with abstract socket only\n";
+    return false;
+  }
+  return true;
+}
+
+// Bind the filesystem socket.  Never fatal: on any failure the fd is reset so
+// the accept loop skips it and the server continues abstract-only.  The stale
+// socket file from a crashed run is unlinked first (unlink only, never open —
+// no symlink following).
+void bindFsSocket(Fd &fsServer, const std::string &path, uid_t uid, gid_t gid) {
+  if (path.size() >= sizeof(((sockaddr_un *)0)->sun_path)) {
+    std::cerr << "fs socket path too long — continuing with abstract socket "
+                 "only\n";
+    fsServer.reset();
+    return;
+  }
+  if (unlink(path.c_str()) != 0 && errno != ENOENT) {
+    std::cerr << "failed to remove stale socket file " << path << ": "
+              << strerror(errno) << "\n";
+  }
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  memcpy(addr.sun_path, path.c_str(), path.size());
+  socklen_t len = offsetof(sockaddr_un, sun_path) + path.size() + 1;
+  if (bind(fsServer.get(), reinterpret_cast<sockaddr *>(&addr), len) != 0) {
+    std::cerr << "fs socket bind failed: " << strerror(errno)
+              << " — continuing with abstract socket only\n";
+    fsServer.reset();
+    return;
+  }
+  // connect() requires write permission on the socket file; the 0700 dir
+  // already gates traversal to the target user.
+  if (chown(path.c_str(), uid, gid) != 0 || chmod(path.c_str(), 0600) != 0) {
+    std::cerr << "fs socket chown/chmod failed: " << strerror(errno)
+              << " — continuing with abstract socket only\n";
+    fsServer.reset();
+    return;
+  }
+  if (listen(fsServer.get(), 4) != 0) {
+    std::cerr << "fs socket listen failed: " << strerror(errno)
+              << " — continuing with abstract socket only\n";
+    fsServer.reset();
+    return;
+  }
+  std::cerr << "SKey uinput fs socket ready at " << path << "\n";
+}
+
+// Legacy abstract socket for old clients.  NON-FATAL: a pre-bound name
+// (another instance, or an attacker squatting the predictable name) no
+// longer kills the server via Restart=on-failure — new clients use the fs
+// socket instead.
+void bindAbstractSocket(Fd &server, const std::string &username) {
+  std::string path = abstractSocketName(username);
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  addr.sun_path[0] = '\0';
+  memcpy(&addr.sun_path[1], path.c_str(), path.size());
+  socklen_t len = offsetof(sockaddr_un, sun_path) + path.size() + 1;
+  if (bind(server.get(), reinterpret_cast<sockaddr *>(&addr), len) != 0) {
+    std::cerr << "abstract socket bind failed (continuing with fs socket "
+                 "only): " << strerror(errno) << "\n";
+    server.reset();
+    return;
+  }
+  if (listen(server.get(), 4) != 0) {
+    std::cerr << "abstract socket listen failed (continuing with fs socket "
+                 "only): " << strerror(errno) << "\n";
+    server.reset();
+  }
+}
+
+// Drop from root to the target user.  Called only after every privileged
+// operation (uinput open, dir creation, both socket binds) is done — after
+// this point the process only writes to the already-open uinput fd (write
+// permission persists), accepts on already-bound fds, and reads
+// /proc/<pid>/exe of same-uid clients.  Best-effort with loud logging: a
+// failed drop keeps serving rather than crash-looping, and the client-side
+// peer check still accepts uid 0.
+void dropPrivileges(const passwd *target) {
+  if (geteuid() != 0) {
+    return; // manual non-root run: already unprivileged
+  }
+  if (setgroups(0, nullptr) != 0) {
+    std::cerr << "setgroups failed: " << strerror(errno)
+              << " — SECURITY WARNING: continuing with root privileges\n";
+  }
+  if (setgid(target->pw_gid) != 0) {
+    std::cerr << "setgid failed: " << strerror(errno)
+              << " — SECURITY WARNING: continuing with root privileges\n";
+  }
+  if (setuid(target->pw_uid) != 0) {
+    std::cerr << "setuid failed: " << strerror(errno)
+              << " — SECURITY WARNING: continuing with root privileges\n";
+  }
+  std::cerr << "Dropped privileges to " << target->pw_name
+            << " (uid=" << target->pw_uid << " gid=" << target->pw_gid
+            << ")\n";
 }
 
 class UinputDevice {
@@ -227,6 +371,12 @@ int main(int argc, char **argv) {
     targetUser = currentUsername();
   }
 
+  // Defense in depth: targetUser feeds /run path construction below.
+  if (targetUser.find('/') != std::string::npos) {
+    std::cerr << "Invalid target user: " << targetUser << "\n";
+    return 1;
+  }
+
   passwd targetPwd{};
   std::vector<char> userBuf;
   passwd *target = lookupUser(targetUser, userBuf, targetPwd);
@@ -240,40 +390,59 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  Fd server(socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0));
-  if (!server) {
+  // All privileged work (uinput open, fs dir creation, both socket binds)
+  // happens BEFORE dropPrivileges below — order is load-bearing.
+  Fd fsServer(socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0));
+  if (!fsServer) {
     std::cerr << "socket failed: " << strerror(errno) << "\n";
     return 1;
   }
+  if (geteuid() == 0) {
+    if (setupFsSocketDir(fsSocketDir(targetUser), target->pw_uid,
+                         target->pw_gid)) {
+      bindFsSocket(fsServer, fsSocketPath(targetUser), target->pw_uid,
+                   target->pw_gid);
+    }
+  } else {
+    std::cerr << "not running as root — skipping fs socket, abstract only\n";
+    fsServer.reset();
+  }
 
-  std::string path = socketPath(targetUser);
-  sockaddr_un addr{};
-  addr.sun_family = AF_UNIX;
-  addr.sun_path[0] = '\0';
-  memcpy(&addr.sun_path[1], path.c_str(), path.size());
-  socklen_t len = offsetof(sockaddr_un, sun_path) + path.size() + 1;
-  if (bind(server.get(), reinterpret_cast<sockaddr *>(&addr), len) != 0) {
-    std::cerr << "bind failed: " << strerror(errno) << "\n";
-    return 1;
+  Fd abstractServer(socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0));
+  if (abstractServer) {
+    bindAbstractSocket(abstractServer, targetUser);
+  } else {
+    std::cerr << "abstract socket creation failed: " << strerror(errno)
+              << " — continuing with fs socket only\n";
   }
-  if (listen(server.get(), 4) != 0) {
-    std::cerr << "listen failed: " << strerror(errno) << "\n";
-    return 1;
-  }
+
+  dropPrivileges(target);
 
   signal(SIGTERM, onSignal);
   signal(SIGINT, onSignal);
   std::cerr << "SKey uinput server listening for " << targetUser << "\n";
 
   Fd client;
+  Fd *listeners[] = {&fsServer, &abstractServer};
   while (running.load()) {
     fd_set readfds;
     FD_ZERO(&readfds);
-    FD_SET(server.get(), &readfds);
-    int maxFd = server.get();
+    int maxFd = -1;
+    for (Fd *s : listeners) {
+      // Never FD_SET(-1): a negative fd corrupts the fd_set bit array.
+      if (s->get() >= 0) {
+        FD_SET(s->get(), &readfds);
+        maxFd = std::max(maxFd, s->get());
+      }
+    }
     if (client) {
       FD_SET(client.get(), &readfds);
       maxFd = std::max(maxFd, client.get());
+    }
+    if (maxFd < 0) {
+      // Both binds failed: stay alive and signal-terminable, no crash loop.
+      poll(nullptr, 0, 1000);
+      continue;
     }
     timeval timeout{1, 0};
     int ready = select(maxFd + 1, &readfds, nullptr, nullptr, &timeout);
@@ -287,19 +456,23 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    if (FD_ISSET(server.get(), &readfds)) {
-      Fd newClient(accept4(server.get(), nullptr, nullptr, SOCK_NONBLOCK));
-      if (newClient) {
-        ucred cred{};
-        socklen_t credLen = sizeof(cred);
-        bool ok = getsockopt(newClient.get(), SOL_SOCKET, SO_PEERCRED, &cred,
-                             &credLen) == 0 &&
-                  cred.uid == target->pw_uid && executableIsFcitx5(cred.pid);
-        if (ok) {
-          client.reset(newClient.release());
-        } else {
-          std::cerr << "Rejected unauthorized client\n";
-        }
+    for (Fd *s : listeners) {
+      if (s->get() < 0 || !FD_ISSET(s->get(), &readfds)) {
+        continue;
+      }
+      Fd newClient(accept4(s->get(), nullptr, nullptr, SOCK_NONBLOCK));
+      if (!newClient) {
+        continue; // EINTR etc.: skip this round
+      }
+      ucred cred{};
+      socklen_t credLen = sizeof(cred);
+      bool ok = getsockopt(newClient.get(), SOL_SOCKET, SO_PEERCRED, &cred,
+                           &credLen) == 0 &&
+                cred.uid == target->pw_uid && executableIsFcitx5(cred.pid);
+      if (ok) {
+        client.reset(newClient.release());
+      } else {
+        std::cerr << "Rejected unauthorized client\n";
       }
     }
 

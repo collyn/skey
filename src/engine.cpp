@@ -271,7 +271,13 @@ static std::string outputModeName(SKeyOutputMode mode) {
 
 static constexpr size_t maxBufferedUinputKeys = 32;
 
-static std::string skeySocketPath(const char *suffix) {
+struct UinputSocketPaths {
+  std::string fsPath;        // "/run/skey-uinput-<user>/kb_socket"; empty if
+                             // longer than sun_path
+  std::string abstractName;  // legacy "skeysocket-<user>-kb_socket"
+};
+
+static UinputSocketPaths uinputSocketPaths(const char *suffix) {
   struct passwd pwd{};
   struct passwd *result = nullptr;
   long bufSize = sysconf(_SC_GETPW_R_SIZE_MAX);
@@ -285,13 +291,18 @@ static std::string skeySocketPath(const char *suffix) {
     username = result->pw_name;
   }
 
-  std::string path = std::string("skeysocket-") + username + "-" + suffix;
+  UinputSocketPaths paths;
+  paths.abstractName = std::string("skeysocket-") + username + "-" + suffix;
   constexpr size_t maxAbstractSocketName =
       sizeof(((sockaddr_un *)0)->sun_path) - 1;
-  if (path.size() > maxAbstractSocketName) {
-    path.resize(maxAbstractSocketName);
+  if (paths.abstractName.size() > maxAbstractSocketName) {
+    paths.abstractName.resize(maxAbstractSocketName);
   }
-  return path;
+  paths.fsPath = "/run/skey-uinput-" + username + "/" + suffix;
+  if (paths.fsPath.size() >= sizeof(((sockaddr_un *)0)->sun_path)) {
+    paths.fsPath.clear();
+  }
+  return paths;
 }
 
 FCITX_DEFINE_LOG_CATEGORY(skey_log, "skey");
@@ -1684,31 +1695,72 @@ void SKeyState::activate() {
                << "x" << ic_->cursorRect().height() << ")";
 }
 
+// Connect to a unix socket: filesystem path or abstract name (abstract =
+// NUL-prefixed sun_path).
+static bool connectUnixSocket(int fd, const std::string &path, bool abstract) {
+  if (path.size() >= sizeof(((sockaddr_un *)0)->sun_path)) {
+    return false;
+  }
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  size_t len = path.size();
+  if (abstract) {
+    addr.sun_path[0] = '\0';
+    memcpy(&addr.sun_path[1], path.c_str(), len);
+    len += 1;
+  } else {
+    memcpy(addr.sun_path, path.c_str(), len);
+  }
+  socklen_t slen = offsetof(sockaddr_un, sun_path) + len + 1;
+  return connect(fd, reinterpret_cast<sockaddr *>(&addr), slen) == 0;
+}
+
+// The peer must be the real uinput server: the hardened server runs as our
+// own uid (it drops privileges after init), the legacy server ran as root.
+// Anything else — a squatter on the abstract name, another user's process —
+// is refused.
+static bool peerIsTrusted(int fd) {
+  ucred cred{};
+  socklen_t credLen = sizeof(cred);
+  return getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &credLen) == 0 &&
+         (cred.uid == getuid() || cred.uid == 0);
+}
+
 bool SKeyState::connectUinputServer() {
   if (uinputClientFd_ >= 0) {
     return true;
   }
 
-  int fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0);
-  if (fd < 0) {
-    SKEY_DEBUG() << "Uinput: socket failed: " << strerror(errno);
-    return false;
-  }
+  auto tryConnect = [](const std::string &path, bool abstract) -> int {
+    int fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0);
+    if (fd < 0) {
+      SKEY_DEBUG() << "Uinput: socket failed: " << strerror(errno);
+      return -1;
+    }
+    if (connectUnixSocket(fd, path, abstract) && peerIsTrusted(fd)) {
+      return fd;
+    }
+    close(fd); // a failed connect poisons the fd — always close + recreate
+    return -1;
+  };
 
-  std::string path = skeySocketPath("kb_socket");
-  sockaddr_un addr{};
-  addr.sun_family = AF_UNIX;
-  addr.sun_path[0] = '\0';
-  memcpy(&addr.sun_path[1], path.c_str(), path.size());
-  socklen_t len = offsetof(sockaddr_un, sun_path) + path.size() + 1;
-  if (connect(fd, reinterpret_cast<sockaddr *>(&addr), len) == 0) {
+  UinputSocketPaths paths = uinputSocketPaths("kb_socket");
+  if (!paths.fsPath.empty()) {
+    int fd = tryConnect(paths.fsPath, /*abstract=*/false);
+    if (fd >= 0) {
+      uinputClientFd_ = fd;
+      SKEY_DEBUG() << "Uinput: connected (fs socket)";
+      return true;
+    }
+  }
+  int fd = tryConnect(paths.abstractName, /*abstract=*/true);
+  if (fd >= 0) {
     uinputClientFd_ = fd;
-    SKEY_DEBUG() << "Uinput: connected";
+    SKEY_DEBUG() << "Uinput: connected (abstract socket)";
     return true;
   }
 
   SKEY_DEBUG() << "Uinput: connect failed: " << strerror(errno);
-  close(fd);
   return false;
 }
 
