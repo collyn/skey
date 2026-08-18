@@ -20,15 +20,19 @@
 #include <fcntl.h>
 #include <linux/input.h>
 #include <linux/uinput.h>
+#include <poll.h>
 
 namespace {
 
-// Timing tunables (microseconds) — adjust if input is lost or laggy
+// Timing tunables — adjust if input is lost or laggy
 constexpr useconds_t UINPUT_INIT_WAIT_US = 1000000;
-constexpr useconds_t KEY_EVENT_DELAY_US = 300;
-constexpr useconds_t UNICODE_COMPOSE_US = 1500;
-constexpr useconds_t BACKSPACE_GAP_US = 400;
-constexpr useconds_t BACKSPACE_SETTLE_US = 500;
+// Backspaces per write() batch.  Batching press+SYN+release+SYN per key
+// into single write()s with a 1ms poll() pace between batches cuts
+// deletion latency ~4x versus the old per-event usleep pacing (300µs per
+// key event + 400µs per BS) while the gap keeps laggy apps (Telegram,
+// X11) from dropping events.
+constexpr int BACKSPACE_BATCH_SIZE = 4;
+constexpr int BATCH_GAP_MS = 1;
 
 std::atomic<bool> running{true};
 
@@ -129,12 +133,7 @@ public:
       std::cerr << "configure uinput failed: " << strerror(errno) << "\n";
       return false;
     }
-    const int keys[] = {
-        KEY_BACKSPACE, KEY_ESC,       KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_U,
-        KEY_ENTER,     KEY_0,         KEY_1,        KEY_2,         KEY_3,
-        KEY_4,         KEY_5,         KEY_6,        KEY_7,         KEY_8,
-        KEY_9,         KEY_A,         KEY_B,        KEY_C,         KEY_D,
-        KEY_E,         KEY_F};
+    const int keys[] = {KEY_BACKSPACE, KEY_ESC};
     for (int key : keys) {
       if (ioctl(fd_.get(), UI_SET_KEYBIT, key) < 0) {
         std::cerr << "configure key failed: " << strerror(errno) << "\n";
@@ -156,81 +155,64 @@ public:
     return true;
   }
 
-  void key(int code, int value) const {
-    input_event ev[2]{};
+  // press+SYN+release+SYN for one key, sent in a single write().
+  void tap(int code) const {
+    input_event ev[4]{};
     ev[0].type = EV_KEY;
     ev[0].code = static_cast<unsigned short>(code);
-    ev[0].value = value;
+    ev[0].value = 1;
     ev[1].type = EV_SYN;
     ev[1].code = SYN_REPORT;
     ev[1].value = 0;
+    ev[2].type = EV_KEY;
+    ev[2].code = static_cast<unsigned short>(code);
+    ev[2].value = 0;
+    ev[3].type = EV_SYN;
+    ev[3].code = SYN_REPORT;
+    ev[3].value = 0;
     ssize_t ignored = write(fd_.get(), ev, sizeof(ev));
     (void)ignored;
-    usleep(KEY_EVENT_DELAY_US);
   }
 
-  void tap(int code) const {
-    key(code, 1);
-    key(code, 0);
-  }
-
-  void backspace() const { tap(KEY_BACKSPACE); }
-  void escape() const { tap(KEY_ESC); }
-
-  int hexKey(char ch) const {
-    if (ch >= '0' && ch <= '9') {
-      return KEY_0 + (ch - '0');
+  // Batch N backspaces: BACKSPACE_BATCH_SIZE taps per write(), poll()
+  // pace between batches.  poll() replaces usleep() so pacing is
+  // interruptible; paceFd is watched for readability between batches
+  // (reserved for a future cancel protocol — messages queued
+  // mid-deletion are still processed only after the batch completes).
+  void backspaces(int count, int paceFd) const {
+    std::vector<input_event> evs;
+    evs.reserve(static_cast<size_t>(count) * 4);
+    for (int i = 0; i < count; ++i) {
+      input_event press{};
+      press.type = EV_KEY;
+      press.code = KEY_BACKSPACE;
+      press.value = 1;
+      input_event release = press;
+      release.value = 0;
+      input_event syn{};
+      syn.type = EV_SYN;
+      syn.code = SYN_REPORT;
+      evs.push_back(press);
+      evs.push_back(syn);
+      evs.push_back(release);
+      evs.push_back(syn);
     }
-    if (ch >= 'a' && ch <= 'f') {
-      return KEY_A + (ch - 'a');
-    }
-    return KEY_0;
-  }
-
-  void typeCodepoint(uint32_t cp) const {
-    char hex[16];
-    snprintf(hex, sizeof(hex), "%x", cp);
-    key(KEY_LEFTCTRL, 1);
-    key(KEY_LEFTSHIFT, 1);
-    tap(KEY_U);
-    key(KEY_LEFTSHIFT, 0);
-    key(KEY_LEFTCTRL, 0);
-    usleep(UNICODE_COMPOSE_US);
-    for (const char *p = hex; *p != '\0'; ++p) {
-      tap(hexKey(*p));
-    }
-    tap(KEY_ENTER);
-  }
-
-  void typeUtf8(const std::string &text) const {
-    for (size_t i = 0; i < text.size();) {
-      unsigned char ch = static_cast<unsigned char>(text[i]);
-      uint32_t cp = 0;
-      size_t advance = 1;
-      if (ch < 0x80) {
-        cp = ch;
-      } else if ((ch & 0xE0) == 0xC0 && i + 1 < text.size()) {
-        cp = ((ch & 0x1F) << 6) |
-             (static_cast<unsigned char>(text[i + 1]) & 0x3F);
-        advance = 2;
-      } else if ((ch & 0xF0) == 0xE0 && i + 2 < text.size()) {
-        cp = ((ch & 0x0F) << 12) |
-             ((static_cast<unsigned char>(text[i + 1]) & 0x3F) << 6) |
-             (static_cast<unsigned char>(text[i + 2]) & 0x3F);
-        advance = 3;
-      } else if ((ch & 0xF8) == 0xF0 && i + 3 < text.size()) {
-        cp = ((ch & 0x07) << 18) |
-             ((static_cast<unsigned char>(text[i + 1]) & 0x3F) << 12) |
-             ((static_cast<unsigned char>(text[i + 2]) & 0x3F) << 6) |
-             (static_cast<unsigned char>(text[i + 3]) & 0x3F);
-        advance = 4;
-      } else {
-        cp = ch;
+    constexpr size_t batchEvents =
+        static_cast<size_t>(BACKSPACE_BATCH_SIZE) * 4;
+    for (size_t off = 0; off < evs.size(); off += batchEvents) {
+      size_t n = std::min(batchEvents, evs.size() - off);
+      ssize_t ignored =
+          write(fd_.get(), evs.data() + off, n * sizeof(input_event));
+      (void)ignored;
+      if (off + n >= evs.size()) {
+        break;
       }
-      typeCodepoint(cp);
-      i += advance;
+      pollfd pfd{paceFd, POLLIN, 0};
+      poll(&pfd, 1, BATCH_GAP_MS);
     }
   }
+
+  void escape() const { tap(KEY_ESC); }
 
 private:
   Fd fd_;
@@ -340,31 +322,24 @@ int main(int argc, char **argv) {
       //   v1 (8+ bytes):  int32_t count + uint32_t textLen + text
       //   v2 (12+ bytes): int32_t count + uint32_t flags  + uint32_t textLen + text
       //   flags bit 0: send Escape before BS (dismisses Chrome autocomplete)
+      // Text is deprecated — replacement text used to be typed via
+      // Ctrl+Shift+U hex, but the engine now commits through
+      // ic_->commitString().  It is parsed for backward compatibility
+      // and never typed.
       int32_t count = 0;
       uint32_t flags = 0;
-      std::string text;
       if (n == static_cast<ssize_t>(sizeof(int32_t))) {
         memcpy(&count, buf, sizeof(count));
-      } else if (n >= static_cast<ssize_t>(sizeof(int32_t) + sizeof(uint32_t) + sizeof(uint32_t))) {
+      } else if (n >= static_cast<ssize_t>(sizeof(int32_t) +
+                                           sizeof(uint32_t) +
+                                           sizeof(uint32_t))) {
         // v2: count + flags + textLen + text
-        uint32_t textLen = 0;
         memcpy(&count, buf, sizeof(count));
         memcpy(&flags, buf + sizeof(count), sizeof(flags));
-        memcpy(&textLen, buf + sizeof(count) + sizeof(flags), sizeof(textLen));
-        size_t available = static_cast<size_t>(n) - sizeof(count) - sizeof(flags) - sizeof(textLen);
-        textLen = std::min<uint32_t>(textLen, static_cast<uint32_t>(available));
-        text.assign(buf + sizeof(count) + sizeof(flags) + sizeof(textLen),
-                    buf + sizeof(count) + sizeof(flags) + sizeof(textLen) + textLen);
-      } else if (n >= static_cast<ssize_t>(sizeof(int32_t) + sizeof(uint32_t))) {
+      } else if (n >= static_cast<ssize_t>(sizeof(int32_t) +
+                                           sizeof(uint32_t))) {
         // v1: count + textLen + text (backward-compatible)
-        uint32_t textLen = 0;
         memcpy(&count, buf, sizeof(count));
-        memcpy(&textLen, buf + sizeof(count), sizeof(textLen));
-        size_t available =
-            static_cast<size_t>(n) - sizeof(count) - sizeof(textLen);
-        textLen = std::min<uint32_t>(textLen, static_cast<uint32_t>(available));
-        text.assign(buf + sizeof(count) + sizeof(textLen),
-                    buf + sizeof(count) + sizeof(textLen) + textLen);
       } else {
         continue;
       }
@@ -372,18 +347,11 @@ int main(int argc, char **argv) {
       // Flags: bit 0 = send Escape to dismiss autocomplete before BS
       if ((flags & 1) != 0) {
         uinput.escape();
-        usleep(BACKSPACE_GAP_US);
+        poll(nullptr, 0, BATCH_GAP_MS);
       }
 
       count = std::clamp(count, 1, 64);
-      for (int i = 0; i < count; ++i) {
-        uinput.backspace();
-        usleep(BACKSPACE_GAP_US);
-      }
-      if (!text.empty()) {
-        usleep(BACKSPACE_SETTLE_US);
-        uinput.typeUtf8(text);
-      }
+      uinput.backspaces(count, client.get());
     }
   }
 

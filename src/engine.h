@@ -73,8 +73,7 @@ private:
     bool a11yFreshWebEditor() const;
     SKeyOutputMode detectAutoMode() const;
     bool connectUinputServer();
-    void sendBackspaceUinput(int count, const std::string &text = "",
-                              uint32_t flags = 0);
+    void sendBackspaceUinput(int count, uint32_t flags = 0);
     bool handlePendingUinputBackspace(KeyEvent &keyEvent);
     void replayBufferedUinputKeys();
     void commitBuffer();
@@ -219,10 +218,6 @@ private:
     uint64_t lastBsRoundTrip_ = 0; // last measured round-trip (usec)
     // EWMA of BS round-trip times for adaptive commit delay (usec)
     uint64_t bsRtEwma_ = 10000;    // seeded with kBsRtInitialUsec
-    // Passthrough window: after uinput sends text via Ctrl+Shift+U, the
-    // injected key events pass back through fcitx5.  Suppress engine
-    // processing during this window so those keys reach the app unmodified.
-    uint64_t uinputPassthroughUntil_ = 0;
     // Retroactive tone editing (Unikey-style): saved state of last committed word
     std::string lastRawInput_;      // Raw input of last committed word
     std::string lastComposed_;      // Composed text of last committed word

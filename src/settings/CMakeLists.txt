@@ -17,6 +17,12 @@ set(SETTINGS_SOURCES
 )
 
 add_executable(fcitx5-skey-settings ${SETTINGS_SOURCES})
+# automoc's _autogen_timestamp_deps depends on the raw libskey_engine.a file,
+# whose rule lives in the top-level makefile — with parallel make this can
+# fail with "No rule to make target". Depend on the custom target instead,
+# which orders the engine build before the settings autogen step.
+set_property(TARGET fcitx5-skey-settings PROPERTY
+    AUTOGEN_TARGET_DEPENDS skey_engine_build)
 # skey_engine: embedded dictionary word list for the full-dictionary viewer.
 target_include_directories(fcitx5-skey-settings PRIVATE "${SKEY_ENGINE_DIR}")
 target_link_libraries(fcitx5-skey-settings PRIVATE Qt6::Widgets Qt6::Core Qt6::Network Qt6::DBus skey_engine pthread dl)

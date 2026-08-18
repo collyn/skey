@@ -154,9 +154,6 @@ struct UinputTiming {
   double chromiumDelayFactor;   // extra multiplier for Chromium/Electron apps
   uint64_t safetyTimeoutUsec;   // force-commit if BS events don't arrive
   uint64_t safetyRetryUsec;     // extended window when BS are just slow
-  uint64_t passthroughBaseUsec; // base window for Ctrl+Shift+U passthrough
-  uint64_t passthroughMinUsec;  // min Ctrl+Shift+U passthrough window
-  uint64_t perCharUsec;         // per-char overhead for Ctrl+Shift+U typing
 };
 
 // X11: sync BS approach — send N+1 BS, the extra one anchors ordering.
@@ -175,9 +172,6 @@ static constexpr UinputTiming kUinputTimingX11 = {
     2.0,    // chromiumDelayFactor — 2× → 6ms–60ms for Electron/Chromium
     150000, // safetyTimeoutUsec (150ms)
     600000, // safetyRetryUsec (600ms) — one extension for slow loopbacks
-    20000,  // passthroughBaseUsec
-    35000,  // passthroughMinUsec
-    10000,  // perCharUsec
 };
 
 // Wayland: clamp delay to [2ms, 12ms] for native apps.
@@ -194,9 +188,6 @@ static constexpr UinputTiming kUinputTimingWayland = {
     1.5,   // chromiumDelayFactor — Electron multi-process needs 1.5×
     80000, // safetyTimeoutUsec (80ms)
     600000, // safetyRetryUsec (600ms) — one extension for slow loopbacks
-    500,   // passthroughBaseUsec
-    500,   // passthroughMinUsec
-    1500,  // perCharUsec
 };
 
 // Surr deferred commit timing (same mechanism, independent of uinput path)
@@ -1708,12 +1699,11 @@ bool SKeyState::connectUinputServer() {
   return false;
 }
 
-void SKeyState::sendBackspaceUinput(int count, const std::string &text,
-                                    uint32_t flags) {
+void SKeyState::sendBackspaceUinput(int count, uint32_t flags) {
   if (count < 0) {
     return;
   }
-  if (count == 0 && text.empty() && flags == 0) {
+  if (count == 0 && flags == 0) {
     return;
   }
   if (!connectUinputServer()) {
@@ -1722,20 +1712,19 @@ void SKeyState::sendBackspaceUinput(int count, const std::string &text,
   }
 
   // Protocol v2: int32_t count, uint32_t flags, uint32_t textLen, then text.
-  // flags bit 0: send Escape before BS (deprecated — autocomplete is now
-  //   handled via extra BS when isAutofillCertain() detects a selection).
+  // textLen is always 0 — replacement text is committed via
+  // ic_->commitString() (see handlePendingUinputBackspace), never typed
+  // through uinput.  flags bit 0: send Escape before BS (deprecated —
+  //   autocomplete is now handled via extra BS when isAutofillCertain()
+  //   detects a selection).
   // The server detects v1 vs v2 by message size for backward compatibility.
   int32_t count32 = count;
-  uint32_t textLen = static_cast<uint32_t>(text.size());
-  std::vector<char> msg(sizeof(int32_t) + sizeof(uint32_t) * 2 + textLen);
+  uint32_t textLen = 0;
+  std::vector<char> msg(sizeof(int32_t) + sizeof(uint32_t) * 2);
   memcpy(msg.data(), &count32, sizeof(count32));
   memcpy(msg.data() + sizeof(count32), &flags, sizeof(flags));
   memcpy(msg.data() + sizeof(count32) + sizeof(flags), &textLen,
          sizeof(textLen));
-  if (textLen > 0) {
-    memcpy(msg.data() + sizeof(count32) + sizeof(flags) + sizeof(textLen),
-           text.data(), textLen);
-  }
 
   bsSentAt_ = now(CLOCK_MONOTONIC);
   ssize_t n = send(uinputClientFd_, msg.data(), msg.size(), MSG_NOSIGNAL);
@@ -1750,20 +1739,7 @@ void SKeyState::sendBackspaceUinput(int count, const std::string &text,
   // Track injected BS that will loop back through fcitx5 — used to
   // swallow late loopbacks instead of mistaking them for user backspaces.
   uinputBsOutstanding_ += count;
-  SKEY_DEBUG() << "Uinput: sent BS=" << count
-               << (textLen > 0 ? " +text='" + text + "'" : "");
-  // When text is included, the server types it via Ctrl+Shift+U hex.
-  // Those keystrokes loop back through fcitx5; enable passthrough so
-  // they reach the app unmodified.  Window is sized per character
-  // (roughly 15ms per char for Ctrl+Shift+U typing + latency).
-  if (textLen > 0) {
-    auto &timing = uinputTiming();
-    uinputPassthroughUntil_ =
-        now(CLOCK_MONOTONIC) +
-        std::max(timing.passthroughMinUsec,
-                 timing.passthroughBaseUsec +
-                     static_cast<uint64_t>(textLen) * timing.perCharUsec);
-  }
+  SKEY_DEBUG() << "Uinput: sent BS=" << count;
 }
 
 bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
@@ -2254,17 +2230,6 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       keyEvent.filterAndAccept();
       return;
     }
-  }
-
-  // Passthrough window: after uinput types text via Ctrl+Shift+U hex,
-  // the injected key events loop back through fcitx5.  Suppress engine
-  // processing so those keys (Ctrl, Shift, U, hex digits, Enter) reach
-  // the app unmodified instead of being interpreted as Vietnamese input.
-  if (uinputPassthroughUntil_ > 0) {
-    if (now(CLOCK_MONOTONIC) < uinputPassthroughUntil_) {
-      return; // pass through, no engine processing
-    }
-    uinputPassthroughUntil_ = 0;
   }
 
   auto key = keyEvent.key();
@@ -3692,7 +3657,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
     seenUinputBackspaces_ = 0;
     pendingUinputCommit_ = commitText;
     uinputDeleting_ = true;
-    sendBackspaceUinput(totalBs + 1, "", uinputFlags); // +1 sync BS
+    sendBackspaceUinput(totalBs + 1, uinputFlags); // +1 sync BS
     // Safety: force-commit if BS events are lost
     uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC,
