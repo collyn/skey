@@ -122,6 +122,32 @@ CARGO_EOF
     find vendor -name '.github' -type d -exec rm -rf {} + 2>/dev/null || true
     find vendor -name '.gitignore' -delete 2>/dev/null || true
     echo "   Vendored $(find vendor -name '*.crate' 2>/dev/null | wc -l) crates"
+
+    # Rebuild .cargo-checksum.json to match the files actually present.
+    # Newer cargo versions omit some files (e.g. Cargo.toml.orig) from vendor
+    # dirs while the checksum manifest still references them; the buildd's
+    # cargo 1.75 verifies these checksums and fails on missing files.
+    python3 - vendor << 'PYEOF'
+import hashlib, json, os, sys
+root = os.path.abspath(sys.argv[1])
+for dirpath, _dirnames, filenames in os.walk(root):
+    cks = os.path.join(dirpath, '.cargo-checksum.json')
+    if not os.path.isfile(cks):
+        continue
+    files = {}
+    for fn in sorted(f for f in filenames if f != '.cargo-checksum.json'):
+        p = os.path.join(dirpath, fn)
+        if os.path.isfile(p) and not os.path.islink(p):
+            h = hashlib.sha256()
+            with open(p, 'rb') as fh:
+                h.update(fh.read())
+            files[fn] = h.hexdigest()
+    with open(cks, 'r') as fh:
+        meta = json.load(fh)
+    meta['files'] = files
+    with open(cks, 'w') as fh:
+        json.dump(meta, fh, separators=(',', ':'))
+PYEOF
 fi
 popd > /dev/null
 
