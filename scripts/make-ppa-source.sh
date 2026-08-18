@@ -121,6 +121,12 @@ CARGO_EOF
     find vendor -name '*.html' -delete 2>/dev/null || true
     find vendor -name '.github' -type d -exec rm -rf {} + 2>/dev/null || true
     find vendor -name '.gitignore' -delete 2>/dev/null || true
+    # dh_clean on the buildd sweeps every *.orig file from the source tree,
+    # which would nuke Cargo.toml.orig and break cargo's checksum verification.
+    # Cargo.toml.orig is only needed for crate publishing — drop it here so
+    # the tarball carries none (the rewrite below removes it from the checksum
+    # manifests too).
+    find vendor -name '*.orig' -delete 2>/dev/null || true
     echo "   Vendored $(find vendor -name '*.crate' 2>/dev/null | wc -l) crates"
 
     # Rebuild .cargo-checksum.json to match the files actually present.
