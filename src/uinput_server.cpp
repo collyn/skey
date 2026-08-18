@@ -26,13 +26,18 @@ namespace {
 
 // Timing tunables — adjust if input is lost or laggy
 constexpr useconds_t UINPUT_INIT_WAIT_US = 1000000;
-// Backspaces per write() batch.  Batching press+SYN+release+SYN per key
-// into single write()s with a 1ms poll() pace between batches cuts
-// deletion latency ~4x versus the old per-event usleep pacing (300µs per
-// key event + 400µs per BS) while the gap keeps laggy apps (Telegram,
-// X11) from dropping events.
-constexpr int BACKSPACE_BATCH_SIZE = 4;
-constexpr int BATCH_GAP_MS = 1;
+// Pacing gap between backspaces (ms).  One BS = press+SYN+release+SYN in
+// a single write(), then poll(BACKSPACE_GAP_MS) before the next BS.
+// The gap is load-bearing: on Wayland the commit travels via text-input
+// while BS travel via uinput — two paths with no shared ordering, so the
+// app needs headroom to process each deletion before the sync-anchor BS
+// loops back.  Batching multiple BS into one write() with zero gap made
+// the anchor return in ~1ms while Electron still had the deletions
+// queued, corrupting text ("chào" → "cho", verified on antigravity,
+// Wayland, 2026-08-18).  poll() replaces usleep() so pacing stays
+// interruptible; paceFd is watched for readability (reserved for a
+// future cancel protocol).
+constexpr int BACKSPACE_GAP_MS = 1;
 
 std::atomic<bool> running{true};
 
@@ -174,41 +179,29 @@ public:
     (void)ignored;
   }
 
-  // Batch N backspaces: BACKSPACE_BATCH_SIZE taps per write(), poll()
-  // pace between batches.  poll() replaces usleep() so pacing is
-  // interruptible; paceFd is watched for readability between batches
-  // (reserved for a future cancel protocol — messages queued
-  // mid-deletion are still processed only after the batch completes).
+  // N backspaces, one write() each (press+SYN+release+SYN), poll() gap
+  // between them — see BACKSPACE_GAP_MS for why the gap is load-bearing.
   void backspaces(int count, int paceFd) const {
-    std::vector<input_event> evs;
-    evs.reserve(static_cast<size_t>(count) * 4);
     for (int i = 0; i < count; ++i) {
-      input_event press{};
-      press.type = EV_KEY;
-      press.code = KEY_BACKSPACE;
-      press.value = 1;
-      input_event release = press;
-      release.value = 0;
-      input_event syn{};
-      syn.type = EV_SYN;
-      syn.code = SYN_REPORT;
-      evs.push_back(press);
-      evs.push_back(syn);
-      evs.push_back(release);
-      evs.push_back(syn);
-    }
-    constexpr size_t batchEvents =
-        static_cast<size_t>(BACKSPACE_BATCH_SIZE) * 4;
-    for (size_t off = 0; off < evs.size(); off += batchEvents) {
-      size_t n = std::min(batchEvents, evs.size() - off);
-      ssize_t ignored =
-          write(fd_.get(), evs.data() + off, n * sizeof(input_event));
+      input_event ev[4]{};
+      ev[0].type = EV_KEY;
+      ev[0].code = KEY_BACKSPACE;
+      ev[0].value = 1;
+      ev[1].type = EV_SYN;
+      ev[1].code = SYN_REPORT;
+      ev[1].value = 0;
+      ev[2].type = EV_KEY;
+      ev[2].code = KEY_BACKSPACE;
+      ev[2].value = 0;
+      ev[3].type = EV_SYN;
+      ev[3].code = SYN_REPORT;
+      ev[3].value = 0;
+      ssize_t ignored = write(fd_.get(), ev, sizeof(ev));
       (void)ignored;
-      if (off + n >= evs.size()) {
-        break;
+      if (i + 1 < count) {
+        pollfd pfd{paceFd, POLLIN, 0};
+        poll(&pfd, 1, BACKSPACE_GAP_MS);
       }
-      pollfd pfd{paceFd, POLLIN, 0};
-      poll(&pfd, 1, BATCH_GAP_MS);
     }
   }
 
@@ -347,7 +340,7 @@ int main(int argc, char **argv) {
       // Flags: bit 0 = send Escape to dismiss autocomplete before BS
       if ((flags & 1) != 0) {
         uinput.escape();
-        poll(nullptr, 0, BATCH_GAP_MS);
+        poll(nullptr, 0, BACKSPACE_GAP_MS);
       }
 
       count = std::clamp(count, 1, 64);

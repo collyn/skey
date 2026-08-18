@@ -1341,6 +1341,19 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
         (1ULL << 22);    // Name
     CapabilityFlags contentHints(kContentHints);
     if (!(caps & contentHints)) {
+      // Standalone Chromium/Electron apps (not browsers) deliver
+      // surrounding text via shared Chromium text-input code even with
+      // bare caps (verified: antigravity on Wayland — browsers get the
+      // bare-caps logic below instead, where Sheets-style tabs need
+      // Uinput).  Runtime validation in surroundingCommit() still
+      // downgrades via surroundingTextFailed_ if the app is broken.
+      // Electron terminals are routed to Uinput earlier via
+      // isTerminalApp() (delete_surrounding_text is unreliable there).
+      if (!isChromiumBrowser(appProgram())) {
+        SKEY_DEBUG() << "Auto: bare caps + standalone Chromium app → "
+                        "SurroundingText";
+        return SKeyOutputMode::SurroundingText;
+      }
       // Fresh AT-SPI2 web-editor focus (Facebook chat) wins over bare caps:
       // Chrome fires the a11y focus event immediately on click, but its
       // content-type caps may stay bare until a text-input re-sync.
