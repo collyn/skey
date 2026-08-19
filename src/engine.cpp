@@ -879,25 +879,6 @@ void SKeyEngine::saveAppMode(const std::string &app, SKeyOutputMode mode) {
               << " ok=" << ok;
 }
 
-SKeyOutputMode SKeyEngine::loadAppMode(const std::string &app) const {
-  RawConfig cfg;
-  readAsIni(cfg, "conf/skey-app-modes.conf");
-  auto *val = cfg.valueByPath(app);
-  if (val) {
-    if (*val == "Preedit")
-      return SKeyOutputMode::Preedit;
-    if (*val == "SurroundingTextSlow" || *val == "SurroundingText" ||
-        *val == "Surrounding Text")
-      return SKeyOutputMode::SurroundingText;
-    if (*val == "Uinput")
-      return SKeyOutputMode::Uinput;
-    if (*val == "Auto")
-      return SKeyOutputMode::Auto;
-  }
-  // Not found — return the configured default
-  return config_.outputMode.value();
-}
-
 void SKeyEngine::saveAppExcluded(const std::string &app, bool excluded) {
   RawConfig cfg;
   readAsIni(cfg, "conf/skey-app-modes.conf");
@@ -908,13 +889,6 @@ void SKeyEngine::saveAppExcluded(const std::string &app, bool excluded) {
   }
   safeSaveAsIni(cfg, "conf/skey-app-modes.conf");
   SKEY_INFO() << "App '" << app << "' " << (excluded ? "excluded" : "included");
-}
-
-bool SKeyEngine::isAppExcluded(const std::string &app) const {
-  RawConfig cfg;
-  readAsIni(cfg, "conf/skey-app-modes.conf");
-  auto *val = cfg.valueByPath(app);
-  return val && *val == "Excluded";
 }
 
 void SKeyEngine::reloadConfig() {
@@ -1422,11 +1396,6 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   return SKeyOutputMode::SurroundingText;
 }
 
-bool SKeyState::canEditWithSurroundingText() const {
-  return useSurroundingText() &&
-         ic_->capabilityFlags().test(CapabilityFlag::SurroundingText);
-}
-
 bool SKeyState::isChromiumCached() const {
   if (cachedIsChromium_ < 0) {
     cachedIsChromium_ = isChromiumBasedApp(appProgram()) ? 1 : 0;
@@ -1525,8 +1494,6 @@ bool SKeyState::isWayland() const {
 const UinputTiming &SKeyState::uinputTiming() const {
   return isWayland() ? kUinputTimingWayland : kUinputTimingX11;
 }
-
-bool SKeyState::useHiddenComposition() const { return false; }
 
 void SKeyState::activate() {
   // Re-sync input method from config (handles config changes at runtime)
@@ -4225,60 +4192,6 @@ void SKeyState::reclaimLastWord() {
   SKEY_DEBUG() << "ReclaimLastWord: restored raw='" << viet_.getRawInput()
                << "' composed='" << viet_.getComposed()
                << "' committedLen=" << committedLen_;
-}
-
-void SKeyState::updateDeferredPreedit() {
-  // During deferred commit (slow surrounding text mode), show the pending
-  // text as preedit so the user gets immediate visual feedback while we
-  // wait for BackSpace to be processed before the actual commit.
-  Text preedit;
-  if (!deferredCommitText_.empty()) {
-    preedit.append(deferredCommitText_, TextFormatFlag::Underline);
-    preedit.setCursor(deferredCommitText_.size());
-  }
-  if (ic_->capabilityFlags().test(CapabilityFlag::Preedit)) {
-    ic_->inputPanel().setClientPreedit(preedit);
-  } else {
-    ic_->inputPanel().setPreedit(preedit);
-  }
-  ic_->updatePreedit();
-  ic_->updateUserInterface(UserInterfaceComponent::InputPanel);
-}
-
-void SKeyState::forwardUtf8AsKeys(const std::string &text) {
-  // Forward each UTF-8 character as a key event using Unicode keysyms.
-  // This ensures BS + replacement chars all go through the same
-  // key event handler in the app, preserving ordering.
-  size_t i = 0;
-  while (i < text.size()) {
-    uint32_t cp = 0;
-    uint8_t lead = static_cast<uint8_t>(text[i]);
-    int seqLen;
-    if (lead < 0x80) {
-      cp = lead;
-      seqLen = 1;
-    } else if (lead < 0xC0) {
-      i++;
-      continue; /* continuation byte, skip */
-    } else if (lead < 0xE0) {
-      cp = lead & 0x1F;
-      seqLen = 2;
-    } else if (lead < 0xF0) {
-      cp = lead & 0x0F;
-      seqLen = 3;
-    } else {
-      cp = lead & 0x07;
-      seqLen = 4;
-    }
-    for (int j = 1; j < seqLen && i + j < text.size(); j++) {
-      cp = (cp << 6) | (static_cast<uint8_t>(text[i + j]) & 0x3F);
-    }
-    i += seqLen;
-    // Unicode keysym range: 0x01000000 + codepoint
-    ic_->forwardKey(Key(static_cast<KeySym>(0x01000000 | cp)));
-  }
-  SKEY_DEBUG() << "Surr: forwarded '" << text << "' as " << utf8::length(text)
-               << " key events";
 }
 
 void SKeyState::updatePreedit() {

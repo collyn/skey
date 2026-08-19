@@ -52,11 +52,9 @@ private:
     bool inChromiumAddressBar() const;
     bool isAutofillCertain() const;
     bool useSurroundingText() const;
-    bool canEditWithSurroundingText() const;
     bool useNativeSurroundingApi() const;
     bool isWayland() const;
     const struct UinputTiming& uinputTiming() const;
-    bool useHiddenComposition() const;
     bool useUinputMode() const;
     bool isChromiumCached() const;
     /// Per-app identity key.  The IBus frontend reports an empty program
@@ -95,8 +93,6 @@ private:
                                 const std::string &stablePrefix = "");
     void flushDeferredCommit();
     void forceFlushDeferredCommit();
-    void updateDeferredPreedit();
-    void forwardUtf8AsKeys(const std::string &text);
     void updatePreedit();
     void clearUI();
     void showModeMenu();
@@ -172,9 +168,6 @@ private:
     int uinputBsOutstanding_ = 0;
     // Safety window already extended once — a second timeout force-commits.
     bool uinputSafetyRetried_ = false;
-    // Address bar deferred replacement state
-    int addrBarPendingBs_ = 0;
-    std::string addrBarPendingText_;
     // Spurious Deactivate/Reset/Activate detection for Chromium
     // address bar. Set before sending forwardKey/commitString and
     // cleared after a reactivate or 200ms timeout.
@@ -248,10 +241,6 @@ private:
     // desync the engine from the screen, so the guard must not run
     // (and risk a stale-snapshot false reset) during normal typing.
     bool addrBarSawBsInWord_ = false;
-    // True while processing a reclaimed-word replacement — forces
-    // surroundingCommit to use forwardKey instead of the native
-    // surrounding-text API, which may be out-of-sync after reclaim.
-    bool reclaimInProgress_ = false;
 };
 
 /// Main fcitx5 engine class.
@@ -287,9 +276,7 @@ public:
     void setChromiumAddressBarMode(SKeyChromiumAddressBarMode mode);
     void setInputMethod(SKeyInputMethod method);
     void saveAppMode(const std::string &app, SKeyOutputMode mode);
-    SKeyOutputMode loadAppMode(const std::string &app) const;
     void saveAppExcluded(const std::string &app, bool excluded);
-    bool isAppExcluded(const std::string &app) const;
     void updateMenuActions();
     A11yMonitor *a11yMonitor() const { return a11yMonitor_.get(); }
     const Key &modeMenuKey() const { return modeMenuKey_; }
