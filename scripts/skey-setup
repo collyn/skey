@@ -539,12 +539,28 @@ if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
 # The service unit is installed to /lib/systemd/system (system scope), NOT
 # the user manager. We use system-scope enable + sudo/polkit fallback.
 if command -v systemctl >/dev/null 2>&1; then
-    UINPUT_SERVICE="fcitx5-skey-uinput-server@${USER}.service"
+    # Resolve the REAL desktop user even when skey-setup runs under sudo,
+    # pkexec, or a package postinst.  The instance name must match the user
+    # fcitx5 runs as — its client connects to /run/skey-uinput-<user> and a
+    # @root instance serves nobody.
+    REAL_USER="${SUDO_USER:-}"
+    if [ -z "$REAL_USER" ] && [ -n "${PKEXEC_UID:-}" ]; then
+        REAL_USER=$(id -un "$PKEXEC_UID" 2>/dev/null || true)
+    fi
+    REAL_USER="${REAL_USER:-$(logname 2>/dev/null || true)}"
+    REAL_USER="${REAL_USER:-$USER}"
+
+    UINPUT_SERVICE="fcitx5-skey-uinput-server@${REAL_USER}.service"
     if systemctl is-enabled "$UINPUT_SERVICE" >/dev/null 2>&1; then
         systemctl restart "$UINPUT_SERVICE" 2>/dev/null || true
         echo "✓ Uinput server restarted: $UINPUT_SERVICE"
     elif [ "$(id -u)" -eq 0 ]; then
-        # Running as root (e.g., from package postinst)
+        # Running as root (e.g., from package postinst).  Also disable a
+        # stale @root instance left by a previous sudo run — fcitx5 never
+        # runs as root, so it serves nobody.
+        if [ "$REAL_USER" != "root" ]; then
+            systemctl disable --now "fcitx5-skey-uinput-server@root.service" 2>/dev/null || true
+        fi
         systemctl enable --now "$UINPUT_SERVICE" 2>/dev/null || true
         echo "✓ Uinput server enabled + started: $UINPUT_SERVICE"
     elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
@@ -653,7 +669,7 @@ echo ""
 echo "  Settings GUI: fcitx5-skey-settings"
 echo "  Logs:         tail -f /tmp/skey.log"
 echo ""
-echo "  Uinput server: systemctl status fcitx5-skey-uinput-server@\$USER.service"
+echo "  Uinput server: systemctl status fcitx5-skey-uinput-server@${REAL_USER:-$USER}.service"
 echo "  (may need sudo/polkit on non-Debian systems — see above)"
 echo ""
 if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
