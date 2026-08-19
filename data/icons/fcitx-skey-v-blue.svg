@@ -2,12 +2,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#1a73e8"/>
-      <stop offset="100%" stop-color="#0d47a1"/>
+      <stop offset="0%" stop-color="#00897B"/>
+      <stop offset="100%" stop-color="#00695C"/>
     </linearGradient>
   </defs>
   <!-- Background rounded rectangle -->
   <rect x="2" y="2" width="44" height="44" rx="8" ry="8" fill="url(#bg)"/>
-  <!-- "V" glyph as path (baked from DejaVu Sans Bold — no font needed at render time) -->
-  <path fill="white" d="M 8.72 8.84 L 16.28 8.84 L 24.01 30.36 L 31.72 8.84 L 39.28 8.84 L 28.48 38.00 L 19.52 38.00 Z"/>
+  <!-- White "V" — stroke-based for naturally rounded ends and bottom point -->
+  <path d="M 12 11 L 24 37 L 36 11"
+        fill="none" stroke="#FFFFFF" stroke-width="8"
+        stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

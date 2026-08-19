@@ -81,6 +81,11 @@ CHLOG
     echo "Uploading to ${SERIES}: $CHANGES"
     dput ppa-collyn "$CHANGES"
     echo "→ Done: ${SERIES}"
+
+    # Clean up artifacts from this iteration so the next series' glob
+    # doesn't pick up stale .changes / .dsc from the previous series.
+    rm -f ../fcitx5-skey_*_source.changes ../fcitx5-skey_*.dsc \
+          ../fcitx5-skey_*.debian.tar.xz ../fcitx5-skey_*.buildinfo
     SA_FLAG="-sd"
 done
 

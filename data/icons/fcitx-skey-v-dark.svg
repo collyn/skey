@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
-  <!-- White "V" glyph as path (baked from DejaVu Sans Bold) on transparent
-     background — suitable for dark themes -->
-  <path fill="white" d="M 8.72 8.84 L 16.28 8.84 L 24.01 30.36 L 31.72 8.84 L 39.28 8.84 L 28.48 38.00 L 19.52 38.00 Z"/>
+  <!-- White "V" — stroke-based for naturally rounded ends and bottom point.
+       Suitable for dark themes. -->
+  <path d="M 12 11 L 24 37 L 36 11"
+        fill="none" stroke="#FFFFFF" stroke-width="8"
+        stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

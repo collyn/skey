@@ -8,6 +8,8 @@
   </defs>
   <!-- Background rounded rectangle -->
   <rect x="2" y="2" width="44" height="44" rx="8" ry="8" fill="url(#bg)"/>
-  <!-- "Vi" glyphs as paths (baked from DejaVu Sans Bold — no font needed at render time) -->
-  <path fill="white" d="M 5.18 12.21 L 11.61 12.21 L 18.18 30.51 L 24.74 12.21 L 31.16 12.21 L 21.98 37.00 L 14.36 37.00 Z M 34.19 18.41 L 40.13 18.41 L 40.13 37.00 L 34.19 37.00 Z M 34.19 11.17 L 40.13 11.17 L 40.13 16.02 L 34.19 16.02 Z"/>
+  <!-- White "V" — stroke-based for naturally rounded ends and bottom point -->
+  <path d="M 12 11 L 24 37 L 36 11"
+        fill="none" stroke="#FFFFFF" stroke-width="8"
+        stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
