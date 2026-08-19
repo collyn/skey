@@ -113,11 +113,12 @@ else()
     add_custom_target(skey_engine_build DEPENDS ${SKEY_ENGINE_LIB})
 endif()
 
-# Create an imported static library target for skey-engine
-add_library(skey_engine STATIC IMPORTED)
-set_target_properties(skey_engine PROPERTIES
-    IMPORTED_LOCATION ${SKEY_ENGINE_LIB}
-)
+# Create an interface library for skey-engine.
+# Using INTERFACE (not IMPORTED) prevents CMake's AUTOMOC from tracing the raw
+# .a file path as a file-level dependency — which causes "No rule to make
+# target" race conditions with parallel make on Launchpad buildd.
+add_library(skey_engine INTERFACE)
+target_link_libraries(skey_engine INTERFACE "${SKEY_ENGINE_LIB}")
 add_dependencies(skey_engine skey_engine_build)
 # ─────────────────────────────────────────────────────────────────────────
 
