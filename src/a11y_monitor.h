@@ -60,6 +60,17 @@ public:
         return passwordFocused_.load(std::memory_order_relaxed);
     }
 
+    /// True when the last focus snapshot was a real text-entry element
+    /// (role TEXT / ENTRY / DOCUMENT_TEXT).  A Chromium tab whose focus is
+    /// NOT a text entry (clicking a Google Sheets cell focuses the
+    /// document/combo box while caps still carry the previous editor's
+    /// hints) cannot receive surrounding-text replacements — the engine
+    /// routes those to Uinput.  Same freshness window as the focus
+    /// snapshot: both are written in the same focus-event handler.
+    bool isTextEntryFocused() const {
+        return textEntryFocused_.load(std::memory_order_relaxed);
+    }
+
     /// Identity of the last focused text-entry element (bus name + object
     /// path) for the engine's own AT-SPI2 queries (GetText/GetSelection).
     /// Returns false when no text entry has been focused yet.
@@ -112,6 +123,7 @@ private:
     std::atomic<bool> focusEditable_{false};
     std::atomic<bool> focusMultiline_{false};
     std::atomic<bool> focusSingleLine_{false};
+    std::atomic<bool> textEntryFocused_{false};
     std::atomic<uint64_t> focusSnapshotUsec_{0};
     // Focused text-entry identity (guarded — strings are not atomic).
     mutable std::mutex focusEntryMutex_;

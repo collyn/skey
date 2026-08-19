@@ -1245,6 +1245,16 @@ bool SKeyState::a11yFreshWebEditor() const {
   }
 }
 
+void SKeyState::clearEngineBareCapsSticky() const {
+  if (!engine_->chromiumHadBareCaps_) {
+    return;
+  }
+  engine_->chromiumHadBareCaps_ = false;
+  engine_->chromiumBareCapsProgram_.clear();
+  SKEY_DEBUG() << "Auto: engine sticky bare caps cleared "
+                  "(real web editor detected)";
+}
+
 SKeyOutputMode SKeyState::detectAutoMode() const {
   // Runtime override: if the surrounding text API was verified as
   // non-functional during a previous replacement attempt (cache invalid),
@@ -1252,6 +1262,19 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   // be verified and corrupts text in apps that drop forwarded keys.
   if (surroundingTextFailed_) {
     SKEY_DEBUG() << "Auto: surrounding text previously failed → Uinput";
+    return SKeyOutputMode::Uinput;
+  }
+
+  // A Chromium tab whose a11y focus is NOT a text entry cannot receive
+  // surrounding-text replacements.  Clicking a Google Sheets cell focuses
+  // the document/combo box while caps still carry the previous editor's
+  // strong hints (e.g. 0x90072 from a chat box) — typing would go nowhere.
+  // Requires a FRESH snapshot: without one we cannot conclude anything and
+  // fall back to the cap-based decision below.
+  if (isChromiumCached() && engine_->a11yMonitor() &&
+      engine_->a11yMonitor()->isFocusSnapshotFresh(5000000) &&
+      !engine_->a11yMonitor()->isTextEntryFocused()) {
+    SKEY_DEBUG() << "Auto: focus is not a text entry → Uinput";
     return SKeyOutputMode::Uinput;
   }
 
@@ -1268,6 +1291,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
       return SKeyOutputMode::Uinput;
     }
     SKEY_DEBUG() << "Auto: sticky bypassed by fresh web-editor focus";
+    clearEngineBareCapsSticky();
   }
 
   auto caps = ic_->capabilityFlags();
@@ -1344,6 +1368,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
       // content-type caps may stay bare until a text-input re-sync.
       if (a11yFreshWebEditor()) {
         modeDecisionPending_ = false;
+        clearEngineBareCapsSticky();
         SKEY_DEBUG() << "Auto: bare caps + fresh web-editor focus → "
                         "SurroundingText";
         return SKeyOutputMode::SurroundingText;
@@ -1379,6 +1404,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     modeDecisionPending_ = false;
     CapabilityFlags strong(kChromiumStrongHints);
     if (caps & strong) {
+      clearEngineBareCapsSticky();
       SKEY_DEBUG() << "Auto: deferred decision → SurroundingText (caps=0x"
                    << std::hex
                    << static_cast<uint64_t>(caps.toInteger()) << std::dec
@@ -1627,6 +1653,13 @@ void SKeyState::activate() {
   modeCacheValid_ = false;
   cachedIsChromium_ = -1;
   cachedIsFirefoxOrSnap_ = -1;
+  // A bare-caps decision belongs to the previous focus session.  A stale
+  // pending/deadline must not leak into the new window — detectAutoMode
+  // would otherwise lock sticky instantly on the first keystroke if the old
+  // deadline already passed, and the non-Chromium fall-through could
+  // inherit it.  Every focus gets its own full 2s decision window.
+  modeDecisionPending_ = false;
+  modeDecisionDeadlineUsec_ = 0;
 
   auto caps = ic_->capabilityFlags();
 
@@ -1634,9 +1667,13 @@ void SKeyState::activate() {
   // reported bare caps (0x72), keep Uinput for subsequent ICs of the same
   // program — but only when the current caps lack "strong" content hints
   // (Alpha, SpellCheck, etc.) that indicate a real editor like Facebook chat.
+  // A fresh AT-SPI2 web-editor focus means the user just clicked a real
+  // editor: don't pre-lock Uinput here — detectAutoMode() bypasses the
+  // sticky flag on the first keystroke (a11yFreshWebEditor) and clears it.
   if (engine_->chromiumHadBareCaps_ &&
       appProgram() == engine_->chromiumBareCapsProgram_ &&
-      !appProgram().empty() && isChromiumCached()) {
+      !appProgram().empty() && isChromiumCached() &&
+      !a11yFreshWebEditor()) {
     CapabilityFlags strong(kChromiumStrongHints);
     if (!(caps & strong)) {
       chromiumBareCapsUinput_ = true;
@@ -2172,8 +2209,20 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // A fresh AT-SPI2 web-editor snapshot also forces re-evaluation — the
   // a11y focus event fires on click, but may land after activate() already
   // cached a sticky-Uinput decision.
+  //
+  // Moving focus within the same window (chat → Google Sheets cell) does
+  // NOT create a new input context, so activate() never runs and the cached
+  // mode would carry over — force a re-evaluation when the a11y monitor
+  // shows the focus is not on a text entry and the cached mode isn't
+  // Uinput yet.
+  bool a11yNonEntry =
+      engine_->a11yMonitor() &&
+      engine_->a11yMonitor()->isFocusSnapshotFresh(5000000) &&
+      !engine_->a11yMonitor()->isTextEntryFocused();
   if (viet_.getRawInput().empty() &&
-      (modeDecisionPending_ || a11yFreshWebEditor())) {
+      (modeDecisionPending_ || a11yFreshWebEditor() ||
+       (a11yNonEntry && (!modeCacheValid_ ||
+                         cachedMode_ != SKeyOutputMode::Uinput)))) {
     modeCacheValid_ = false;
   }
 
@@ -3967,19 +4016,20 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         }
         committedLen_ = newLen;
         if (!addedPart.empty()) {
-          if (isWayland() && isChromiumCached()) {
-            // Wayland has no D-Bus FIFO between forwardKey and
-            // commitString — an immediate commit races the forwarded
-            // BackSpace keys and eats characters (observed in Chromium).
-            // Commit only after the app has had time to process them.
-            // Pass the stable prefix (already on screen after the BS
-            // deletes): follow-up keystrokes then extend only the pending
-            // suffix, otherwise the whole word would be re-committed over
-            // the prefix ("chào" → "chchào").
+          if (isWayland()) {
+            // Wayland has no ordering guarantee between forwardKey (via
+            // the compositor's virtual-keyboard protocol) and commitString
+            // (via text-input) — an immediate commit races the forwarded
+            // BackSpace keys and eats characters (observed in Chromium and
+            // Telegram: "đâu" → "dau").  Commit only after the app has had
+            // time to process them.  Pass the stable prefix (already on
+            // screen after the BS deletes): follow-up keystrokes then
+            // extend only the pending suffix, otherwise the whole word
+            // would be re-committed over the prefix ("chào" → "chchào").
             scheduleDeferredCommit(addedPart, stablePrefix);
           } else {
-            // Non-Chromium apps process forwarded BS + commit in order
-            // (Telegram etc.) — commit immediately, no extra latency.
+            // X11: forwarded BS and commitString are serialized through
+            // the X server, so committing immediately is safe.
             commitText(addedPart);
           }
         }

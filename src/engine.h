@@ -69,6 +69,12 @@ private:
     /// its content-type caps may lag behind — used to upgrade bare-caps
     /// Uinput to SurroundingText.
     bool a11yFreshWebEditor() const;
+    /// Clear the engine-level sticky Uinput flag (chromiumHadBareCaps_ /
+    /// chromiumBareCapsProgram_) once a real editor is proven.  Called from
+    /// the "bypass/upgrade to SurroundingText" paths in detectAutoMode().
+    /// The flag re-arms naturally at the next genuine bare-caps deadline,
+    /// so Google Sheets is unaffected.
+    void clearEngineBareCapsSticky() const;
     SKeyOutputMode detectAutoMode() const;
     bool connectUinputServer();
     void sendBackspaceUinput(int count, uint32_t flags = 0);

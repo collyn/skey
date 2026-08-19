@@ -799,11 +799,22 @@ void A11yMonitor::threadFunc() {
                 const char *sender = dbus_message_get_sender(msg);
                 const char *path = dbus_message_get_path(msg);
                 if (sender && path) {
-                    bool hasDocWeb =
-                        hasDocumentWebAncestor(bus, sender, path);
-                    bool isUI = !hasDocWeb;
-                    // Also check if this is a password field
                     int role = queryRole(bus, sender, path);
+                    bool hasDocWeb = hasDocumentWebAncestor(
+                        bus, sender, path);
+                    bool isUI = !hasDocWeb;
+                    // Track whether the focused element is a real text
+                    // entry (role TEXT / ENTRY / DOCUMENT_TEXT).  A
+                    // Chromium tab whose focus is NOT a text entry
+                    // (clicking a Google Sheets cell focuses the
+                    // document/combo box while caps still carry the
+                    // previous editor's hints) cannot receive
+                    // surrounding-text replacements — the engine routes
+                    // those to Uinput.
+                    textEntryFocused_.store(
+                        role == 61 /*TEXT*/ || role == 79 /*ENTRY*/ ||
+                            role == 94 /*DOCUMENT_TEXT*/,
+                        std::memory_order_relaxed);
                     bool editable = false, multiline = false,
                          singleLine = false;
                     std::string states;
