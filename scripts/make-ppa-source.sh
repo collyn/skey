@@ -163,12 +163,15 @@ popd > /dev/null
 rm -f "${STAGING}/skey-engine/Cargo.lock"
 
 # ── Create the orig tarball ──────────────────────────────────────────────
-# Deterministic tar + gzip (sorted entries, zeroed mtimes, no gzip header
+# Deterministic tar + gzip (sorted entries, fixed mtimes, no gzip header
 # timestamp) so rebuilding the same version produces bit-identical tarballs.
 # Launchpad rejects same-name files with different contents — even after the
 # package is deleted from the PPA — so reproducibility keeps re-uploads possible.
-echo "→ Creating ${TARBALL}..."
-tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+# Use SOURCE_DATE_EPOCH (commit time) instead of epoch 0 — Launchpad rejects
+# .deb files whose entries have timestamps "too far in the past" (epoch 0).
+TAR_MTIME="@${SOURCE_DATE_EPOCH:-$(date +%s)}"
+echo "→ Creating ${TARBALL} (mtime=${TAR_MTIME})..."
+tar --sort=name --mtime="${TAR_MTIME}" --owner=0 --group=0 --numeric-owner \
     -cf - -C "$WORKDIR" "${PKG_NAME}-${VERSION}" | \
     gzip -n > "${REPO_ROOT}/../${TARBALL}"
 
