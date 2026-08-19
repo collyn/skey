@@ -1245,6 +1245,14 @@ bool SKeyState::a11yFreshWebEditor() const {
   }
 }
 
+bool SKeyState::a11yBrowserNonEntry() const {
+  if (!isChromiumCached() || !isChromiumBrowser(appProgram()))
+    return false;
+  auto *mon = engine_->a11yMonitor();
+  return mon && mon->isFocusSnapshotFresh(5000000) &&
+         !mon->isTextEntryFocused();
+}
+
 void SKeyState::clearEngineBareCapsSticky() const {
   if (!engine_->chromiumHadBareCaps_) {
     return;
@@ -1265,15 +1273,13 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     return SKeyOutputMode::Uinput;
   }
 
-  // A Chromium tab whose a11y focus is NOT a text entry cannot receive
-  // surrounding-text replacements.  Clicking a Google Sheets cell focuses
-  // the document/combo box while caps still carry the previous editor's
-  // strong hints (e.g. 0x90072 from a chat box) — typing would go nowhere.
-  // Requires a FRESH snapshot: without one we cannot conclude anything and
-  // fall back to the cap-based decision below.
-  if (isChromiumCached() && engine_->a11yMonitor() &&
-      engine_->a11yMonitor()->isFocusSnapshotFresh(5000000) &&
-      !engine_->a11yMonitor()->isTextEntryFocused()) {
+  // A Chromium browser tab whose a11y focus is NOT a text entry cannot
+  // receive surrounding-text replacements.  Clicking a Google Sheets cell
+  // focuses the document/combo box while caps still carry the previous
+  // editor's strong hints (e.g. 0x90072 from a chat box) — typing would go
+  // nowhere.  Requires a FRESH snapshot: without one we cannot conclude
+  // anything and fall back to the cap-based decision below.
+  if (a11yBrowserNonEntry()) {
     SKEY_DEBUG() << "Auto: focus is not a text entry → Uinput";
     return SKeyOutputMode::Uinput;
   }
@@ -2215,10 +2221,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // mode would carry over — force a re-evaluation when the a11y monitor
   // shows the focus is not on a text entry and the cached mode isn't
   // Uinput yet.
-  bool a11yNonEntry =
-      engine_->a11yMonitor() &&
-      engine_->a11yMonitor()->isFocusSnapshotFresh(5000000) &&
-      !engine_->a11yMonitor()->isTextEntryFocused();
+  bool a11yNonEntry = a11yBrowserNonEntry();
   if (viet_.getRawInput().empty() &&
       (modeDecisionPending_ || a11yFreshWebEditor() ||
        (a11yNonEntry && (!modeCacheValid_ ||

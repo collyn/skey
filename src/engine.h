@@ -69,6 +69,11 @@ private:
     /// its content-type caps may lag behind — used to upgrade bare-caps
     /// Uinput to SurroundingText.
     bool a11yFreshWebEditor() const;
+    /// True when the a11y monitor has a fresh focus snapshot whose element
+    /// is NOT a text entry, while the current app is a Chromium browser
+    /// (Chrome, Brave...).  Standalone Chromium/Electron apps are excluded:
+    /// their bare-caps path already maps to SurroundingText.
+    bool a11yBrowserNonEntry() const;
     /// Clear the engine-level sticky Uinput flag (chromiumHadBareCaps_ /
     /// chromiumBareCapsProgram_) once a real editor is proven.  Called from
     /// the "bypass/upgrade to SurroundingText" paths in detectAutoMode().
