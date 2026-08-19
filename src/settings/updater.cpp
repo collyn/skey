@@ -9,6 +9,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QVersionNumber>
 
@@ -18,12 +19,14 @@ static const char *kLatestReleaseUrl =
 // ── Distro detection ─────────────────────────────────────────────────────
 
 Distro Updater::detectDistro() {
-    // Check package managers — order matters: dpkg first because some
-    // Fedora systems may have dpkg installed for cross-build tooling.
+    // Check package managers — order matters: dnf/rpm first because some
+    // Fedora systems may have dpkg installed for cross-build tooling,
+    // which would cause a false Debian detection.
+    if (!QStandardPaths::findExecutable("dnf").isEmpty() ||
+        !QStandardPaths::findExecutable("rpm").isEmpty())
+        return Distro::Fedora;
     if (!QStandardPaths::findExecutable("dpkg").isEmpty())
         return Distro::Debian;
-    if (!QStandardPaths::findExecutable("rpm").isEmpty())
-        return Distro::Fedora;
     if (!QStandardPaths::findExecutable("pacman").isEmpty())
         return Distro::Arch;
     return Distro::Unknown;
@@ -76,9 +79,17 @@ static bool assetMatchesDistro(const QString &name, Distro distro) {
     return false;
 }
 
-// Pick the best asset for a distro out of a list. For Fedora, prefers the
-// main package (shorter name) over sub-packages; for all others, returns
-// the first match.
+// Returns true when the RPM filename contains a Fedora dist tag (.fc\d+).
+static bool hasFedoraDistTag(const QString &name) {
+    // Match patterns like ".fc42." or ".fc42.x86_64.rpm"
+    static const QRegularExpression re(R"(\.fc\d+\.)");
+    return re.match(name).hasMatch();
+}
+
+// Pick the best asset for a distro out of a list.
+// For Fedora, prefers RPMs with a .fc dist tag (Fedora-built) over generic
+// ones (e.g. OpenSUSE-built), since they have the correct Requires.
+// Falls back to shorter name when both candidates are equivalent.
 static QJsonObject pickBestAsset(const QJsonArray &assets, Distro distro) {
     QJsonObject best;
     for (const QJsonValue &v : assets) {
@@ -90,8 +101,22 @@ static QJsonObject pickBestAsset(const QJsonArray &assets, Distro distro) {
             best = asset;
             continue;
         }
-        // Prefer shorter name (less likely to be a -debuginfo / -devel etc.)
-        if (name.size() < best.value("name").toString().size())
+        QString bestName = best.value("name").toString();
+
+        if (distro == Distro::Fedora) {
+            bool curHasFc  = hasFedoraDistTag(name);
+            bool bestHasFc = hasFedoraDistTag(bestName);
+            // Strongly prefer the Fedora-specific RPM
+            if (curHasFc && !bestHasFc) {
+                best = asset;
+                continue;
+            }
+            if (!curHasFc && bestHasFc)
+                continue;
+        }
+
+        // Tie-break: prefer shorter name (less likely to be -debuginfo etc.)
+        if (name.size() < bestName.size())
             best = asset;
     }
     return best;
