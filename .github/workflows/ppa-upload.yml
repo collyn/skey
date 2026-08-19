@@ -27,6 +27,8 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          # Azure mirror on GitHub-hosted runners frequently hangs; use main archive.
+          sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' /etc/apt/sources.list || true
           sudo apt-get update
           sudo apt-get install -y devscripts debhelper dpkg-dev git rsync dput
 
