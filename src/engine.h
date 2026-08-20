@@ -162,6 +162,10 @@ private:
     // keystrokes; keep the last true verdict for a short grace instead of
     // flipping inChromiumAddressBar() to false mid-word.
     mutable uint64_t addrBarUiVerdictAtUsec_ = 0;
+    // Minimum caret X observed at word starts this session — the
+    // omnibox's left text edge.  A word starting near it means the bar
+    // was empty; further right means text exists before the cursor.
+    int addrBarLeftEdgeCaretX_ = -1;
     mutable int cachedIsTerminalApp_ = -1; // tristate: name list + shell scan
     mutable int cachedIsFirefoxOrSnap_ = -1;
     // Sticky Uinput for Chromium-family apps that initially report bare caps

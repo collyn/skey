@@ -1325,6 +1325,16 @@ bool SKeyState::inChromiumAddressBar() const {
       return true;
     }
     addrBarUiVerdictAtUsec_ = 0;
+    // Deterministic fallback (no a11y needed): the omnibox cursor rect
+    // is a thin 1×~20 sliver near the window top, while Chrome content
+    // editors report wider rects or (0,0,0x0).  This keeps the address
+    // bar routing alive right after fcitx5 restarts, before the a11y
+    // monitor has processed any focus event.
+    const auto &rect = ic_->cursorRect();
+    if (rect.width() <= 2 && rect.height() >= 18 && rect.height() <= 24 &&
+        rect.top() >= 0 && rect.top() < 200) {
+      return true;
+    }
   }
   return false;
 }
@@ -1913,6 +1923,7 @@ void SKeyState::activate() {
       // KNOW the bar was emptied before leaving.
       addrBarContentUnknown_ = !leftBarEmpty;
       addrBarWordStartCaretX_ = -1;
+      addrBarLeftEdgeCaretX_ = -1;
       addrBarHadFirstWord_ = false;
       addrBarDidFullReplace_ = false;
       addrBarKeepState_ = false;
@@ -1941,6 +1952,7 @@ void SKeyState::activate() {
         addrBarPrevCommittedLen_ = 0;
         addrBarContentUnknown_ = false;
         addrBarWordStartCaretX_ = -1;
+        addrBarLeftEdgeCaretX_ = -1;
       }
     }
   }
@@ -2976,11 +2988,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       // X11: empty bar → sentinel -1 so the next word's snapshot
       // (addrBarPrevCommittedLen_ < 0) re-arms first-word FullReplace.
       // Wayland keeps 0 — its tracking uses the surrounding text.
-      // An emptied bar also clears the had-space guard: nothing exists
-      // before the cursor anymore, so the next word may FullReplace.
       if (viet_.getRawInput().empty()) {
         committedLen_ = isWayland() ? 0 : -1;
-        addrBarHadSpace_ = false;
       } else {
         committedLen_ =
             static_cast<int>(utf8::length(viet_.getComposed()));
@@ -3765,6 +3774,14 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               // replaced selection (Ctrl+L + type) after a genuine
               // focus change.
               addrBarWordStartCaretX_ = ic_->cursorRect().left();
+              {
+                int caretX = addrBarWordStartCaretX_;
+                if (caretX > 0 &&
+                    (addrBarLeftEdgeCaretX_ < 0 ||
+                     caretX < addrBarLeftEdgeCaretX_)) {
+                  addrBarLeftEdgeCaretX_ = caretX;
+                }
+              }
             }
             committedLen_ = static_cast<int>(utf8::length(newComposed));
 
@@ -3814,6 +3831,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               // commitString travel the same channel — D-Bus ordering
               // guarantees commitString arrives after BS is processed.
               if (inChromiumAddressBar()) {
+                SKEY_DEBUG() << "AddrBar: consume routing → schedule (sentinel="
+                             << addrBarPrevCommittedLen_
+                             << " hadFirst=" << addrBarHadFirstWord_ << ")";
                 bool oldAscii = true;
                 for (unsigned char c : oldComposed) {
                   if (c > 127) {
@@ -4073,6 +4093,10 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
                      << totalBs << " commit='" << commitText << "'"
                      << (addrBarKeepState_ ? " [keep-state]" : "");
       } else if (!a11yDecided) {
+        SKEY_DEBUG() << "AddrBar: fallback snapshot="
+                     << addrBarPrevCommittedLen_
+                     << " hadFirst=" << addrBarHadFirstWord_
+                     << " oldLen=" << oldComposedLen;
         // Only the first word after focus gets FullReplace (oldComposedLen
         // + 1 BS to dismiss Chrome autocomplete).  Subsequent words use
         // plain replacement (exact BS count, no Escape) — the forwarded
@@ -4097,27 +4121,34 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
           if (surrounding.isValid()) {
             hasTextBefore = surrounding.cursor() >
                             static_cast<unsigned int>(oldComposedLen);
+          } else if (addrBarPrevCommittedLen_ < 0) {
+            // Sentinel: the engine's tracked text is empty.  Whether the
+            // BAR is empty is decided by the caret: a word starting at
+            // the left edge (min caret X seen this session) means the
+            // bar was empty — FullReplace is safe; further right means
+            // text exists before the cursor (partial deletion) and the
+            // +1 BS would eat it — use the plain path.
+            hasTextBefore =
+                addrBarLeftEdgeCaretX_ > 0 && addrBarWordStartCaretX_ > 0 &&
+                addrBarWordStartCaretX_ > addrBarLeftEdgeCaretX_ + 30;
           } else if (addrBarHadSpace_ || addrBarPrevCommittedLen_ > 0) {
             // A committed space or tracked chars before this word mean
             // text exists before the cursor → FullReplace's extra BS
-            // (oldComposedLen + 1) would delete it.  Only allow
-            // FullReplace when the snapshot is exactly 0 (bar was empty
-            // at word start, e.g. fresh focus).  A negative snapshot is
-            // ambiguous (tracking lost after backspacing) — treat it as
-            // unsafe rather than corrupt text before the cursor.
+            // (oldComposedLen + 1) would delete it.
             hasTextBefore = true;
-          } else if (addrBarContentUnknown_) {
-            // After a genuine cross-app focus change the bar usually
-            // holds the page URL.  Only trust FullReplace here if the
-            // caret jumped far LEFT since the word started — proof that
-            // typing replaced a selection (e.g. Ctrl+L select-all),
-            // leaving nothing before the cursor.  A stale/invalid rect
-            // (<= 0) is treated as unsafe.
+          } else {
+            // Caret evidence is the primary signal: if the caret jumped
+            // far LEFT since the word started, the typed word replaced a
+            // selection (Ctrl+A / Ctrl+L + type) — the bar before the
+            // word is empty, so FullReplace is safe.  Without a jump,
+            // only block when tracking is known to be lost (genuine
+            // focus onto a bar that likely holds a URL).  A stale or
+            // invalid rect (<= 0) is treated as unsafe.
             static constexpr int kCaretJumpPx = 40;
             int caretX = ic_->cursorRect().left();
             bool jumpedLeft = addrBarWordStartCaretX_ > 0 && caretX > 0 &&
                               caretX + kCaretJumpPx < addrBarWordStartCaretX_;
-            if (!jumpedLeft) {
+            if (!jumpedLeft && addrBarContentUnknown_) {
               hasTextBefore = true;
             }
           }
