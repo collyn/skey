@@ -799,11 +799,20 @@ void A11yMonitor::threadFunc() {
                 const char *path = dbus_message_get_path(msg);
                 if (sender && path) {
                     int role = queryRole(bus, sender, path);
-                    int procId = queryProcessId(bus, sender, path);
-                    focusProcessId_.store(procId,
-                                          std::memory_order_relaxed);
                     bool hasDocWeb = hasDocumentWebAncestor(
                         bus, sender, path);
+                    // Only query GetProcessId for web content.  Browser-UI
+                    // elements (the Chromium omnibox) can stall AT-SPI
+                    // calls, and on X11 the autosuggest polling shares
+                    // this monitor thread — a stuck reply here delays the
+                    // polling snapshot and breaks autofill detection.
+                    // Non-web-doc apps (terminals...) fall back to the
+                    // full /proc scan in the engine.
+                    int procId = hasDocWeb
+                                     ? queryProcessId(bus, sender, path)
+                                     : -1;
+                    focusProcessId_.store(procId,
+                                          std::memory_order_relaxed);
                     bool isUI = !hasDocWeb;
                     // Track whether the focused element is a real text
                     // entry (role TEXT / ENTRY / DOCUMENT_TEXT).  A
