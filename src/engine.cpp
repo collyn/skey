@@ -1930,6 +1930,8 @@ void SKeyState::activate() {
         addrBarDidFullReplace_ = false;
         addrBarKeepState_ = false;
         addrBarPrevCommittedLen_ = 0;
+        addrBarContentUnknown_ = false;
+        addrBarWordStartCaretX_ = -1;
       }
     }
   }
