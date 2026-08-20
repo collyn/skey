@@ -3206,6 +3206,11 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       } else if (committedLen_ == -1) {
         reclaimReady_ = false;
         wordWasBackspaced_ = true;
+        // Deleting past the tracked text: the screen holds content the
+        // engine lost (keystrokes dropped during Chrome's focus churn).
+        // Mark tracking unknown so the next replacement uses the safe
+        // plain path instead of FullReplace ("chàobạn" corruption).
+        addrBarContentUnknown_ = true;
       }
     } else {
       // Non-Chromium: use sentinel to cancel reclaim on second idle BS
