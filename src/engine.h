@@ -74,6 +74,11 @@ private:
     /// (Chrome, Brave...).  Standalone Chromium/Electron apps are excluded:
     /// their bare-caps path already maps to SurroundingText.
     bool a11yBrowserNonEntry() const;
+    /// Record a surrounding-text failure.  Returns true when the IC should
+    /// downgrade to Uinput (surroundingTextFailed_): Chromium-family apps
+    /// downgrade immediately (their forwarded keys are unreliable); other
+    /// apps get one retry so a transient cache loss can recover.
+    bool noteSurroundingFailure();
     /// Clear the engine-level sticky Uinput flag (chromiumHadBareCaps_ /
     /// chromiumBareCapsProgram_) once a real editor is proven.  Called from
     /// the "bypass/upgrade to SurroundingText" paths in detectAutoMode().
@@ -150,6 +155,11 @@ private:
     // Telegram...).  The per-replacement fallback cannot be verified, so
     // downgrade the session to Uinput (re-checked on each focus).
     mutable bool surroundingTextFailed_ = false;
+    // Consecutive invalid-surrounding failures for non-Chromium apps.
+    // One transient failure (e.g. deleting to empty makes the app's
+    // surrounding text invalid until it re-pushes) is tolerated; a second
+    // one locks the IC to Uinput via surroundingTextFailed_.
+    int surroundingInvalidCount_ = 0;
     // Deferred mode decision: bare Chromium caps may be a stale
     // window-focus state — Chrome only re-syncs caps on text-input re-entry
     // (an IC focus cycle), not when focus moves within the page (Facebook

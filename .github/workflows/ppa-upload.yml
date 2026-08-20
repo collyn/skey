@@ -8,9 +8,9 @@ on:
         required: false
         default: ''
       series:
-        description: 'Series list (space-separated; leave blank for noble resolute)'
+        description: 'Ubuntu series to build (space-separated)'
         required: false
-        default: ''
+        default: 'noble resolute'
 
 permissions:
   contents: write

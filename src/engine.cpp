@@ -1253,6 +1253,13 @@ bool SKeyState::a11yBrowserNonEntry() const {
          !mon->isTextEntryFocused();
 }
 
+bool SKeyState::noteSurroundingFailure() {
+  if (isChromiumCached())
+    return true;
+  ++surroundingInvalidCount_;
+  return surroundingInvalidCount_ >= 2;
+}
+
 void SKeyState::clearEngineBareCapsSticky() const {
   if (!engine_->chromiumHadBareCaps_) {
     return;
@@ -1592,6 +1599,7 @@ void SKeyState::activate() {
       viet_.reset();
       committedLen_ = 0;
       surroundingTextFailed_ = false; // fresh focus, re-verify
+      surroundingInvalidCount_ = 0;
       addrBarIsFirstWord_ = true;
       addrBarHadSpace_ = false;
       // Genuine focus change (cross-app or ≥500ms away): the omnibox
@@ -4057,12 +4065,20 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           // characters and duplicates the committed text.
           if (!surrounding.isValid()) {
             // The app never reports surrounding text (LibreOffice,
-            // Telegram...).  Mark as failed so subsequent replacements use
-            // Uinput instead of retrying a dead API.
-            surroundingTextFailed_ = true;
-            modeCacheValid_ = false;
-            SKEY_DEBUG()
-                << "Surr: surrounding text invalid, downgrading to uinput";
+            // Telegram...).  Chromium-family apps downgrade immediately;
+            // others get one retry: deleting to empty makes the cache
+            // transiently invalid and the app usually re-pushes it on the
+            // next word — a hard downgrade would lock a healthy app into
+            // Uinput for the whole focus session.
+            if (noteSurroundingFailure()) {
+              surroundingTextFailed_ = true;
+              modeCacheValid_ = false;
+              SKEY_DEBUG()
+                  << "Surr: surrounding text invalid, downgrading to uinput";
+            } else {
+              SKEY_DEBUG()
+                  << "Surr: surrounding text invalid, retrying next word";
+            }
           } else if (cacheStale) {
             SKEY_DEBUG() << "Surr: surrounding cache stale, falling back";
           } else {
@@ -4080,6 +4096,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
               ic_->surroundingText().deleteText(-1, 1);
             }
           }
+          surroundingInvalidCount_ = 0; // cache works again
           committedLen_ = newLen;
           if (!addedPart.empty()) {
             SKEY_DEBUG() << "Surr: direct commit '" << addedPart << "'";
@@ -4111,16 +4128,22 @@ void SKeyState::surroundingBackspace() {
     const auto &surrounding = ic_->surroundingText();
     if (!surrounding.isValid()) {
       // Surrounding text advertised but not actually available.
-      // Mark as failed and fall back to forwardKey.
-      surroundingTextFailed_ = true;
-      modeCacheValid_ = false;
-      SKEY_DEBUG() << "SurrBS: surrounding text invalid, downgrading to uinput";
+      // Chromium-family apps downgrade immediately; others get one retry
+      // (see noteSurroundingFailure).
+      if (noteSurroundingFailure()) {
+        surroundingTextFailed_ = true;
+        modeCacheValid_ = false;
+        SKEY_DEBUG() << "SurrBS: surrounding text invalid, downgrading to uinput";
+      } else {
+        SKEY_DEBUG() << "SurrBS: surrounding text invalid, retrying";
+      }
       ic_->forwardKey(Key(FcitxKey_BackSpace));
     } else {
       ic_->deleteSurroundingText(-1, 1);
       if (ic_->surroundingText().isValid()) {
         ic_->surroundingText().deleteText(-1, 1);
       }
+      surroundingInvalidCount_ = 0; // cache works again
     }
   } else {
     SKEY_DEBUG()

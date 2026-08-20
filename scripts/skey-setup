@@ -276,6 +276,15 @@ if [ "$USER_DE" = "KDE Plasma" ]; then
             value="${var#*=}"
             echo "export $name=\"$value\""
         done
+        if [ "$SESSION_TYPE" = "wayland" ]; then
+            # KWin serves Qt apps natively via zwp_input_method_v2 — purge
+            # any QT_IM_MODULE injected earlier in the login chain (Ubuntu's
+            # im-config default sets ibus).  Sourced by startplasma AFTER the
+            # Xsession/profile scripts, so the unset wins.  Without it Qt
+            # apps connect through a second fcitx5 frontend and the two
+            # input contexts fight over surrounding text.
+            echo 'unset QT_IM_MODULE'
+        fi
     } > "$KDE_ENVFILE"
     chmod +x "$KDE_ENVFILE"
     # Remove stale file from older skey-setup versions
@@ -409,10 +418,23 @@ fi
 
 # Debian/Ubuntu: use im-config to set fcitx5 as the system IM framework.
 # This ensures the IM is available even in GDM/XDM login sessions and
-# is respected by im-launch in X11 sessions.
+# is respected by im-launch in X11 sessions.  Needs root: when running
+# unprivileged, go through sudo and warn honestly if that fails — a
+# silently failed im-config leaves the distro default (Ubuntu: ibus)
+# active, whose login scripts inject QT_IM_MODULE=ibus into every
+# session.  On KDE Plasma Wayland that makes Qt apps connect through a
+# second fcitx5 frontend while KWin's zwp_input_method_v2 already serves
+# them — the two input contexts fight over focus and surrounding-text
+# updates land on the wrong one.
 if [ "$DISTRO" = "debian" ] && command -v im-config >/dev/null 2>&1; then
-    im-config -n fcitx5 2>/dev/null || true
-    echo "✓ im-config set to fcitx5"
+    if [ "$(id -u)" -eq 0 ]; then
+        im-config -n fcitx5 && echo "✓ im-config set to fcitx5"
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        sudo im-config -n fcitx5 && echo "✓ im-config set to fcitx5"
+    else
+        echo "⚠ im-config chưa chuyển sang fcitx5 (cần quyền admin)."
+        echo "  Chạy thủ công: sudo im-config -n fcitx5"
+    fi
 fi
 
 # ── Now update session environment ──
@@ -433,6 +455,17 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/d
         value="${var#*=}"
         systemctl --user set-environment "$name=$value" 2>/dev/null || true
     done
+    # KDE Plasma Wayland: purge any stale QT_IM_MODULE injected by the
+    # distro's im-config default (Ubuntu: ibus) or an old setup.  Any
+    # QT_IM_MODULE makes Qt apps connect through a second fcitx5 frontend
+    # while KWin's zwp_input_method_v2 already serves them — the two input
+    # contexts fight over focus and surrounding-text updates land on the
+    # wrong one (Telegram lost tone marks / got downgraded to Uinput).
+    if [ "$USER_DE" = "KDE Plasma" ] && [ "$SESSION_TYPE" = "wayland" ]; then
+        systemctl --user unset-environment QT_IM_MODULE 2>/dev/null || true
+        dbus-update-activation-environment --systemd -- QT_IM_MODULE= \
+            2>/dev/null || true
+    fi
     echo "✓ systemd user environment set"
 fi
 
