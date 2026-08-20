@@ -1895,6 +1895,11 @@ void SKeyState::activate() {
                          (now(CLOCK_MONOTONIC) - lastDeactivateTime_) < 500000;
 
     if (!spuriousCycle) {
+      // Capture BEFORE the reset: if the engine's tracking says the bar
+      // was emptied (sentinel ≤ 0) when we left, the next focus starts
+      // with a known-empty bar — allow first-word FullReplace without
+      // caret evidence.  Otherwise the bar probably holds a URL.
+      bool leftBarEmpty = committedLen_ <= 0;
       viet_.reset();
       committedLen_ = 0;
       surroundingTextFailed_ = false; // fresh focus, re-verify
@@ -1904,8 +1909,9 @@ void SKeyState::activate() {
       // Genuine focus change (cross-app or ≥500ms away): the omnibox
       // content is no longer tracked — it almost always holds the page
       // URL or earlier text.  Block first-word FullReplace until caret
-      // evidence proves the typed word replaced a selection.
-      addrBarContentUnknown_ = true;
+      // evidence proves the typed word replaced a selection — unless we
+      // KNOW the bar was emptied before leaving.
+      addrBarContentUnknown_ = !leftBarEmpty;
       addrBarWordStartCaretX_ = -1;
       addrBarHadFirstWord_ = false;
       addrBarDidFullReplace_ = false;
