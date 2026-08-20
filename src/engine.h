@@ -53,6 +53,11 @@ private:
     bool isAutofillCertain() const;
     bool useSurroundingText() const;
     bool useNativeSurroundingApi() const;
+    /// True when the app is a native Wayland app (non-Chromium,
+    /// non-terminal) that omits the SurroundingText capability on the
+    /// compositor path — the engine probes the native surrounding-text
+    /// API anyway and lets the runtime validation downgrade.
+    bool waylandNativeSurroundingProbe() const;
     bool isWayland() const;
     const struct UinputTiming& uinputTiming() const;
     bool useUinputMode() const;
@@ -189,6 +194,13 @@ private:
     int uinputBsOutstanding_ = 0;
     // Safety window already extended once — a second timeout force-commits.
     bool uinputSafetyRetried_ = false;
+    // Swallow late BS loopbacks after a forced commit: the in-flight BS
+    // may reach the app after the commit and must not be treated as user
+    // backspaces.  CLOCK_MONOTONIC deadline, 0 = inactive.
+    uint64_t uinputLateBsDeadlineUsec_ = 0;
+    // The previous replacement's loopbacks were slow (safety window
+    // extended) — raise the post-anchor commit delay floor this time.
+    bool uinputLoopbackSlow_ = false;
     // Spurious Deactivate/Reset/Activate detection for Chromium
     // address bar. Set before sending forwardKey/commitString and
     // cleared after a reactivate or 200ms timeout.

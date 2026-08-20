@@ -194,6 +194,17 @@ static constexpr UinputTiming kUinputTimingWayland = {
 static constexpr uint64_t dbusDeferredDefaultUsec = 15000;
 static constexpr uint64_t dbusDeferredMinUsec = 10000;
 
+// Uinput commit-delay for non-Chromium apps on native Wayland.  The anchor
+// loopback proves fcitx5 saw the BS, not that the app processed them — Qt
+// apps queue injected keys and lag behind the commit ("tại" → "taạ").  The
+// delay scales with the number of deletions: each injected BS needs ~8ms of
+// queue-drain headroom before the commit lands (a fixed 15ms floor made
+// single-deletion replacements visibly flicker).
+static constexpr uint64_t kWaylandNativeCommitDelayPerBsUsec = 8000;
+static constexpr uint64_t kWaylandNativeCommitDelayMaxUsec = 30000;
+// Floor applied on the next commit after loopbacks were slow once.
+static constexpr uint64_t kSlowLoopbackCommitDelayFloorUsec = 15000;
+
 // NOTE: AT-SPI2 queries for the Chromium address bar must NEVER run on
 // the fcitx5 main thread — a stuck DBus reply blocks all input handling
 // (observed 0.9–7.5s stalls).  The A11yMonitor thread polls the omnibox
@@ -1310,6 +1321,16 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   auto caps = ic_->capabilityFlags();
 
   if (!caps.test(CapabilityFlag::SurroundingText)) {
+    // Native Wayland apps (Telegram) often omit the SurroundingText cap
+    // on the compositor text-input path even though they push surrounding
+    // text — probe the native API anyway; the runtime validation
+    // (surroundingTextFailed_ + retry) downgrades to Uinput when the
+    // cache never arrives.
+    if (waylandNativeSurroundingProbe()) {
+      SKEY_DEBUG()
+          << "Auto: no SurroundingText cap, probing SurroundingText";
+      return SKeyOutputMode::SurroundingText;
+    }
     SKEY_DEBUG() << "Auto: no SurroundingText cap → Uinput";
     return SKeyOutputMode::Uinput;
   }
@@ -1507,12 +1528,17 @@ bool SKeyState::isFirefoxOrSnap() const {
   return false;
 }
 
+bool SKeyState::waylandNativeSurroundingProbe() const {
+  return isWayland() && !isChromiumCached() && !isTerminalApp(appProgram());
+}
+
 bool SKeyState::useNativeSurroundingApi() const {
   // Single effectiveMode() call — avoids double-evaluating detectAutoMode()
   // (which scans /proc via isChromiumBasedApp) on every keystroke.
   auto mode = effectiveMode();
   return mode == SKeyOutputMode::SurroundingText &&
-         ic_->capabilityFlags().test(CapabilityFlag::SurroundingText);
+         (ic_->capabilityFlags().test(CapabilityFlag::SurroundingText) ||
+          waylandNativeSurroundingProbe());
 }
 
 bool SKeyState::isWayland() const {
@@ -1826,6 +1852,23 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags) {
 }
 
 bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
+  // Late BS loopbacks from a force-committed replacement are swallowed:
+  // their deletions may still be in flight in the app, and they must not
+  // be treated as user backspaces (which would corrupt the screen and
+  // the engine's word model).  Non-BS keys during the grace window fall
+  // through to normal handling.
+  if (uinputLateBsDeadlineUsec_ != 0) {
+    if (now(CLOCK_MONOTONIC) < uinputLateBsDeadlineUsec_) {
+      if (keyEvent.key().check(FcitxKey_BackSpace)) {
+        SKEY_DEBUG() << "Uinput: swallow late loopback BS";
+        keyEvent.filterAndAccept();
+        return true;
+      }
+    } else {
+      uinputLateBsDeadlineUsec_ = 0;
+    }
+  }
+
   if (!uinputDeleting_) {
     return false;
   }
@@ -1893,6 +1936,7 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   if (uinputBsOutstanding_ > 0)
     --uinputBsOutstanding_;
 
+  int realBs = expectedUinputBackspaces_;
   expectedUinputBackspaces_ = 0;
   seenUinputBackspaces_ = 0;
 
@@ -1924,10 +1968,31 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
       multiplier *= timing.chromiumDelayFactor;
       minDelay = static_cast<uint64_t>(minDelay * timing.chromiumDelayFactor);
       maxDelay = static_cast<uint64_t>(maxDelay * timing.chromiumDelayFactor);
+    } else if (isWayland()) {
+      // Native Wayland apps: the commit delay scales with the number of
+      // deletions (see kWaylandNativeCommitDelayPerBsUsec) — keep a small
+      // base and a generous cap.
+      minDelay = 4000;
+      maxDelay = kWaylandNativeCommitDelayMaxUsec;
     }
   }
   uint64_t sleepUsec = std::clamp(static_cast<uint64_t>(bsRtEwma_ * multiplier),
                                   minDelay, maxDelay);
+
+  if (uinputLoopbackSlow_) {
+    // Previous replacement's loopbacks were slow — give the app extra
+    // headroom before the commit so the BS are processed first.
+    sleepUsec = std::max(sleepUsec, kSlowLoopbackCommitDelayFloorUsec);
+    uinputLoopbackSlow_ = false;
+  }
+
+  if (realBs > 0 && !isChromiumCached() && isWayland()) {
+    // Scale the headroom with the number of deletions: each injected BS
+    // sits in the app's key queue and needs time to drain before the
+    // commit lands on top of it.
+    sleepUsec = std::max(sleepUsec, static_cast<uint64_t>(realBs) *
+                                        kWaylandNativeCommitDelayPerBsUsec);
+  }
 
   SKEY_DEBUG() << "Uinput: sync BS, RT " << (elapsed / 1000) << "ms (ewma "
                << (bsRtEwma_ / 1000) << "ms), sleep " << (sleepUsec / 1000)
@@ -3992,27 +4057,11 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           pendingUinputCommit_ = addedPart;
           uinputPendingFinalLen_ = newLen;
           uinputDeleting_ = true;
-          // Safety: force-commit if BS events are lost
-          uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
-              CLOCK_MONOTONIC,
-              now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec, 0,
-              [this](EventSourceTime *, uint64_t) {
-                SKEY_DEBUG() << "Uinput: safety timeout, force commit";
-                uinputSafetyTimer_.reset();
-                uinputCommitTimer_.reset();
-                std::string text = std::move(pendingUinputCommit_);
-                pendingUinputCommit_.clear();
-                expectedUinputBackspaces_ = 0;
-                seenUinputBackspaces_ = 0;
-                uinputDeleting_ = false;
-                if (!text.empty())
-                  this->commitText(text);
-                committedLen_ = uinputPendingFinalLen_;
-                uinputPendingFinalLen_ = 0;
-                if (!bufferedUinputKeys_.empty())
-                  replayBufferedUinputKeys();
-                return true;
-              });
+          // Safety: force-commit if BS events are lost.  Uses the shared
+          // armUinputSafetyTimer() so the slow-loopback extension and the
+          // late-loopback grace apply here too (Telegram on Wayland can
+          // stall past the base window).
+          armUinputSafetyTimer();
           committedLen_ = newLen;
           return;
         }
@@ -4195,6 +4244,7 @@ void SKeyState::armUinputSafetyTimer() {
         // BS deletions arrive afterwards.
         if (uinputBsOutstanding_ > 0 && !uinputSafetyRetried_) {
           uinputSafetyRetried_ = true;
+          uinputLoopbackSlow_ = true;
           SKEY_DEBUG() << "Uinput: BS loopbacks slow — extend safety window";
           armUinputSafetyTimer();
           return true;
@@ -4202,18 +4252,23 @@ void SKeyState::armUinputSafetyTimer() {
         SKEY_DEBUG() << "Uinput: safety timeout, force commit";
         uinputSafetyRetried_ = false;
         uinputSafetyTimer_.reset();
+        uinputCommitTimer_.reset();
+        // The in-flight BS may still reach the app after this commit —
+        // arm the late-loopback grace so their loopbacks are swallowed
+        // instead of being treated as user backspaces, and drop word
+        // tracking since the screen state is now uncertain.
+        uinputLateBsDeadlineUsec_ = now(CLOCK_MONOTONIC) + 400000;
         std::string text = std::move(pendingUinputCommit_);
         pendingUinputCommit_.clear();
         expectedUinputBackspaces_ = 0;
         seenUinputBackspaces_ = 0;
         uinputBsOutstanding_ = 0;
         uinputDeleting_ = false;
+        clearLastWord();
+        committedLen_ = 0;
+        uinputPendingFinalLen_ = 0;
         if (!text.empty())
           this->commitText(text);
-        if (uinputPendingFinalLen_ > 0) {
-          committedLen_ = uinputPendingFinalLen_;
-          uinputPendingFinalLen_ = 0;
-        }
         if (!bufferedUinputKeys_.empty())
           replayBufferedUinputKeys();
         return true;
