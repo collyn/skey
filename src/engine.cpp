@@ -2389,6 +2389,19 @@ void SKeyState::replayBufferedUinputKeys() {
         viet_.reset();
         committedLen_ = 0;
       }
+      // ASCII control keys from Ctrl+combos (Ctrl+A select-all, Ctrl+U
+      // clear-line...) mutate the bar in ways the engine cannot track.
+      // On X11, reset the first-word model so the next word gets
+      // FullReplace — the extra BS dismisses the autofill that
+      // re-appears after the mutation ("chaào" corruption).  Function
+      // keys (arrows, Home/End, sym > 0x20) are excluded: they move
+      // the caret without changing the text before it.
+      if (inChromiumAddressBar() && !isWayland() && sym < 0x20) {
+        addrBarContentUnknown_ = false;
+        addrBarHadSpace_ = false;
+        addrBarHadFirstWord_ = false;
+        committedLen_ = -1;
+      }
       ic_->commitString(keyUtf8);
       continue;
     }
