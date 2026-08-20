@@ -1928,6 +1928,7 @@ void SKeyState::activate() {
       addrBarDidFullReplace_ = false;
       addrBarKeepState_ = false;
       addrBarPrevCommittedLen_ = 0;
+      addrBarClearedByCtrlKey_ = false;
     } else {
       SKEY_DEBUG() << "Activate: spurious cycle (unarmed), preserving"
                    << " firstWord=" << addrBarIsFirstWord_
@@ -2923,7 +2924,27 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       addrBarHadFirstWord_ = false;
       addrBarDidFullReplace_ = false;
       addrBarKeepState_ = false;
-      committedLen_ = 0;
+      // X11 delivers the RAW sym here (0x61 for Ctrl+A, not 0x01), so
+      // detect Ctrl+letter via the states mask.  Ctrl+A (select-all),
+      // Ctrl+U (clear-line) and Ctrl+L (omnibox+select-all) replace-or-
+      // clear the whole bar: the next word is provably the only content
+      // before the caret — arm the one-shot cleared-bar flag and the -1
+      // sentinel so first-word FullReplace dismisses the inline-autofill
+      // selection that re-appears on retype ("chaào" corruption).
+      // Other Ctrl+letters (C/V/X/Z…) mutate the bar unpredictably —
+      // drop the flag, keep the plain 0 reset.
+      bool ctrlClearsBar =
+          !isWayland() && key.states().test(KeyState::Ctrl) &&
+          (sym == 'a' || sym == 'A' || sym == 'u' || sym == 'U' ||
+           sym == 'l' || sym == 'L');
+      addrBarClearedByCtrlKey_ = ctrlClearsBar;
+      if (ctrlClearsBar) {
+        addrBarContentUnknown_ = false;
+        addrBarHadSpace_ = false;
+        committedLen_ = -1;
+      } else {
+        committedLen_ = 0;
+      }
     }
     return;
   }
@@ -3476,6 +3497,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       addrBarHadSpace_ = true;
       addrBarHadFirstWord_ = true;
       addrBarSawBsInWord_ = false;
+      addrBarClearedByCtrlKey_ = false;
     } else if (reclaimReady_) {
       // Space typed after backspacing the separator but before a tone
       // key — user wants a new word, not to edit the previous word's
@@ -3964,6 +3986,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       // word is not the first and must not trigger fullReplace.
       addrBarHadFirstWord_ = true;
       addrBarSawBsInWord_ = false;
+      addrBarClearedByCtrlKey_ = false;
     } else if (reclaimReady_) {
       // User typed space/punctuation after backspacing the separator
       // but before a tone key — they want to start a new word, not
@@ -3991,6 +4014,12 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   } else {
     // Non-composing key (Home, End, etc.) invalidates retroactive editing
     clearLastWord();
+  }
+  // Caret-moving keys (arrows, Home/End, Delete…) invalidate the
+  // cleared-by-Ctrl-key guarantee — the caret may now sit mid-text.
+  // Escape is exempt: it only dismisses the autocomplete dropdown.
+  if (sym != FcitxKey_Escape) {
+    addrBarClearedByCtrlKey_ = false;
   }
 }
 
@@ -4117,39 +4146,48 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
         if (!addrBarHadFirstWord_ && oldComposedLen > 0 &&
             !fullComposed.empty()) {
           bool hasTextBefore = false;
-          const auto &surrounding = ic_->surroundingText();
-          if (surrounding.isValid()) {
-            hasTextBefore = surrounding.cursor() >
-                            static_cast<unsigned int>(oldComposedLen);
-          } else if (addrBarPrevCommittedLen_ < 0) {
-            // Sentinel: the engine's tracked text is empty.  Whether the
-            // BAR is empty is decided by the caret: a word starting at
-            // the left edge (min caret X seen this session) means the
-            // bar was empty — FullReplace is safe; further right means
-            // text exists before the cursor (partial deletion) and the
-            // +1 BS would eat it — use the plain path.
-            hasTextBefore =
-                addrBarLeftEdgeCaretX_ > 0 && addrBarWordStartCaretX_ > 0 &&
-                addrBarWordStartCaretX_ > addrBarLeftEdgeCaretX_ + 30;
-          } else if (addrBarHadSpace_ || addrBarPrevCommittedLen_ > 0) {
-            // A committed space or tracked chars before this word mean
-            // text exists before the cursor → FullReplace's extra BS
-            // (oldComposedLen + 1) would delete it.
-            hasTextBefore = true;
+          if (addrBarClearedByCtrlKey_) {
+            // Ctrl+A/U/L cleared the bar immediately before this word —
+            // nothing exists before the cursor.  Skip the evidence
+            // chain: the pre-typing caret sat at the END of the old
+            // selection, so word-start X is far right of the left edge
+            // and the edge check would wrongly block FullReplace.
+            addrBarClearedByCtrlKey_ = false; // one-shot
           } else {
-            // Caret evidence is the primary signal: if the caret jumped
-            // far LEFT since the word started, the typed word replaced a
-            // selection (Ctrl+A / Ctrl+L + type) — the bar before the
-            // word is empty, so FullReplace is safe.  Without a jump,
-            // only block when tracking is known to be lost (genuine
-            // focus onto a bar that likely holds a URL).  A stale or
-            // invalid rect (<= 0) is treated as unsafe.
-            static constexpr int kCaretJumpPx = 40;
-            int caretX = ic_->cursorRect().left();
-            bool jumpedLeft = addrBarWordStartCaretX_ > 0 && caretX > 0 &&
-                              caretX + kCaretJumpPx < addrBarWordStartCaretX_;
-            if (!jumpedLeft && addrBarContentUnknown_) {
+            const auto &surrounding = ic_->surroundingText();
+            if (surrounding.isValid()) {
+              hasTextBefore = surrounding.cursor() >
+                              static_cast<unsigned int>(oldComposedLen);
+            } else if (addrBarPrevCommittedLen_ < 0) {
+              // Sentinel: the engine's tracked text is empty.  Whether the
+              // BAR is empty is decided by the caret: a word starting at
+              // the left edge (min caret X seen this session) means the
+              // bar was empty — FullReplace is safe; further right means
+              // text exists before the cursor (partial deletion) and the
+              // +1 BS would eat it — use the plain path.
+              hasTextBefore =
+                  addrBarLeftEdgeCaretX_ > 0 && addrBarWordStartCaretX_ > 0 &&
+                  addrBarWordStartCaretX_ > addrBarLeftEdgeCaretX_ + 30;
+            } else if (addrBarHadSpace_ || addrBarPrevCommittedLen_ > 0) {
+              // A committed space or tracked chars before this word mean
+              // text exists before the cursor → FullReplace's extra BS
+              // (oldComposedLen + 1) would delete it.
               hasTextBefore = true;
+            } else {
+              // Caret evidence is the primary signal: if the caret jumped
+              // far LEFT since the word started, the typed word replaced a
+              // selection (Ctrl+A / Ctrl+L + type) — the bar before the
+              // word is empty, so FullReplace is safe.  Without a jump,
+              // only block when tracking is known to be lost (genuine
+              // focus onto a bar that likely holds a URL).  A stale or
+              // invalid rect (<= 0) is treated as unsafe.
+              static constexpr int kCaretJumpPx = 40;
+              int caretX = ic_->cursorRect().left();
+              bool jumpedLeft = addrBarWordStartCaretX_ > 0 && caretX > 0 &&
+                                caretX + kCaretJumpPx < addrBarWordStartCaretX_;
+              if (!jumpedLeft && addrBarContentUnknown_) {
+                hasTextBefore = true;
+              }
             }
           }
           if (!hasTextBefore) {

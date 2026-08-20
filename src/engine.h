@@ -276,6 +276,11 @@ private:
                                         // if text existed on screen.
                                         // <=0 = bar was empty → FullReplace
                                         // safe even when addrBarHadSpace_ set.
+    // One-shot: Ctrl+A / Ctrl+U / Ctrl+L just replaced-or-cleared the
+    // whole bar, so the next first-word replacement may FullReplace
+    // without caret evidence (the pre-typing caret sat at the END of the
+    // old selection — word-start X evidence would wrongly block it).
+    bool addrBarClearedByCtrlKey_ = false;
     // Genuine cross-app focus change: the omnibox content is no longer
     // tracked (it almost always holds the page URL).  Blocks first-word
     // FullReplace unless the caret jumped far left since the word started
