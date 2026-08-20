@@ -204,10 +204,11 @@ static constexpr uint64_t kWaylandNativeCommitDelayPerBsUsec = 6000;
 static constexpr uint64_t kWaylandNativeCommitDelayMaxUsec = 30000;
 // Floor applied on the next commit after loopbacks were slow once.
 static constexpr uint64_t kSlowLoopbackCommitDelayFloorUsec = 15000;
-// Standalone Chromium/Electron apps (non-browser, antigravity):
-// "Uinput (Slow)" treatment — a generous fixed sleep plus a bounded
-// surrounding-cursor verification before the commit.  Chromium browsers
-// and native Wayland apps keep their own tuned delays.
+// Standalone Chromium/Electron apps (antigravity): "Uinput (Slow)"
+// treatment — a generous fixed sleep plus a bounded surrounding-cursor
+// verification before the commit.  Surrounding pushes are throttled by
+// Chromium (~50ms+), too slow to drive a confirm-wait, so the sleep is
+// fixed and the verification only buys a few extra milliseconds.
 static constexpr uint64_t kUinputSlowModeSleepUsec = 20000;
 static constexpr int kUinputSlowModeVerifyRetries = 3;
 static constexpr uint64_t kUinputSlowModeRetryIntervalUsec = 2000;
@@ -2257,6 +2258,12 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   // Wayland only: on X11 the sync anchor is a true barrier (X server
   // serializes key delivery), so the fast adaptive timing is already
   // safe and the 20ms slow-mode sleep would only add latency.
+  // Wayland only: on X11 the sync anchor is a true barrier (X server
+  // serializes key delivery), so the fast adaptive timing is already
+  // safe and the 20ms slow-mode sleep would only add latency.
+  // Standalone Electron apps (antigravity): their multi-process key
+  // queue lags far behind the anchor loopback.  Terminals and the
+  // address bar (own machinery) are excluded.
   bool slowMode = isWayland() && isChromiumCached() &&
                   !isChromiumBrowser(appProgram()) &&
                   !isTerminalAppName(appProgram()) &&
