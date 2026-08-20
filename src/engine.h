@@ -158,6 +158,10 @@ private:
     mutable bool modeCacheValid_ = false;
     mutable SKeyOutputMode cachedMode_ = SKeyOutputMode::SurroundingText;
     mutable int cachedIsChromium_ = -1;  // tristate: -1=unset, 0=false, 1=true
+    // Sticky browser-UI verdict for X11: the a11y monitor may lag behind
+    // keystrokes; keep the last true verdict for a short grace instead of
+    // flipping inChromiumAddressBar() to false mid-word.
+    mutable uint64_t addrBarUiVerdictAtUsec_ = 0;
     mutable int cachedIsTerminalApp_ = -1; // tristate: name list + shell scan
     mutable int cachedIsFirefoxOrSnap_ = -1;
     // Sticky Uinput for Chromium-family apps that initially report bare caps

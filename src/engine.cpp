@@ -1306,10 +1306,22 @@ bool SKeyState::inChromiumAddressBar() const {
   // and omits it for the find bar (urlCap=0).  Using the AT-SPI2 fallback on
   // Wayland would misclassify the Ctrl+F find bar as an address bar, causing
   // Escape-key autocomplete dismissal to close the find bar.
-  if (!isWayland() && engine_->a11yMonitor() &&
-      engine_->a11yMonitor()->isBrowserUIFocused() &&
-      isChromiumBrowser(appProgram())) {
-    return true;
+  if (!isWayland() && isChromiumBrowser(appProgram())) {
+    auto *mon = engine_->a11yMonitor();
+    if (mon && mon->isBrowserUIFocused()) {
+      // Fresh true verdict — remember when so a lagging monitor can't
+      // flip the decision mid-word.
+      addrBarUiVerdictAtUsec_ = now(CLOCK_MONOTONIC);
+      return true;
+    }
+    // Grace window: the monitor processes focus events asynchronously
+    // and can trail the keystrokes (observed as "aâ" corruption on X11
+    // when the tone key hit before the focus event was processed).
+    if (addrBarUiVerdictAtUsec_ != 0 &&
+        now(CLOCK_MONOTONIC) - addrBarUiVerdictAtUsec_ <= 1500000) {
+      return true;
+    }
+    addrBarUiVerdictAtUsec_ = 0;
   }
   return false;
 }
@@ -3924,22 +3936,27 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
         int a11ySelStart = -1, a11ySelEnd = -1;
         // Wait briefly for a snapshot that includes all forwarded keys
         // (the monitor re-polls on text-change signals, so it catches
-        // up within ~30ms).
+        // up within ~30ms).  The a11y verdict is authoritative ONLY for
+        // the positive case (text provably starts with the composed
+        // word): Chrome on some distros (Fedora) returns a FRESH but
+        // EMPTY omnibox snapshot, and treating that as "word not at
+        // start" vetoes the first-word FullReplace that dismisses
+        // autofill ("aâ" corruption).  Empty/stale/timeout snapshots
+        // fall through to the first-word heuristics below.
         uint64_t waitUntil = now(CLOCK_MONOTONIC) + 30000;
         for (;;) {
           if (!mon || !mon->a11yState(a11yText, a11ySelStart, a11ySelEnd,
                                       kA11ySnapshotMaxAgeUsec))
             break;
-          a11yDecided = true; // fresh snapshot — decision authoritative
           if (a11yText.size() >= oldComposed.size() &&
               a11yText.compare(0, oldComposed.size(), oldComposed) == 0) {
             wordAtStart = true;
+            a11yDecided = true;
             break;
           }
-          uint64_t remaining = waitUntil - now(CLOCK_MONOTONIC);
           if (now(CLOCK_MONOTONIC) >= waitUntil)
-            break;
-          mon->waitForSnapshotUpdate(remaining);
+            break; // timeout — heuristics decide
+          mon->waitForSnapshotUpdate(waitUntil - now(CLOCK_MONOTONIC));
         }
       }
       if (wordAtStart) {
