@@ -2963,9 +2963,15 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       // X11: empty bar → sentinel -1 so the next word's snapshot
       // (addrBarPrevCommittedLen_ < 0) re-arms first-word FullReplace.
       // Wayland keeps 0 — its tracking uses the surrounding text.
-      committedLen_ = viet_.getRawInput().empty()
-                          ? (isWayland() ? 0 : -1)
-                          : static_cast<int>(utf8::length(viet_.getComposed()));
+      // An emptied bar also clears the had-space guard: nothing exists
+      // before the cursor anymore, so the next word may FullReplace.
+      if (viet_.getRawInput().empty()) {
+        committedLen_ = isWayland() ? 0 : -1;
+        addrBarHadSpace_ = false;
+      } else {
+        committedLen_ =
+            static_cast<int>(utf8::length(viet_.getComposed()));
+      }
       // Re-arm cycle protection and, only when no space has been
       // typed yet, the first-word flag.  After a space the next word
       // won't trigger Chrome autocomplete, so fullReplace is not needed
