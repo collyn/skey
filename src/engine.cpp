@@ -2404,6 +2404,32 @@ void SKeyState::replayBufferedUinputKeys() {
       continue;
     }
 
+    // Ghost-composition guard (addr-bar, Uinput): the bar is provably
+    // empty but a composition is still alive — a BackSpace during
+    // Chrome's focus churn deleted the screen char without reaching the
+    // engine (retyping "aa" after deleting "chào" produced "aâ").
+    // Reset so the retype starts clean.  The empty-bar signal is
+    // platform-specific: X11 uses the committedLen_ sentinel (-1),
+    // Wayland uses the surrounding text (valid and empty).
+    if (inChromiumAddressBar() && useUinputMode() &&
+        !viet_.getRawInput().empty()) {
+      bool barEmpty = false;
+      if (isWayland()) {
+        const auto &surr = ic_->surroundingText();
+        barEmpty = surr.isValid() && surr.text().empty();
+      } else {
+        barEmpty = committedLen_ == -1;
+      }
+      if (barEmpty) {
+        SKEY_DEBUG()
+            << "AddrBar: ghost composition over empty bar, resetting";
+        viet_.reset();
+        committedLen_ = 0;
+        addrBarSawBsInWord_ = false;
+        addrBarHadFirstWord_ = false;
+      }
+    }
+
     flushAddrBarReplacement();
     std::string oldComposed = viet_.getComposed();
     auto result = viet_.processKey(ch);
@@ -2919,7 +2945,15 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         }
         return;
       }
+      size_t preLen = utf8::length(viet_.getComposed());
       viet_.backspace();
+      if (!viet_.getRawInput().empty() &&
+          utf8::length(viet_.getComposed()) == preLen) {
+        // The popped keystroke was a tone marker — one BS deletes the
+        // whole accented SCREEN char ("câ" → "c"), so pop the base
+        // letter too or the model drifts ahead of the screen.
+        viet_.backspace();
+      }
       committedLen_ = viet_.getRawInput().empty()
                           ? 0
                           : static_cast<int>(utf8::length(viet_.getComposed()));
@@ -4105,8 +4139,12 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
             }
           }
           addrBarHadFirstWord_ = true;
+          addrBarDidFullReplace_ =
+              !(oldComposedIsAscii && oldComposedLen == 1);
+          addrBarKeepState_ = (oldComposedIsAscii && oldComposedLen == 1);
           SKEY_DEBUG() << "AddrBar: first word, fullReplace BS=" << totalBs
-                       << " commit='" << commitText << "'";
+                       << " commit='" << commitText << "'"
+                       << (addrBarKeepState_ ? " [keep-state]" : "");
         }
       } else if (isAutofillCertain()) {
         ++totalBs;
