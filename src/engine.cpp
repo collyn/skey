@@ -1315,10 +1315,13 @@ bool SKeyState::inChromiumAddressBar() const {
       return true;
     }
     // Grace window: the monitor processes focus events asynchronously
-    // and can trail the keystrokes (observed as "aâ" corruption on X11
-    // when the tone key hit before the focus event was processed).
+    // and Chrome's omnibox churn (dropdown open/close, suggestion
+    // previews) can flip browserUIFocused_ false between keystrokes —
+    // observed as "aâ" corruption on X11 when the retype's tone key
+    // fell outside a short window.  5s covers churn and typing pauses
+    // while still latching off after a real focus change.
     if (addrBarUiVerdictAtUsec_ != 0 &&
-        now(CLOCK_MONOTONIC) - addrBarUiVerdictAtUsec_ <= 1500000) {
+        now(CLOCK_MONOTONIC) - addrBarUiVerdictAtUsec_ <= 5000000) {
       return true;
     }
     addrBarUiVerdictAtUsec_ = 0;
