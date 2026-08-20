@@ -151,9 +151,9 @@ struct UinputTiming {
   uint64_t addrBarCommitDelayMinUsec;
   uint64_t commitDelayMaxUsec; // absolute ceiling (prevents lag on slow apps)
   uint64_t addrBarCommitDelayMaxUsec;
-  double chromiumDelayFactor;   // extra multiplier for Chromium/Electron apps
-  uint64_t safetyTimeoutUsec;   // force-commit if BS events don't arrive
-  uint64_t safetyRetryUsec;     // extended window when BS are just slow
+  double chromiumDelayFactor; // extra multiplier for Chromium/Electron apps
+  uint64_t safetyTimeoutUsec; // force-commit if BS events don't arrive
+  uint64_t safetyRetryUsec;   // extended window when BS are just slow
 };
 
 // X11: sync BS approach — send N+1 BS, the extra one anchors ordering.
@@ -177,16 +177,16 @@ static constexpr UinputTiming kUinputTimingX11 = {
 // Wayland: clamp delay to [2ms, 12ms] for native apps.
 // Electron/Chromium apps get a 1.5× boost via chromiumDelayFactor.
 static constexpr UinputTiming kUinputTimingWayland = {
-    0.3,   // bsRtEwmaAlpha — moderate adaptation
-    3000,  // bsRtInitialUsec
-    0.5,   // bsRtMultiplier
-    0.5,   // addrBarBsRtMultiplier
-    2000,  // commitDelayMinUsec — 2ms floor (prevents char loss on Qt/GTK)
-    2000,  // addrBarCommitDelayMinUsec
-    12000, // commitDelayMaxUsec — 12ms cap
-    12000, // addrBarCommitDelayMaxUsec
-    1.5,   // chromiumDelayFactor — Electron multi-process needs 1.5×
-    80000, // safetyTimeoutUsec (80ms)
+    0.3,    // bsRtEwmaAlpha — moderate adaptation
+    3000,   // bsRtInitialUsec
+    0.5,    // bsRtMultiplier
+    0.5,    // addrBarBsRtMultiplier
+    2000,   // commitDelayMinUsec — 2ms floor (prevents char loss on Qt/GTK)
+    2000,   // addrBarCommitDelayMinUsec
+    12000,  // commitDelayMaxUsec — 12ms cap
+    12000,  // addrBarCommitDelayMaxUsec
+    1.5,    // chromiumDelayFactor — Electron multi-process needs 1.5×
+    80000,  // safetyTimeoutUsec (80ms)
     600000, // safetyRetryUsec (600ms) — one extension for slow loopbacks
 };
 
@@ -200,10 +200,17 @@ static constexpr uint64_t dbusDeferredMinUsec = 10000;
 // delay scales with the number of deletions: each injected BS needs ~8ms of
 // queue-drain headroom before the commit lands (a fixed 15ms floor made
 // single-deletion replacements visibly flicker).
-static constexpr uint64_t kWaylandNativeCommitDelayPerBsUsec = 8000;
+static constexpr uint64_t kWaylandNativeCommitDelayPerBsUsec = 6000;
 static constexpr uint64_t kWaylandNativeCommitDelayMaxUsec = 30000;
 // Floor applied on the next commit after loopbacks were slow once.
 static constexpr uint64_t kSlowLoopbackCommitDelayFloorUsec = 15000;
+// Standalone Chromium/Electron apps (non-browser, antigravity):
+// "Uinput (Slow)" treatment — a generous fixed sleep plus a bounded
+// surrounding-cursor verification before the commit.  Chromium browsers
+// and native Wayland apps keep their own tuned delays.
+static constexpr uint64_t kUinputSlowModeSleepUsec = 20000;
+static constexpr int kUinputSlowModeVerifyRetries = 3;
+static constexpr uint64_t kUinputSlowModeRetryIntervalUsec = 2000;
 
 // NOTE: AT-SPI2 queries for the Chromium address bar must NEVER run on
 // the fcitx5 main thread — a stuck DBus reply blocks all input handling
@@ -283,9 +290,9 @@ static std::string outputModeName(SKeyOutputMode mode) {
 static constexpr size_t maxBufferedUinputKeys = 32;
 
 struct UinputSocketPaths {
-  std::string fsPath;        // "/run/skey-uinput-<user>/kb_socket"; empty if
-                             // longer than sun_path
-  std::string abstractName;  // legacy "skeysocket-<user>-kb_socket"
+  std::string fsPath;       // "/run/skey-uinput-<user>/kb_socket"; empty if
+                            // longer than sun_path
+  std::string abstractName; // legacy "skeysocket-<user>-kb_socket"
 };
 
 static UinputSocketPaths uinputSocketPaths(const char *suffix) {
@@ -503,8 +510,8 @@ static bool isTerminalApp(const std::string &prog) {
       "terminator",     "terminology",
       "wezterm",        "foot",
       "urxvt",          "rxvt",
-      "xterm",
-      "tabby",          "hyper",
+      "xterm",          "tabby",
+      "hyper",
   };
   for (const char *p : patterns) {
     if (prog.find(p) != std::string::npos) {
@@ -521,16 +528,16 @@ static bool isTerminalApp(const std::string &prog) {
 /// KDE's kscreenlocker_greet on X11) don't expose either signal.
 static bool programIsLockScreen(const std::string &prog) {
   static const char *const patterns[] = {
-      "kscreenlocker",     // KDE lock screen (kscreenlocker_greet)
-      "i3lock",            // i3 lock screen
-      "swaylock",          // Sway lock screen
-      "gtklock",           // GTK-based lock screen
-      "hyprlock",          // Hyprland lock screen
-      "sddm",              // SDDM login manager
-      "gdm",               // GDM login manager
-      "lightdm",           // LightDM login manager
-      "lxdm",              // LXDM login manager
-      "polkit",            // polkit auth dialogs
+      "kscreenlocker", // KDE lock screen (kscreenlocker_greet)
+      "i3lock",        // i3 lock screen
+      "swaylock",      // Sway lock screen
+      "gtklock",       // GTK-based lock screen
+      "hyprlock",      // Hyprland lock screen
+      "sddm",          // SDDM login manager
+      "gdm",           // GDM login manager
+      "lightdm",       // LightDM login manager
+      "lxdm",          // LXDM login manager
+      "polkit",        // polkit auth dialogs
   };
   for (const char *p : patterns) {
     if (prog.find(p) != std::string::npos) {
@@ -538,8 +545,7 @@ static bool programIsLockScreen(const std::string &prog) {
     }
   }
   // Exact match for system auth programs (substring would be too broad)
-  if (prog == "login" || prog == "su" || prog == "sudo" ||
-      prog == "pkexec") {
+  if (prog == "login" || prog == "su" || prog == "sudo" || prog == "pkexec") {
     return true;
   }
   return false;
@@ -886,8 +892,7 @@ void SKeyEngine::saveAppMode(const std::string &app, SKeyOutputMode mode) {
   std::string val = outputModeName(mode);
   cfg.setValueByPath(app, val);
   bool ok = safeSaveAsIni(cfg, "conf/skey-app-modes.conf");
-  SKEY_INFO() << "Saved app mode: " << app << " -> " << val
-              << " ok=" << ok;
+  SKEY_INFO() << "Saved app mode: " << app << " -> " << val << " ok=" << ok;
 }
 
 void SKeyEngine::saveAppExcluded(const std::string &app, bool excluded) {
@@ -980,9 +985,10 @@ std::string SKeyEngine::subModeIconImpl(const InputMethodEntry &entry,
   // absolute-path behavior there.
   static const bool kIsCinnamon = [] {
     const char *de = std::getenv("XDG_CURRENT_DESKTOP");
-    if (!de) de = std::getenv("DESKTOP_SESSION");
-    return de && (std::string(de) == "cinnamon" ||
-                  std::string(de) == "X-Cinnamon");
+    if (!de)
+      de = std::getenv("DESKTOP_SESSION");
+    return de &&
+           (std::string(de) == "cinnamon" || std::string(de) == "X-Cinnamon");
   }();
 
   if (kIsCinnamon && skey::isPresetTheme(currentTheme)) {
@@ -1080,8 +1086,7 @@ void SKeyState::refreshAppMode() {
   auto *val = cfg.valueByPath(prog);
   if (val) {
     std::string modeStr = *val;
-    if (modeStr.size() >= 2 && modeStr.front() == '"' &&
-        modeStr.back() == '"')
+    if (modeStr.size() >= 2 && modeStr.front() == '"' && modeStr.back() == '"')
       modeStr = modeStr.substr(1, modeStr.size() - 2);
 
     if (modeStr == "Excluded") {
@@ -1091,8 +1096,7 @@ void SKeyState::refreshAppMode() {
       if (modeStr == "Preedit")
         savedMode = SKeyOutputMode::Preedit;
       else if (modeStr == "SurroundingTextSlow" ||
-               modeStr == "SurroundingText" ||
-               modeStr == "Surrounding Text")
+               modeStr == "SurroundingText" || modeStr == "Surrounding Text")
         savedMode = SKeyOutputMode::SurroundingText;
       else if (modeStr == "Uinput")
         savedMode = SKeyOutputMode::Uinput;
@@ -1214,18 +1218,18 @@ bool SKeyState::useUinputMode() const {
 // deliberately excluded: Google Sheets adds it on re-focus but still needs
 // Uinput, while Facebook chat adds SpellCheck and works with SurroundingText.
 static constexpr uint64_t kChromiumStrongHints =
-    (1ULL << 3)  |  // Password
-    (1ULL << 7)  |  // Email
-    (1ULL << 8)  |  // Digit
-    (1ULL << 9)  |  // Uppercase
-    (1ULL << 10) |  // Lowercase
-    (1ULL << 14) |  // Number
-    (1ULL << 16) |  // SpellCheck
-    (1ULL << 17) |  // NoSpellCheck
-    (1ULL << 18) |  // WordCompletion
-    (1ULL << 20) |  // UppercaseSentences
-    (1ULL << 21) |  // Alpha
-    (1ULL << 22);   // Name
+    (1ULL << 3) |  // Password
+    (1ULL << 7) |  // Email
+    (1ULL << 8) |  // Digit
+    (1ULL << 9) |  // Uppercase
+    (1ULL << 10) | // Lowercase
+    (1ULL << 14) | // Number
+    (1ULL << 16) | // SpellCheck
+    (1ULL << 17) | // NoSpellCheck
+    (1ULL << 18) | // WordCompletion
+    (1ULL << 20) | // UppercaseSentences
+    (1ULL << 21) | // Alpha
+    (1ULL << 22);  // Name
 
 /// How long a bare-caps decision stays deferred (microseconds).  The window
 /// only needs to cover focus → click → first keystroke: either the caps get
@@ -1327,8 +1331,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     // (surroundingTextFailed_ + retry) downgrades to Uinput when the
     // cache never arrives.
     if (waylandNativeSurroundingProbe()) {
-      SKEY_DEBUG()
-          << "Auto: no SurroundingText cap, probing SurroundingText";
+      SKEY_DEBUG() << "Auto: no SurroundingText cap, probing SurroundingText";
       return SKeyOutputMode::SurroundingText;
     }
     SKEY_DEBUG() << "Auto: no SurroundingText cap → Uinput";
@@ -1366,22 +1369,22 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   if (caps.test(CapabilityFlag::SurroundingText) && isChromiumCached() &&
       !caps.test(CapabilityFlag::Url)) {
     static constexpr uint64_t kContentHints =
-        (1ULL << 3)  |  // Password
-        (1ULL << 7)  |  // Email
-        (1ULL << 8)  |  // Digit
-        (1ULL << 9)  |  // Uppercase
-        (1ULL << 10) |  // Lowercase
-        (1ULL << 11) |  // NoAutoUpperCase
-        (1ULL << 13) |  // Dialable
-        (1ULL << 14) |  // Number
-        (1ULL << 15) |  // NoOnScreenKeyboard
-        (1ULL << 16) |  // SpellCheck
-        (1ULL << 17) |  // NoSpellCheck
-        (1ULL << 18) |  // WordCompletion
-        (1ULL << 19) |  // UppercaseWords
-        (1ULL << 20) |  // UppercaseSentences
-        (1ULL << 21) |  // Alpha
-        (1ULL << 22);    // Name
+        (1ULL << 3) |  // Password
+        (1ULL << 7) |  // Email
+        (1ULL << 8) |  // Digit
+        (1ULL << 9) |  // Uppercase
+        (1ULL << 10) | // Lowercase
+        (1ULL << 11) | // NoAutoUpperCase
+        (1ULL << 13) | // Dialable
+        (1ULL << 14) | // Number
+        (1ULL << 15) | // NoOnScreenKeyboard
+        (1ULL << 16) | // SpellCheck
+        (1ULL << 17) | // NoSpellCheck
+        (1ULL << 18) | // WordCompletion
+        (1ULL << 19) | // UppercaseWords
+        (1ULL << 20) | // UppercaseSentences
+        (1ULL << 21) | // Alpha
+        (1ULL << 22);  // Name
     CapabilityFlags contentHints(kContentHints);
     if (!(caps & contentHints)) {
       // Standalone Chromium/Electron apps (not browsers) deliver
@@ -1416,15 +1419,15 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
         chromiumBareCapsUinput_ = true;
         engine_->chromiumBareCapsProgram_ = appProgram();
         engine_->chromiumHadBareCaps_ = true;
-        SKEY_DEBUG() << "Auto: bare caps confirmed after deferral → sticky Uinput";
+        SKEY_DEBUG()
+            << "Auto: bare caps confirmed after deferral → sticky Uinput";
       } else if (!modeDecisionPending_) {
         modeDecisionPending_ = true;
         modeDecisionDeadlineUsec_ =
             now(CLOCK_MONOTONIC) + kBareCapsDecisionWindowUsec;
         SKEY_DEBUG() << "Auto: bare caps → Uinput (deferred, caps=0x"
-                     << std::hex
-                     << static_cast<uint64_t>(caps.toInteger()) << std::dec
-                     << ")";
+                     << std::hex << static_cast<uint64_t>(caps.toInteger())
+                     << std::dec << ")";
       }
       return SKeyOutputMode::Uinput;
     }
@@ -1440,14 +1443,14 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     if (caps & strong) {
       clearEngineBareCapsSticky();
       SKEY_DEBUG() << "Auto: deferred decision → SurroundingText (caps=0x"
-                   << std::hex
-                   << static_cast<uint64_t>(caps.toInteger()) << std::dec
-                   << ")";
+                   << std::hex << static_cast<uint64_t>(caps.toInteger())
+                   << std::dec << ")";
     } else {
       chromiumBareCapsUinput_ = true;
       engine_->chromiumBareCapsProgram_ = appProgram();
       engine_->chromiumHadBareCaps_ = true;
-      SKEY_DEBUG() << "Auto: deferred decision → sticky Uinput (weak hints only)";
+      SKEY_DEBUG()
+          << "Auto: deferred decision → sticky Uinput (weak hints only)";
       return SKeyOutputMode::Uinput;
     }
   }
@@ -1491,8 +1494,7 @@ bool SKeyState::isFirefoxOrSnap() const {
         if (comm == prog || prog.compare(0, 15, comm) == 0 ||
             comm.compare(0, 15, prog) == 0) {
           // Found matching process — check exe path for /snap/
-          std::string exePath =
-              "/proc/" + std::string(entry->d_name) + "/exe";
+          std::string exePath = "/proc/" + std::string(entry->d_name) + "/exe";
           char buf[4096];
           ssize_t len = readlink(exePath.c_str(), buf, sizeof(buf) - 1);
           if (len > 0) {
@@ -1594,17 +1596,16 @@ void SKeyState::activate() {
     // Don't double-commit; just clean up the engine entry.
     auto it = engine_->pendingPreedits_.find(appProgram());
     if (preeditWasPending_ && preeditPendingProgram_ == appProgram()) {
-      SKEY_DEBUG() << "Activate: spurious cycle for '"
-                   << appProgram() << "', discarding saved preedit";
+      SKEY_DEBUG() << "Activate: spurious cycle for '" << appProgram()
+                   << "', discarding saved preedit";
       if (it != engine_->pendingPreedits_.end()) {
         engine_->pendingPreedits_.erase(it);
       }
     } else if (it != engine_->pendingPreedits_.end()) {
       // Genuine return — the IC was destroyed and recreated, or the
       // activating program differs from the one that saved the text.
-      SKEY_DEBUG() << "Activate: committing saved preedit '"
-                   << it->second << "' for program '" << appProgram()
-                   << "'";
+      SKEY_DEBUG() << "Activate: committing saved preedit '" << it->second
+                   << "' for program '" << appProgram() << "'";
       commitText(it->second);
       engine_->pendingPreedits_.erase(it);
       ic_->updatePreedit();
@@ -1641,8 +1642,8 @@ void SKeyState::activate() {
     } else {
       SKEY_DEBUG() << "Activate: spurious cycle (unarmed), preserving"
                    << " firstWord=" << addrBarIsFirstWord_
-                   << " hadSpace=" << addrBarHadSpace_
-                   << " composed='" << viet_.getComposed() << "'";
+                   << " hadSpace=" << addrBarHadSpace_ << " composed='"
+                   << viet_.getComposed() << "'";
     }
   }
   clearLastWord();
@@ -1712,8 +1713,7 @@ void SKeyState::activate() {
   // sticky flag on the first keystroke (a11yFreshWebEditor) and clears it.
   if (engine_->chromiumHadBareCaps_ &&
       appProgram() == engine_->chromiumBareCapsProgram_ &&
-      !appProgram().empty() && isChromiumCached() &&
-      !a11yFreshWebEditor()) {
+      !appProgram().empty() && isChromiumCached() && !a11yFreshWebEditor()) {
     CapabilityFlags strong(kChromiumStrongHints);
     if (!(caps & strong)) {
       chromiumBareCapsUinput_ = true;
@@ -1994,13 +1994,35 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
                                         kWaylandNativeCommitDelayPerBsUsec);
   }
 
+  bool slowMode = isChromiumCached() && !isChromiumBrowser(appProgram()) &&
+                  !isTerminalApp(appProgram()) &&
+                  !ic_->capabilityFlags().test(CapabilityFlag::Terminal) &&
+                  !inChromiumAddressBar();
+  if (slowMode) {
+    sleepUsec = std::max(sleepUsec, kUinputSlowModeSleepUsec);
+  }
+
   SKEY_DEBUG() << "Uinput: sync BS, RT " << (elapsed / 1000) << "ms (ewma "
                << (bsRtEwma_ / 1000) << "ms), sleep " << (sleepUsec / 1000)
                << "ms then commit '" << commitText << "'"
                << (inChromiumAddressBar() ? " [addrbar]" : "")
-               << (isChromiumCached() ? " [chromium]" : "");
+               << (isChromiumCached() ? " [chromium]" : "")
+               << (slowMode ? " [slow]" : "");
 
   usleep(sleepUsec);
+
+  if (slowMode) {
+    // Bounded verification: the app's surrounding cursor must have
+    // reached the expected post-BS length before the commit; give it a
+    // few short retries otherwise (3 × 2ms).
+    for (int retry = 0; retry < kUinputSlowModeVerifyRetries; ++retry) {
+      const auto &surr = ic_->surroundingText();
+      if (surr.isValid() && static_cast<int>(surr.cursor()) == committedLen_)
+        break;
+      SKEY_DEBUG() << "Uinput: slow-mode verification retry " << (retry + 1);
+      usleep(kUinputSlowModeRetryIntervalUsec);
+    }
+  }
 
   // ── Commit synchronously ──
   uinputDeleting_ = false;
@@ -2181,8 +2203,7 @@ void SKeyState::deactivate() {
               if (!preeditWasPending_) {
                 preeditWasPending_ = true;
                 preeditPendingProgram_ = appProgram();
-                engine_->pendingPreedits_[appProgram()] =
-                    viet_.getComposed();
+                engine_->pendingPreedits_[appProgram()] = viet_.getComposed();
               }
             }
             viet_.reset();
@@ -2212,9 +2233,8 @@ void SKeyState::deactivate() {
       preeditWasPending_ = true;
       preeditPendingProgram_ = appProgram();
       engine_->pendingPreedits_[appProgram()] = viet_.getComposed();
-      SKEY_DEBUG() << "Deactivate: saved preedit '"
-                   << viet_.getComposed() << "' for program '"
-                   << appProgram() << "'";
+      SKEY_DEBUG() << "Deactivate: saved preedit '" << viet_.getComposed()
+                   << "' for program '" << appProgram() << "'";
     }
   }
   viet_.reset();
@@ -2297,8 +2317,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   bool a11yNonEntry = a11yBrowserNonEntry();
   if (viet_.getRawInput().empty() &&
       (modeDecisionPending_ || a11yFreshWebEditor() ||
-       (a11yNonEntry && (!modeCacheValid_ ||
-                         cachedMode_ != SKeyOutputMode::Uinput)))) {
+       (a11yNonEntry &&
+        (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)))) {
     modeCacheValid_ = false;
   }
 
@@ -2366,8 +2386,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // deletion window closed (slow apps).  Swallow them: treating them as
   // fresh user backspaces would pop composition chars and forward stray
   // deletions to the app.
-  if (uinputBsOutstanding_ > 0 &&
-      keyEvent.key().check(FcitxKey_BackSpace)) {
+  if (uinputBsOutstanding_ > 0 && keyEvent.key().check(FcitxKey_BackSpace)) {
     --uinputBsOutstanding_;
     SKEY_DEBUG() << "Uinput: swallow late BS (" << uinputBsOutstanding_
                  << " outstanding)";
@@ -2521,8 +2540,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         viet_.autoRestore();
         std::string postRestore = viet_.getComposed();
         if (preRestore != postRestore && useSurroundingText()) {
-          SKEY_DEBUG() << "AutoRestore: '" << preRestore
-                       << "' -> '" << postRestore << "'";
+          SKEY_DEBUG() << "AutoRestore: '" << preRestore << "' -> '"
+                       << postRestore << "'";
           surroundingCommit(preRestore, postRestore);
         }
       }
@@ -2643,16 +2662,18 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         std::string appText = oldComposed;
         if (!appText.empty()) {
           size_t last = appText.size() - 1;
-          while (last > 0 && isUtf8ContinuationByte(appText[last])) --last;
+          while (last > 0 && isUtf8ContinuationByte(appText[last]))
+            --last;
           appText.resize(last);
         }
         if (viet_.getComposed() != appText) {
           SKEY_DEBUG() << "SurrBS: uinput follow app, raw='" << appText << "'";
           viet_.setRawInput(appText);
         }
-        committedLen_ = viet_.getRawInput().empty()
-                            ? 0
-                            : static_cast<int>(utf8::length(viet_.getComposed()));
+        committedLen_ =
+            viet_.getRawInput().empty()
+                ? 0
+                : static_cast<int>(utf8::length(viet_.getComposed()));
         SKEY_DEBUG() << "SurrBS: uinput compose -> '" << viet_.getComposed()
                      << "' len=" << committedLen_;
         return; // pass through raw BS (do NOT filter)
@@ -2668,7 +2689,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       std::string appText = oldComposed;
       if (!appText.empty()) {
         size_t last = appText.size() - 1;
-        while (last > 0 && isUtf8ContinuationByte(appText[last])) --last;
+        while (last > 0 && isUtf8ContinuationByte(appText[last]))
+          --last;
         appText.resize(last);
       }
       if (viet_.getComposed() != appText) {
@@ -2906,8 +2928,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         std::string postRestore = viet_.getComposed();
         if (preRestore != postRestore && useSurroundingText()) {
           autoRestored = true;
-          SKEY_DEBUG() << "AutoRestore: '" << preRestore
-                       << "' -> '" << postRestore << "'";
+          SKEY_DEBUG() << "AutoRestore: '" << preRestore << "' -> '"
+                       << postRestore << "'";
           if (useUinputMode()) {
             int oldLen = static_cast<int>(utf8::length(preRestore));
             sendBackspaceUinput(oldLen + 1);
@@ -2918,28 +2940,26 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 static_cast<int>(utf8::length(postRestore));
             uinputDeleting_ = true;
             committedLen_ = uinputPendingFinalLen_;
-            uinputSafetyTimer_ =
-                engine_->instance()->eventLoop().addTimeEvent(
-                    CLOCK_MONOTONIC,
-                    now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec,
-                    0, [this](EventSourceTime *, uint64_t) {
-                      SKEY_DEBUG()
-                          << "AutoRestore: safety timeout, force commit";
-                      uinputSafetyTimer_.reset();
-                      uinputCommitTimer_.reset();
-                      std::string text = std::move(pendingUinputCommit_);
-                      pendingUinputCommit_.clear();
-                      expectedUinputBackspaces_ = 0;
-                      seenUinputBackspaces_ = 0;
-                      uinputDeleting_ = false;
-                      if (!text.empty())
-                        this->commitText(text);
-                      committedLen_ = uinputPendingFinalLen_;
-                      uinputPendingFinalLen_ = 0;
-                      if (!bufferedUinputKeys_.empty())
-                        replayBufferedUinputKeys();
-                      return true;
-                    });
+            uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+                CLOCK_MONOTONIC,
+                now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec, 0,
+                [this](EventSourceTime *, uint64_t) {
+                  SKEY_DEBUG() << "AutoRestore: safety timeout, force commit";
+                  uinputSafetyTimer_.reset();
+                  uinputCommitTimer_.reset();
+                  std::string text = std::move(pendingUinputCommit_);
+                  pendingUinputCommit_.clear();
+                  expectedUinputBackspaces_ = 0;
+                  seenUinputBackspaces_ = 0;
+                  uinputDeleting_ = false;
+                  if (!text.empty())
+                    this->commitText(text);
+                  committedLen_ = uinputPendingFinalLen_;
+                  uinputPendingFinalLen_ = 0;
+                  if (!bufferedUinputKeys_.empty())
+                    replayBufferedUinputKeys();
+                  return true;
+                });
           } else {
             surroundingCommit(preRestore, postRestore);
           }
@@ -3005,8 +3025,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         std::string postRestore = viet_.getComposed();
         if (preRestore != postRestore && useSurroundingText()) {
           autoRestored = true;
-          SKEY_DEBUG() << "AutoRestore: '" << preRestore
-                       << "' -> '" << postRestore << "'";
+          SKEY_DEBUG() << "AutoRestore: '" << preRestore << "' -> '"
+                       << postRestore << "'";
           if (useUinputMode()) {
             // Full replacement via uinput BS + commit.
             // Include the space in the pending commit so it arrives
@@ -3020,28 +3040,26 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 static_cast<int>(utf8::length(postRestore));
             uinputDeleting_ = true;
             committedLen_ = uinputPendingFinalLen_;
-            uinputSafetyTimer_ =
-                engine_->instance()->eventLoop().addTimeEvent(
-                    CLOCK_MONOTONIC,
-                    now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec,
-                    0, [this](EventSourceTime *, uint64_t) {
-                      SKEY_DEBUG()
-                          << "AutoRestore: safety timeout, force commit";
-                      uinputSafetyTimer_.reset();
-                      uinputCommitTimer_.reset();
-                      std::string text = std::move(pendingUinputCommit_);
-                      pendingUinputCommit_.clear();
-                      expectedUinputBackspaces_ = 0;
-                      seenUinputBackspaces_ = 0;
-                      uinputDeleting_ = false;
-                      if (!text.empty())
-                        this->commitText(text);
-                      committedLen_ = uinputPendingFinalLen_;
-                      uinputPendingFinalLen_ = 0;
-                      if (!bufferedUinputKeys_.empty())
-                        replayBufferedUinputKeys();
-                      return true;
-                    });
+            uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+                CLOCK_MONOTONIC,
+                now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec, 0,
+                [this](EventSourceTime *, uint64_t) {
+                  SKEY_DEBUG() << "AutoRestore: safety timeout, force commit";
+                  uinputSafetyTimer_.reset();
+                  uinputCommitTimer_.reset();
+                  std::string text = std::move(pendingUinputCommit_);
+                  pendingUinputCommit_.clear();
+                  expectedUinputBackspaces_ = 0;
+                  seenUinputBackspaces_ = 0;
+                  uinputDeleting_ = false;
+                  if (!text.empty())
+                    this->commitText(text);
+                  committedLen_ = uinputPendingFinalLen_;
+                  uinputPendingFinalLen_ = 0;
+                  if (!bufferedUinputKeys_.empty())
+                    replayBufferedUinputKeys();
+                  return true;
+                });
           } else {
             surroundingCommit(preRestore, postRestore);
           }
@@ -3124,8 +3142,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         std::string postRestore = viet_.getComposed();
         if (preRestore != postRestore && useSurroundingText()) {
           autoRestored = true;
-          SKEY_DEBUG() << "AutoRestore: '" << preRestore
-                       << "' -> '" << postRestore << "'";
+          SKEY_DEBUG() << "AutoRestore: '" << preRestore << "' -> '"
+                       << postRestore << "'";
           if (useUinputMode()) {
             int oldLen = static_cast<int>(utf8::length(preRestore));
             sendBackspaceUinput(oldLen + 1);
@@ -3136,28 +3154,26 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 static_cast<int>(utf8::length(postRestore));
             uinputDeleting_ = true;
             committedLen_ = uinputPendingFinalLen_;
-            uinputSafetyTimer_ =
-                engine_->instance()->eventLoop().addTimeEvent(
-                    CLOCK_MONOTONIC,
-                    now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec,
-                    0, [this](EventSourceTime *, uint64_t) {
-                      SKEY_DEBUG()
-                          << "AutoRestore: safety timeout, force commit";
-                      uinputSafetyTimer_.reset();
-                      uinputCommitTimer_.reset();
-                      std::string text = std::move(pendingUinputCommit_);
-                      pendingUinputCommit_.clear();
-                      expectedUinputBackspaces_ = 0;
-                      seenUinputBackspaces_ = 0;
-                      uinputDeleting_ = false;
-                      if (!text.empty())
-                        this->commitText(text);
-                      committedLen_ = uinputPendingFinalLen_;
-                      uinputPendingFinalLen_ = 0;
-                      if (!bufferedUinputKeys_.empty())
-                        replayBufferedUinputKeys();
-                      return true;
-                    });
+            uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+                CLOCK_MONOTONIC,
+                now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec, 0,
+                [this](EventSourceTime *, uint64_t) {
+                  SKEY_DEBUG() << "AutoRestore: safety timeout, force commit";
+                  uinputSafetyTimer_.reset();
+                  uinputCommitTimer_.reset();
+                  std::string text = std::move(pendingUinputCommit_);
+                  pendingUinputCommit_.clear();
+                  expectedUinputBackspaces_ = 0;
+                  seenUinputBackspaces_ = 0;
+                  uinputDeleting_ = false;
+                  if (!text.empty())
+                    this->commitText(text);
+                  committedLen_ = uinputPendingFinalLen_;
+                  uinputPendingFinalLen_ = 0;
+                  if (!bufferedUinputKeys_.empty())
+                    replayBufferedUinputKeys();
+                  return true;
+                });
           } else {
             surroundingCommit(preRestore, postRestore);
           }
@@ -3259,8 +3275,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         auto *mon = engine_->a11yMonitor();
         uint64_t waitUntil = now(CLOCK_MONOTONIC) + 30000;
         for (;;) {
-          if (!mon ||
-              !mon->a11yState(txt, ss, se, kA11ySnapshotMaxAgeUsec))
+          if (!mon || !mon->a11yState(txt, ss, se, kA11ySnapshotMaxAgeUsec))
             break;
           if (txt.find(comp) != std::string::npos)
             break; // word still on screen — in sync
@@ -3433,8 +3448,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 scheduleAddrBarReplacement(
                     deleteLen, addPart,
                     static_cast<int>(utf8::length(oldComposed)),
-                    static_cast<int>(sym), newComposed, oldAscii,
-                    oldComposed);
+                    static_cast<int>(sym), newComposed, oldAscii, oldComposed);
                 return;
               }
               sendBackspaceUinput(deleteLen + 1); // +1 sync BS
@@ -3489,8 +3503,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         std::string postRestore = viet_.getComposed();
         if (preRestore != postRestore && useSurroundingText()) {
           autoRestored = true;
-          SKEY_DEBUG() << "AutoRestore: '" << preRestore
-                       << "' -> '" << postRestore << "'";
+          SKEY_DEBUG() << "AutoRestore: '" << preRestore << "' -> '"
+                       << postRestore << "'";
           if (useUinputMode()) {
             // Full replacement via uinput: include punctuation in
             // pending commit so it arrives AFTER BS events.
@@ -3503,28 +3517,26 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 static_cast<int>(utf8::length(postRestore));
             uinputDeleting_ = true;
             committedLen_ = uinputPendingFinalLen_;
-            uinputSafetyTimer_ =
-                engine_->instance()->eventLoop().addTimeEvent(
-                    CLOCK_MONOTONIC,
-                    now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec,
-                    0, [this](EventSourceTime *, uint64_t) {
-                      SKEY_DEBUG()
-                          << "AutoRestore: safety timeout, force commit";
-                      uinputSafetyTimer_.reset();
-                      uinputCommitTimer_.reset();
-                      std::string text = std::move(pendingUinputCommit_);
-                      pendingUinputCommit_.clear();
-                      expectedUinputBackspaces_ = 0;
-                      seenUinputBackspaces_ = 0;
-                      uinputDeleting_ = false;
-                      if (!text.empty())
-                        this->commitText(text);
-                      committedLen_ = uinputPendingFinalLen_;
-                      uinputPendingFinalLen_ = 0;
-                      if (!bufferedUinputKeys_.empty())
-                        replayBufferedUinputKeys();
-                      return true;
-                    });
+            uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+                CLOCK_MONOTONIC,
+                now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec, 0,
+                [this](EventSourceTime *, uint64_t) {
+                  SKEY_DEBUG() << "AutoRestore: safety timeout, force commit";
+                  uinputSafetyTimer_.reset();
+                  uinputCommitTimer_.reset();
+                  std::string text = std::move(pendingUinputCommit_);
+                  pendingUinputCommit_.clear();
+                  expectedUinputBackspaces_ = 0;
+                  seenUinputBackspaces_ = 0;
+                  uinputDeleting_ = false;
+                  if (!text.empty())
+                    this->commitText(text);
+                  committedLen_ = uinputPendingFinalLen_;
+                  uinputPendingFinalLen_ = 0;
+                  if (!bufferedUinputKeys_.empty())
+                    replayBufferedUinputKeys();
+                  return true;
+                });
           } else {
             surroundingCommit(preRestore, postRestore);
           }
@@ -3644,9 +3656,8 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
         // up within ~30ms).
         uint64_t waitUntil = now(CLOCK_MONOTONIC) + 30000;
         for (;;) {
-          if (!mon ||
-              !mon->a11yState(a11yText, a11ySelStart, a11ySelEnd,
-                              kA11ySnapshotMaxAgeUsec))
+          if (!mon || !mon->a11yState(a11yText, a11ySelStart, a11ySelEnd,
+                                      kA11ySnapshotMaxAgeUsec))
             break;
           a11yDecided = true; // fresh snapshot — decision authoritative
           if (a11yText.size() >= oldComposed.size() &&
@@ -3668,91 +3679,88 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
           viet_.autoRestore();
           std::string postRestore = viet_.getComposed();
           if (preRestore != postRestore) {
-            SKEY_DEBUG() << "AddrBar: autoRestore '" << preRestore
-                         << "' -> '" << postRestore << "'";
+            SKEY_DEBUG() << "AddrBar: autoRestore '" << preRestore << "' -> '"
+                         << postRestore << "'";
             commitText = postRestore;
           }
         }
         addrBarHadFirstWord_ = true;
-        addrBarDidFullReplace_ =
-            !(oldComposedIsAscii && oldComposedLen == 1);
+        addrBarDidFullReplace_ = !(oldComposedIsAscii && oldComposedLen == 1);
         addrBarKeepState_ = (oldComposedIsAscii && oldComposedLen == 1);
         SKEY_DEBUG() << "AddrBar: a11y word-at-start, fullReplace BS="
                      << totalBs << " commit='" << commitText << "'"
                      << (addrBarKeepState_ ? " [keep-state]" : "");
       } else if (!a11yDecided) {
-      // Only the first word after focus gets FullReplace (oldComposedLen
-      // + 1 BS to dismiss Chrome autocomplete).  Subsequent words use
-      // plain replacement (exact BS count, no Escape) — the forwarded
-      // matching-append keys already race on X11, and adding Escape or
-      // extra BS only makes the race condition worse.
-      //
-      // addrBarPrevCommittedLen_ is a snapshot of committedLen_ before the
-      // current replacement.  If < 0 (sentinel -1 from backspacing past
-      // all tracked text), tracking is lost — reset the first-word flag
-      // so FullReplace can fire again when safe.  Do NOT reset
-      // addrBarHadSpace_: a committed space means text may still exist
-      // before the cursor even when tracking is negative (e.g. "xin"
-      // survives after deleting "chào" from "xin chào ") — resetting it
-      // would let the next FullReplace delete the space and join words.
-      if (addrBarPrevCommittedLen_ < 0) {
-        addrBarHadFirstWord_ = false;
-      }
-      if (!addrBarHadFirstWord_ && oldComposedLen > 0 &&
-          !fullComposed.empty()) {
-        bool hasTextBefore = false;
-        const auto &surrounding = ic_->surroundingText();
-        if (surrounding.isValid()) {
-          hasTextBefore =
-              surrounding.cursor() >
-              static_cast<unsigned int>(oldComposedLen);
-        } else if (addrBarHadSpace_ || addrBarPrevCommittedLen_ > 0) {
-          // A committed space or tracked chars before this word mean
-          // text exists before the cursor → FullReplace's extra BS
-          // (oldComposedLen + 1) would delete it.  Only allow
-          // FullReplace when the snapshot is exactly 0 (bar was empty
-          // at word start, e.g. fresh focus).  A negative snapshot is
-          // ambiguous (tracking lost after backspacing) — treat it as
-          // unsafe rather than corrupt text before the cursor.
-          hasTextBefore = true;
-        } else if (addrBarContentUnknown_) {
-          // After a genuine cross-app focus change the bar usually
-          // holds the page URL.  Only trust FullReplace here if the
-          // caret jumped far LEFT since the word started — proof that
-          // typing replaced a selection (e.g. Ctrl+L select-all),
-          // leaving nothing before the cursor.  A stale/invalid rect
-          // (<= 0) is treated as unsafe.
-          static constexpr int kCaretJumpPx = 40;
-          int caretX = ic_->cursorRect().left();
-          bool jumpedLeft = addrBarWordStartCaretX_ > 0 && caretX > 0 &&
-                            caretX + kCaretJumpPx < addrBarWordStartCaretX_;
-          if (!jumpedLeft) {
-            hasTextBefore = true;
-          }
+        // Only the first word after focus gets FullReplace (oldComposedLen
+        // + 1 BS to dismiss Chrome autocomplete).  Subsequent words use
+        // plain replacement (exact BS count, no Escape) — the forwarded
+        // matching-append keys already race on X11, and adding Escape or
+        // extra BS only makes the race condition worse.
+        //
+        // addrBarPrevCommittedLen_ is a snapshot of committedLen_ before the
+        // current replacement.  If < 0 (sentinel -1 from backspacing past
+        // all tracked text), tracking is lost — reset the first-word flag
+        // so FullReplace can fire again when safe.  Do NOT reset
+        // addrBarHadSpace_: a committed space means text may still exist
+        // before the cursor even when tracking is negative (e.g. "xin"
+        // survives after deleting "chào" from "xin chào ") — resetting it
+        // would let the next FullReplace delete the space and join words.
+        if (addrBarPrevCommittedLen_ < 0) {
+          addrBarHadFirstWord_ = false;
         }
-        if (!hasTextBefore) {
-          totalBs = oldComposedLen + 1;
-          commitText = fullComposed;
-          {
-            std::string preRestore = commitText;
-            viet_.autoRestore();
-            std::string postRestore = viet_.getComposed();
-            if (preRestore != postRestore) {
-              SKEY_DEBUG() << "AddrBar: autoRestore '" << preRestore
-                           << "' -> '" << postRestore << "'";
-              commitText = postRestore;
+        if (!addrBarHadFirstWord_ && oldComposedLen > 0 &&
+            !fullComposed.empty()) {
+          bool hasTextBefore = false;
+          const auto &surrounding = ic_->surroundingText();
+          if (surrounding.isValid()) {
+            hasTextBefore = surrounding.cursor() >
+                            static_cast<unsigned int>(oldComposedLen);
+          } else if (addrBarHadSpace_ || addrBarPrevCommittedLen_ > 0) {
+            // A committed space or tracked chars before this word mean
+            // text exists before the cursor → FullReplace's extra BS
+            // (oldComposedLen + 1) would delete it.  Only allow
+            // FullReplace when the snapshot is exactly 0 (bar was empty
+            // at word start, e.g. fresh focus).  A negative snapshot is
+            // ambiguous (tracking lost after backspacing) — treat it as
+            // unsafe rather than corrupt text before the cursor.
+            hasTextBefore = true;
+          } else if (addrBarContentUnknown_) {
+            // After a genuine cross-app focus change the bar usually
+            // holds the page URL.  Only trust FullReplace here if the
+            // caret jumped far LEFT since the word started — proof that
+            // typing replaced a selection (e.g. Ctrl+L select-all),
+            // leaving nothing before the cursor.  A stale/invalid rect
+            // (<= 0) is treated as unsafe.
+            static constexpr int kCaretJumpPx = 40;
+            int caretX = ic_->cursorRect().left();
+            bool jumpedLeft = addrBarWordStartCaretX_ > 0 && caretX > 0 &&
+                              caretX + kCaretJumpPx < addrBarWordStartCaretX_;
+            if (!jumpedLeft) {
+              hasTextBefore = true;
             }
           }
-          addrBarHadFirstWord_ = true;
-          addrBarDidFullReplace_ =
-              !(oldComposedIsAscii && oldComposedLen == 1);
-          addrBarKeepState_ =
-              (oldComposedIsAscii && oldComposedLen == 1);
-          SKEY_DEBUG() << "AddrBar: first word, fullReplace BS=" << totalBs
-                       << " commit='" << commitText << "'"
-                       << (addrBarKeepState_ ? " [keep-state]" : "");
+          if (!hasTextBefore) {
+            totalBs = oldComposedLen + 1;
+            commitText = fullComposed;
+            {
+              std::string preRestore = commitText;
+              viet_.autoRestore();
+              std::string postRestore = viet_.getComposed();
+              if (preRestore != postRestore) {
+                SKEY_DEBUG() << "AddrBar: autoRestore '" << preRestore
+                             << "' -> '" << postRestore << "'";
+                commitText = postRestore;
+              }
+            }
+            addrBarHadFirstWord_ = true;
+            addrBarDidFullReplace_ =
+                !(oldComposedIsAscii && oldComposedLen == 1);
+            addrBarKeepState_ = (oldComposedIsAscii && oldComposedLen == 1);
+            SKEY_DEBUG() << "AddrBar: first word, fullReplace BS=" << totalBs
+                         << " commit='" << commitText << "'"
+                         << (addrBarKeepState_ ? " [keep-state]" : "");
+          }
         }
-      }
       }
     } else {
       // ── Wayland: First-word FullReplace + dynamic autocomplete ──
@@ -3766,8 +3774,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
         const auto &surrounding = ic_->surroundingText();
         if (surrounding.isValid()) {
           hasTextBefore =
-              surrounding.cursor() >
-              static_cast<unsigned int>(oldComposedLen);
+              surrounding.cursor() > static_cast<unsigned int>(oldComposedLen);
         }
         if (!hasTextBefore) {
           totalBs = oldComposedLen + 1;
@@ -3777,8 +3784,8 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
             viet_.autoRestore();
             std::string postRestore = viet_.getComposed();
             if (preRestore != postRestore) {
-              SKEY_DEBUG() << "AddrBar: autoRestore '" << preRestore
-                           << "' -> '" << postRestore << "'";
+              SKEY_DEBUG() << "AddrBar: autoRestore '" << preRestore << "' -> '"
+                           << postRestore << "'";
               commitText = postRestore;
             }
           }
@@ -3788,8 +3795,8 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
         }
       } else if (isAutofillCertain()) {
         ++totalBs;
-        SKEY_DEBUG() << "AddrBar: autofill detected, +1 BS (total="
-                     << totalBs << ")";
+        SKEY_DEBUG() << "AddrBar: autofill detected, +1 BS (total=" << totalBs
+                     << ")";
       }
     }
 
@@ -3800,8 +3807,8 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
     // passes triggerKeySym=0 here; we must not overwrite that with 0.
     if (triggerKeySym != 0) {
       addrBarLastTriggerKey_ = triggerKeySym;
-      addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) +
-                                (isWayland() ? 100000 : 200000);
+      addrBarTriggerDeadline_ =
+          now(CLOCK_MONOTONIC) + (isWayland() ? 100000 : 200000);
     }
     // Sync BS handler uses this to restore committedLen_ after BS
     // pass-through decrements it (same as general uinput path).
@@ -4045,8 +4052,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         if (inChromiumAddressBar()) {
           committedLen_ = newLen;
           scheduleAddrBarReplacement(
-              deleteLen, addedPart,
-              static_cast<int>(utf8::length(oldComposed)),
+              deleteLen, addedPart, static_cast<int>(utf8::length(oldComposed)),
               0, newComposed, false, oldComposed);
           return;
         }
@@ -4182,7 +4188,8 @@ void SKeyState::surroundingBackspace() {
       if (noteSurroundingFailure()) {
         surroundingTextFailed_ = true;
         modeCacheValid_ = false;
-        SKEY_DEBUG() << "SurrBS: surrounding text invalid, downgrading to uinput";
+        SKEY_DEBUG()
+            << "SurrBS: surrounding text invalid, downgrading to uinput";
       } else {
         SKEY_DEBUG() << "SurrBS: surrounding text invalid, retrying";
       }
@@ -4214,15 +4221,18 @@ void SKeyState::loadUserDict() {
   std::string userDir = userPkgDataDir();
   std::string path = userDir + "/skey/user-dict.txt";
   std::ifstream in(path);
-  if (!in.is_open()) return;
+  if (!in.is_open())
+    return;
   std::string line;
   int count = 0;
   while (std::getline(in, line)) {
     size_t b = line.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos || line[b] == '#') continue;
+    if (b == std::string::npos || line[b] == '#')
+      continue;
     size_t e = line.find_last_not_of(" \t\r\n");
     std::string word = line.substr(b, e - b + 1);
-    if (word.empty()) continue;
+    if (word.empty())
+      continue;
     viet_.addWord(word);
     ++count;
   }
