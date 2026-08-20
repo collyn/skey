@@ -3590,7 +3590,11 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             break;
           mon->waitForSnapshotUpdate(remaining);
         }
-        if (mon && txt.find(comp) == std::string::npos) {
+        // An EMPTY snapshot is not desync evidence — Chrome on some
+        // distros (Fedora) returns an empty omnibox text while the word
+        // is clearly on screen; resetting on it breaks every retype
+        // after a backspace.
+        if (mon && !txt.empty() && txt.find(comp) == std::string::npos) {
           SKEY_DEBUG() << "AddrBar: desync — bar text '" << txt
                        << "' lacks composed '" << comp << "', resetting";
           viet_.reset();
