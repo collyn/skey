@@ -1913,6 +1913,24 @@ void SKeyState::activate() {
                    << " firstWord=" << addrBarIsFirstWord_
                    << " hadSpace=" << addrBarHadSpace_ << " composed='"
                    << viet_.getComposed() << "'";
+      // X11 only: Chrome's focus churn can fire this cycle on a FRESH
+      // omnibox session with nothing being composed.  Preserving the
+      // previous session's first-word flags then blocks the FullReplace
+      // autofill dismissal for the first word ("aâ" corruption on
+      // Fedora).  With an empty composition there is nothing to
+      // preserve — reset the first-word tracking so the next word gets
+      // FullReplace.  Wayland keeps the old behavior: its autofill
+      // handling goes through isAutofillCertain() (surrounding text),
+      // not these flags, and resetting them mid-session broke the
+      // first-word retype flow there.
+      if (!isWayland() && viet_.getRawInput().empty()) {
+        addrBarIsFirstWord_ = true;
+        addrBarHadSpace_ = false;
+        addrBarHadFirstWord_ = false;
+        addrBarDidFullReplace_ = false;
+        addrBarKeepState_ = false;
+        addrBarPrevCommittedLen_ = 0;
+      }
     }
   }
   clearLastWord();
