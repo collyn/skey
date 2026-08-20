@@ -60,6 +60,13 @@ public:
         return passwordFocused_.load(std::memory_order_relaxed);
     }
 
+    /// PID of the process serving the last focused accessible (-1 when
+    /// unknown).  Captured on the monitor thread during focus events so
+    /// the engine can run pid-targeted /proc checks instead of full scans.
+    int focusProcessId() const {
+        return focusProcessId_.load(std::memory_order_relaxed);
+    }
+
     /// True when the last focus snapshot was a real text-entry element
     /// (role TEXT / ENTRY / DOCUMENT_TEXT).  A Chromium tab whose focus is
     /// NOT a text entry (clicking a Google Sheets cell focuses the
@@ -121,6 +128,7 @@ private:
     std::atomic<bool> focusInWebDoc_{false};
     std::atomic<int> focusRole_{0};
     std::atomic<bool> focusEditable_{false};
+    std::atomic<int> focusProcessId_{-1};
     std::atomic<bool> focusMultiline_{false};
     std::atomic<bool> focusSingleLine_{false};
     std::atomic<bool> textEntryFocused_{false};

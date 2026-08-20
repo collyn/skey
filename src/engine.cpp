@@ -495,13 +495,16 @@ static bool isChromiumBasedApp(const std::string &prog) {
   return false;
 }
 
-static bool isTerminalApp(const std::string &prog) {
+static bool isTerminalAppName(const std::string &prog) {
   // Terminals have their own internal buffer — SurroundingText API
   // doesn't sync correctly, so Uinput raw key pass-through works better.
   // Electron terminals (Tabby, Hyper) advertise the SurroundingText
   // capability but apply delete_surrounding_text unreliably (deletes
   // dropped or reordered against commitString), corrupting every toned
   // word — route them to Uinput like native terminals.
+  //
+  // This static list is only the fast path; unknown terminals are
+  // auto-detected by the shell-descendant scan (processHasShellChild).
   static const char *const patterns[] = {
       "konsole",        "org.kde.konsole",
       "alacritty",      "kitty",
@@ -519,6 +522,188 @@ static bool isTerminalApp(const std::string &prog) {
     }
   }
   return false;
+}
+
+// Check a KNOWN pid for Chromium markers: the exe path (or any ppid
+// ancestor's exe) contains electron/chrome/chromium, or the exe's
+// directory ships chrome-sandbox / chrome_crashpad_handler (renamed
+// Electron shells like antigravity).  Bounded to 10 generations.
+static bool processHasChromiumMarkers(pid_t pid) {
+  int cur = static_cast<int>(pid);
+  for (int depth = 0; depth < 10; ++depth) {
+    std::string checkPid = std::to_string(cur);
+    char exeBuf[PATH_MAX];
+    std::string exePath = "/proc/" + checkPid + "/exe";
+    ssize_t len = readlink(exePath.c_str(), exeBuf, sizeof(exeBuf) - 1);
+    if (len > 0) {
+      exeBuf[len] = '\0';
+      std::string lower(exeBuf);
+      std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+      if (lower.find("electron") != std::string::npos ||
+          lower.find("chrome") != std::string::npos ||
+          lower.find("chromium") != std::string::npos) {
+        return true;
+      }
+      size_t lastSlash = lower.rfind('/');
+      if (lastSlash != std::string::npos) {
+        std::string exeDir = lower.substr(0, lastSlash);
+        if (access((exeDir + "/chrome-sandbox").c_str(), F_OK) == 0 ||
+            access((exeDir + "/chrome_crashpad_handler").c_str(), F_OK) ==
+                0) {
+          return true;
+        }
+      }
+    }
+    std::string statPath = "/proc/" + checkPid + "/stat";
+    std::ifstream statFile(statPath);
+    if (!statFile.is_open())
+      break;
+    std::string statLine;
+    std::getline(statFile, statLine);
+    size_t rparen = statLine.rfind(')');
+    if (rparen == std::string::npos)
+      break;
+    std::istringstream iss(statLine.substr(rparen + 2));
+    std::string state;
+    int ppid = 0;
+    iss >> state >> ppid;
+    if (ppid <= 1 || ppid == cur)
+      break;
+    cur = ppid;
+  }
+  return false;
+}
+
+// Check a KNOWN pid for a shell in its descendant chain (terminals spawn
+// bash/zsh/fish/... as children).  BFS over /proc/<pid>/task/<pid>/children
+// with a depth bound — no full /proc scan.
+static bool processHasShellChildPid(pid_t pid) {
+  static const char *const shells[] = {"bash", "zsh", "fish", "sh",
+                                       "dash", "ksh",  "tcsh", "csh"};
+  std::vector<pid_t> frontier;
+  frontier.push_back(pid);
+  for (int depth = 0; depth < 4 && !frontier.empty(); ++depth) {
+    std::vector<pid_t> next;
+    for (pid_t p : frontier) {
+      std::string childrenPath = "/proc/" + std::to_string(p) + "/task/" +
+                                 std::to_string(p) + "/children";
+      std::ifstream childrenFile(childrenPath);
+      std::string line;
+      if (!childrenFile.is_open() || !std::getline(childrenFile, line))
+        continue;
+      std::istringstream iss(line);
+      pid_t child;
+      while (iss >> child) {
+        std::string commPath = "/proc/" + std::to_string(child) + "/comm";
+        std::ifstream commFile(commPath);
+        std::string comm;
+        if (commFile.is_open() && std::getline(commFile, comm)) {
+          for (const char *s : shells) {
+            if (comm == s)
+              return true;
+          }
+        }
+        next.push_back(child);
+      }
+    }
+    frontier = std::move(next);
+  }
+  return false;
+}
+
+// Check a KNOWN pid for a Snap-packaged binary.
+static bool processIsSnapPid(pid_t pid) {
+  char exeBuf[PATH_MAX];
+  std::string exePath = "/proc/" + std::to_string(pid) + "/exe";
+  ssize_t len = readlink(exePath.c_str(), exeBuf, sizeof(exeBuf) - 1);
+  if (len > 0) {
+    exeBuf[len] = '\0';
+    if (std::string(exeBuf).find("/snap/") != std::string::npos)
+      return true;
+  }
+  std::ifstream mapsFile("/proc/" + std::to_string(pid) + "/maps");
+  std::string line;
+  if (mapsFile.is_open() && std::getline(mapsFile, line) &&
+      line.find("/snap/") != std::string::npos) {
+    return true;
+  }
+  return false;
+}
+
+// Auto-detect terminals by their hosted shell: a terminal emulator
+// spawns a shell (bash/zsh/fish/...) as a descendant process, which
+// ordinary GUI apps never do.  Scans /proc for a process whose comm
+// matches `prog` and that has a shell somewhere in its descendant chain.
+static bool processHasShellChild(const std::string &prog) {
+  if (prog.empty()) {
+    return false;
+  }
+  static const char *const shells[] = {"bash", "zsh", "fish", "sh",
+                                       "dash", "ksh",  "tcsh", "csh"};
+  DIR *dir = opendir("/proc");
+  if (!dir) {
+    return false;
+  }
+  bool found = false;
+  struct dirent *entry;
+  while ((entry = readdir(dir)) != nullptr) {
+    if (entry->d_type != DT_DIR || !isdigit(entry->d_name[0]))
+      continue;
+    pid_t child = static_cast<pid_t>(atoi(entry->d_name));
+    // Is this process a descendant of a process whose comm matches prog?
+    // Follow ppid links up to 16 generations via /proc/<pid>/stat.
+    pid_t cur = child;
+    bool isDescendant = false;
+    for (int depth = 0; depth < 16 && cur > 1; ++depth) {
+      std::string statPath = "/proc/" + std::to_string(cur) + "/stat";
+      std::ifstream statFile(statPath);
+      if (!statFile.is_open())
+        break;
+      std::string statLine;
+      std::getline(statFile, statLine);
+      // comm may contain spaces/parens — the ppid is the field right
+      // after the closing paren.
+      size_t rp = statLine.rfind(')');
+      if (rp == std::string::npos)
+        break;
+      std::istringstream rest(statLine.substr(rp + 2));
+      char state = 0;
+      rest >> state;
+      pid_t ppid = 0;
+      rest >> ppid;
+      if (ppid <= 0)
+        break;
+      // Compare the ancestor's comm with prog (15-char truncation aware).
+      std::string commPath = "/proc/" + std::to_string(ppid) + "/comm";
+      std::ifstream commFile(commPath);
+      std::string comm;
+      if (commFile.is_open() && std::getline(commFile, comm) &&
+          (comm == prog || prog.compare(0, 15, comm) == 0 ||
+           comm.compare(0, 15, prog) == 0)) {
+        isDescendant = true;
+        break;
+      }
+      cur = ppid;
+    }
+    if (!isDescendant)
+      continue;
+    // Is the descendant itself a shell?
+    std::string commPath = "/proc/" + std::to_string(child) + "/comm";
+    std::ifstream commFile(commPath);
+    std::string comm;
+    if (commFile.is_open() && std::getline(commFile, comm)) {
+      for (const char *s : shells) {
+        if (comm == s) {
+          found = true;
+          break;
+        }
+      }
+    }
+    if (found)
+      break;
+  }
+  closedir(dir);
+  return found;
 }
 
 /// Detect lock screen / login screen programs by name.
@@ -1341,7 +1526,13 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   // Terminal apps (Konsole, Alacritty, etc.) have their own internal
   // buffer — SurroundingText API doesn't sync correctly, so Uinput
   // raw key pass-through works better.
-  if (caps.test(CapabilityFlag::Terminal) || isTerminalApp(appProgram())) {
+  // Shell-scan hits only count for non-Chromium apps: Chromium-family
+  // apps with shell children are IDEs with embedded terminals (VS Code,
+  // antigravity), not terminals — known Electron terminals (Tabby, Hyper)
+  // are already on the name list.
+  if (caps.test(CapabilityFlag::Terminal) ||
+      (isTerminalAppCached() &&
+       (!isChromiumCached() || isTerminalAppName(appProgram())))) {
     SKEY_DEBUG() << "Auto: terminal app → Uinput";
     return SKeyOutputMode::Uinput;
   }
@@ -1459,11 +1650,71 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   return SKeyOutputMode::SurroundingText;
 }
 
+int SKeyState::a11yAppPid() const {
+  auto *mon = engine_->a11yMonitor();
+  if (!mon || !mon->isFocusSnapshotFresh(5000000)) {
+    return -1;
+  }
+  int pid = mon->focusProcessId();
+  if (pid <= 1) {
+    return -1;
+  }
+  const std::string &prog = appProgram();
+  if (prog.empty()) {
+    return -1;
+  }
+  std::ifstream commFile("/proc/" + std::to_string(pid) + "/comm");
+  std::string comm;
+  if (!commFile.is_open() || !std::getline(commFile, comm)) {
+    return -1;
+  }
+  if (!comm.empty() && comm.back() == '\n') {
+    comm.pop_back();
+  }
+  if (comm != prog && prog.compare(0, 15, comm) != 0 &&
+      comm.compare(0, 15, prog) != 0) {
+    return -1; // the focused accessible belongs to a different app
+  }
+  return pid;
+}
+
 bool SKeyState::isChromiumCached() const {
   if (cachedIsChromium_ < 0) {
-    cachedIsChromium_ = isChromiumBasedApp(appProgram()) ? 1 : 0;
+    const std::string &prog = appProgram();
+    bool chromium = isChromiumBrowser(prog) ||
+                    prog.find("electron") != std::string::npos;
+    if (!chromium) {
+      int pid = a11yAppPid();
+      chromium = pid > 0 ? processHasChromiumMarkers(pid)
+                         : isChromiumBasedApp(prog);
+    }
+    cachedIsChromium_ = chromium ? 1 : 0;
   }
   return cachedIsChromium_ == 1;
+}
+
+bool SKeyState::isTerminalAppCached() const {
+  if (cachedIsTerminalApp_ >= 0) {
+    return cachedIsTerminalApp_ == 1;
+  }
+  const std::string &prog = appProgram();
+  // Program-level cache: the verdict is a property of the program, so a
+  // /proc scan happens at most once per program per session — subsequent
+  // focuses of the same app are O(1).
+  if (prog == engine_->terminalCachedProgram_ &&
+      engine_->terminalCachedVerdict_ >= 0) {
+    cachedIsTerminalApp_ = engine_->terminalCachedVerdict_;
+    return cachedIsTerminalApp_ == 1;
+  }
+  bool term = isTerminalAppName(prog);
+  if (!term) {
+    int pid = a11yAppPid();
+    term = pid > 0 ? processHasShellChildPid(pid) : processHasShellChild(prog);
+  }
+  cachedIsTerminalApp_ = term ? 1 : 0;
+  engine_->terminalCachedProgram_ = prog;
+  engine_->terminalCachedVerdict_ = cachedIsTerminalApp_;
+  return term;
 }
 
 bool SKeyState::isFirefoxOrSnap() const {
@@ -1476,9 +1727,14 @@ bool SKeyState::isFirefoxOrSnap() const {
     cachedIsFirefoxOrSnap_ = 1;
     return true;
   }
-  // Detect Snap-packaged apps: scan /proc for the process and check
-  // whether its binary lives under /snap/.
+  // Detect Snap-packaged apps: prefer the a11y-reported PID (one readlink,
+  // no scan) and fall back to the full /proc scan.
   if (!prog.empty()) {
+    int pid = a11yAppPid();
+    if (pid > 0) {
+      cachedIsFirefoxOrSnap_ = processIsSnapPid(pid) ? 1 : 0;
+      return cachedIsFirefoxOrSnap_ == 1;
+    }
     DIR *dir = opendir("/proc");
     if (dir) {
       struct dirent *entry;
@@ -1531,7 +1787,7 @@ bool SKeyState::isFirefoxOrSnap() const {
 }
 
 bool SKeyState::waylandNativeSurroundingProbe() const {
-  return isWayland() && !isChromiumCached() && !isTerminalApp(appProgram());
+  return isWayland() && !isChromiumCached() && !isTerminalAppCached();
 }
 
 bool SKeyState::useNativeSurroundingApi() const {
@@ -1694,6 +1950,7 @@ void SKeyState::activate() {
   modeCacheValid_ = false;
   cachedIsChromium_ = -1;
   cachedIsFirefoxOrSnap_ = -1;
+  cachedIsTerminalApp_ = -1;
   // A bare-caps decision belongs to the previous focus session.  A stale
   // pending/deadline must not leak into the new window — detectAutoMode
   // would otherwise lock sticky instantly on the first keystroke if the old
@@ -1994,8 +2251,15 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
                                         kWaylandNativeCommitDelayPerBsUsec);
   }
 
-  bool slowMode = isChromiumCached() && !isChromiumBrowser(appProgram()) &&
-                  !isTerminalApp(appProgram()) &&
+  // Terminal exclusion uses the NAME list + cap bit only: the shell-scan
+  // would flag IDEs with embedded terminals (antigravity, VS Code) as
+  // terminals and drop them out of slow mode.
+  // Wayland only: on X11 the sync anchor is a true barrier (X server
+  // serializes key delivery), so the fast adaptive timing is already
+  // safe and the 20ms slow-mode sleep would only add latency.
+  bool slowMode = isWayland() && isChromiumCached() &&
+                  !isChromiumBrowser(appProgram()) &&
+                  !isTerminalAppName(appProgram()) &&
                   !ic_->capabilityFlags().test(CapabilityFlag::Terminal) &&
                   !inChromiumAddressBar();
   if (slowMode) {
@@ -2019,7 +2283,6 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
       const auto &surr = ic_->surroundingText();
       if (surr.isValid() && static_cast<int>(surr.cursor()) == committedLen_)
         break;
-      SKEY_DEBUG() << "Uinput: slow-mode verification retry " << (retry + 1);
       usleep(kUinputSlowModeRetryIntervalUsec);
     }
   }
@@ -2288,6 +2551,7 @@ void SKeyState::reset() {
   modeCacheValid_ = false;
   cachedIsChromium_ = -1;
   cachedIsFirefoxOrSnap_ = -1;
+  cachedIsTerminalApp_ = -1;
   clearLastWord();
   clearUI();
 }

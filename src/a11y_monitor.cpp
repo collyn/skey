@@ -140,6 +140,30 @@ static DBusConnection *connectAtspiBus() {
 // AT-SPI2 accessible queries
 // ---------------------------------------------------------------------------
 
+static int queryProcessId(DBusConnection *bus, const char *sender,
+                          const char *path) {
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *msg = dbus_message_new_method_call(
+        sender, path, "org.a11y.atspi.Accessible", "GetProcessId");
+    if (!msg) return -1;
+
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
+        bus, msg, 500, &err);
+    dbus_message_unref(msg);
+
+    int pid = -1;
+    if (reply && !dbus_error_is_set(&err)) {
+        dbus_int32_t p = -1;
+        if (dbus_message_get_args(reply, &err, DBUS_TYPE_INT32, &p,
+                                  DBUS_TYPE_INVALID))
+            pid = static_cast<int>(p);
+        dbus_message_unref(reply);
+    }
+    dbus_error_free(&err);
+    return pid;
+}
+
 static int queryRole(DBusConnection *bus, const char *sender,
                      const char *path) {
     DBusError err;
@@ -164,7 +188,7 @@ static int queryRole(DBusConnection *bus, const char *sender,
     return role;
 }
 
-// ── TEMP PROBE: read the accessible text of the focused entry ──
+// ── Read the accessible text of the focused entry (snapshot polling) ──
 static std::string queryText(DBusConnection *bus, const char *sender,
                              const char *path) {
     DBusError err;
@@ -188,34 +212,9 @@ static std::string queryText(DBusConnection *bus, const char *sender,
             if (s) text = s;
         }
         dbus_message_unref(reply);
-    } else {
-        if (dbus_error_is_set(&err))
-            A11Y_LOG("TEXT PROBE: GetText failed: %s", err.message);
     }
     dbus_error_free(&err);
     return text;
-}
-
-static int queryCaret(DBusConnection *bus, const char *sender,
-                      const char *path) {
-    DBusError err;
-    dbus_error_init(&err);
-    DBusMessage *msg = dbus_message_new_method_call(
-        sender, path, "org.a11y.atspi.Text", "GetCaretOffset");
-    if (!msg) return -1;
-    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
-        bus, msg, 500, &err);
-    dbus_message_unref(msg);
-    int caret = -1;
-    if (reply && !dbus_error_is_set(&err)) {
-        dbus_int32_t c = -1;
-        if (dbus_message_get_args(reply, &err, DBUS_TYPE_INT32, &c,
-                                  DBUS_TYPE_INVALID))
-            caret = static_cast<int>(c);
-        dbus_message_unref(reply);
-    }
-    dbus_error_free(&err);
-    return caret;
 }
 
 static bool querySelection(DBusConnection *bus, const char *sender,
@@ -800,6 +799,9 @@ void A11yMonitor::threadFunc() {
                 const char *path = dbus_message_get_path(msg);
                 if (sender && path) {
                     int role = queryRole(bus, sender, path);
+                    int procId = queryProcessId(bus, sender, path);
+                    focusProcessId_.store(procId,
+                                          std::memory_order_relaxed);
                     bool hasDocWeb = hasDocumentWebAncestor(
                         bus, sender, path);
                     bool isUI = !hasDocWeb;
@@ -844,23 +846,17 @@ void A11yMonitor::threadFunc() {
                             1000),
                         std::memory_order_relaxed);
                     A11Y_LOG("Focus: webDoc=%d role=%d(%s) editable=%d "
-                             "multiline=%d singleLine=%d states=[%s] path=%s",
+                             "multiline=%d singleLine=%d states=[%s] "
+                             "pid=%d path=%s",
                              hasDocWeb, role, roleName(role), editable,
-                             multiline, singleLine, states.c_str(), path);
-                    // TEMP PROBE: dump accessible text + caret of text
-                    // entries to verify omnibox content is readable.
-                    // Chrome does NOT set the "editable" state on the
-                    // omnibox entry — probe by role instead.
+                             multiline, singleLine, states.c_str(), procId,
+                             path);
+                    // Track the focused text entry so the engine can
+                    // query its content directly at replacement time.
                     static constexpr int ROLE_ENTRY = 79;
                     static constexpr int ROLE_TEXT = 61;
                     if (role == ROLE_ENTRY || role == ROLE_TEXT ||
                         role == ROLE_PASSWORD_TEXT) {
-                        std::string txt = queryText(bus, sender, path);
-                        int caret = queryCaret(bus, sender, path);
-                        A11Y_LOG("TEXT PROBE: text='%s' caret=%d",
-                                 txt.c_str(), caret);
-                        // Track the focused text entry so the engine can
-                        // query its content directly at replacement time.
                         {
                             std::lock_guard<std::mutex> lock(
                                 focusEntryMutex_);

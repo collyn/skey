@@ -62,6 +62,14 @@ private:
     const struct UinputTiming& uinputTiming() const;
     bool useUinputMode() const;
     bool isChromiumCached() const;
+    /// The a11y-reported PID of the current app, when trustworthy: the
+    /// focus snapshot is fresh and the pid's comm matches appProgram().
+    /// -1 otherwise.  Lets detectors read /proc/<pid>/... directly
+    /// instead of scanning the whole process table.
+    int a11yAppPid() const;
+    /// Terminal detection: static name list plus a /proc shell-descendant
+    /// scan for terminals not on the list.  Cached per IC.
+    bool isTerminalAppCached() const;
     /// Per-app identity key.  The IBus frontend reports an empty program
     /// name for apps that only speak the ibus protocol (AppImages, some
     /// Electron apps) — resolve the real name from the focused X11
@@ -150,6 +158,7 @@ private:
     mutable bool modeCacheValid_ = false;
     mutable SKeyOutputMode cachedMode_ = SKeyOutputMode::SurroundingText;
     mutable int cachedIsChromium_ = -1;  // tristate: -1=unset, 0=false, 1=true
+    mutable int cachedIsTerminalApp_ = -1; // tristate: name list + shell scan
     mutable int cachedIsFirefoxOrSnap_ = -1;
     // Sticky Uinput for Chromium-family apps that initially report bare caps
     // (0x72, no content hints).  Caps may later gain hints after the app
@@ -353,6 +362,10 @@ private:
     // Only applies when the new IC lacks "strong" content hints (Alpha,
     // SpellCheck, etc.) — real editors bypass this sticky flag.
     std::string chromiumBareCapsProgram_;
+    // Program-level terminal verdict cache — the /proc shell scan runs
+    // once per program, not once per focus (see isTerminalAppCached).
+    std::string terminalCachedProgram_;
+    int terminalCachedVerdict_ = -1; // -1 = unset
     bool chromiumHadBareCaps_ = false;
 
     // AT-SPI2 accessibility monitor for address bar detection
