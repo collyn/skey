@@ -70,15 +70,32 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache /usr/share/icons/breeze-dark 2>/dev/null || true
 fi
 
-# Run skey-setup and start the optional uinput server for the user who invoked sudo.
-if [ -n "$SUDO_USER" ]; then
-    su - "$SUDO_USER" -c "skey-setup" 2>/dev/null || true
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl daemon-reload 2>/dev/null || true
-        systemctl enable --now "fcitx5-skey-uinput-server@${SUDO_USER}.service" 2>/dev/null || true
-    fi
-elif command -v systemctl >/dev/null 2>&1; then
+# Mirror of debian/postinst's system-integration steps (this script stages
+# its own maintainer scripts instead of using debian/): daemon-reload picks
+# up the new unit, sysusers creates the unprivileged skey_uinput user the
+# server runs as, udev reload applies the /dev/uinput ACL rule, and the
+# service is enabled+started as ROOT before skey-setup runs — so the user
+# never hits the unscopable manage-unit-files polkit prompt.
+if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload 2>/dev/null || true
+fi
+if command -v systemd-sysusers >/dev/null 2>&1; then
+    systemd-sysusers /usr/lib/sysusers.d/skey-uinput.conf 2>/dev/null || true
+elif ! getent passwd skey_uinput >/dev/null 2>&1 && command -v useradd >/dev/null 2>&1; then
+    useradd --system --no-create-home --user-group --shell /usr/sbin/nologin skey_uinput 2>/dev/null || true
+fi
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules 2>/dev/null || true
+    udevadm trigger --subsystem-match=misc 2>/dev/null || true
+fi
+if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+    systemctl enable --now "fcitx5-skey-uinput-server@${SUDO_USER}.service" 2>/dev/null || true
+    su - "$SUDO_USER" -c "skey-setup" 2>/dev/null || true
+else
+    # Installed from a root session (no SUDO_USER): restart any running
+    # instance so the new binary/unit takes effect (the self-healing
+    # ExecStartPre recreates skey_uinput if needed).
+    systemctl try-restart "fcitx5-skey-uinput-server@*.service" 2>/dev/null || true
 fi
 POSTINST
 chmod 755 "$PKG_DIR/DEBIAN/postinst"
@@ -116,6 +133,25 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     fi
     if command -v systemctl >/dev/null 2>&1; then
         systemctl daemon-reload 2>/dev/null || true
+    fi
+fi
+if [ "$1" = "purge" ]; then
+    # Remove the dedicated sysuser (sysusers only creates, never deletes).
+    # Order: drop the /dev/uinput ACL entry first (references the name),
+    # evict group members, then userdel + groupdel safety net.
+    if command -v setfacl >/dev/null 2>&1 && [ -c /dev/uinput ]; then
+        setfacl -x u:skey_uinput /dev/uinput 2>/dev/null || true
+    fi
+    if command -v gpasswd >/dev/null 2>&1 && getent group skey_uinput >/dev/null 2>&1; then
+        for member in $(getent group skey_uinput | cut -d: -f4 | tr ',' ' '); do
+            [ -n "$member" ] && gpasswd -d "$member" skey_uinput 2>/dev/null || true
+        done
+    fi
+    if getent passwd skey_uinput >/dev/null 2>&1; then
+        userdel skey_uinput 2>/dev/null || true
+    fi
+    if getent group skey_uinput >/dev/null 2>&1; then
+        groupdel skey_uinput 2>/dev/null || true
     fi
 fi
 POSTRM
