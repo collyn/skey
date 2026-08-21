@@ -602,6 +602,12 @@ if command -v systemctl >/dev/null 2>&1; then
         # the request, which hid a broken rule for weeks.
         if systemctl restart "$UINPUT_SERVICE" 2>/dev/null; then
             echo "✓ Uinput server restarted: $UINPUT_SERVICE"
+        elif systemctl is-active "$UINPUT_SERVICE" >/dev/null 2>&1; then
+            # Restart was denied (e.g. skey-setup runs inside a postinst
+            # systemd-run/su context where polkit has no seat session) but
+            # the service is up — typically the packaging layer already
+            # restarted it as root.  Nothing is broken; don't alarm.
+            echo "✓ Uinput server already running: $UINPUT_SERVICE"
         else
             echo "⚠ Could not restart $UINPUT_SERVICE"
             echo "  Run: sudo systemctl restart $UINPUT_SERVICE"
