@@ -350,7 +350,7 @@ SKey đi kèm ứng dụng **fcitx5-skey-settings** (Qt6) để cấu hình tr�
 
 - **Tab Chung**: tất cả tùy chọn gõ (phương thức, chế độ output, bảng mã, dấu thanh...)
 - **Tab Ứng dụng**: cấu hình chế độ gõ riêng cho từng ứng dụng (Auto / Uinput / Surrounding Text / Preedit / Excluded)
-- **Tab Info**: phiên bản, kiểm tra cập nhật, **nút khởi động lại Fcitx5**
+- **Tab Info**: phiên bản, kiểm tra cập nhật, **kênh cập nhật (Stable/Dev)**, **nút khởi động lại Fcitx5**
 
 Mở từ menu ứng dụng hoặc terminal: `fcitx5-skey-settings`
 
@@ -367,6 +367,26 @@ SKey hỗ trợ **cập nhật tự động ngay trong giao diện** — không 
 Toàn bộ quy trình diễn ra trong GUI — người dùng chỉ cần bấm 2 nút: "Kiểm tra cập nhật" → "Cập nhật ngay". Sau khi cập nhật, Fcitx5 được restart tự động và sẵn sàng sử dụng ngay.
 
 > 💡 **Sau khi update**, nếu gặp lỗi (không gõ được, mất biểu tượng...), chạy `skey-setup` trong terminal. Trên Wayland, kiểm tra lại Virtual Keyboard vẫn đang chọn **Fcitx 5**.
+
+### Kênh phát hành: Stable / Dev
+
+Tab Info có combo **"Kênh cập nhật"** với 2 lựa chọn:
+
+- **Ổn định (Stable)** — mặc định. Kiểm tra bản phát hành chính thức (`releases/latest` trên GitHub). Các bản Dev dạng prerelease không bao giờ xuất hiện ở kênh này.
+- **Thử nghiệm (Dev)** — build tự động từ nhánh `dev`, mỗi lần push lên `dev` là một build mới (version dạng `0.7.5~dev.123`). Có thể chưa ổn định. Chỉ giữ **3 bản Dev mới nhất** trên GitHub; bản cũ bị xóa tự động.
+
+Quy tắc khi check update:
+
+| Bản đang dùng | Kênh đang chọn | Kết quả |
+|---|---|---|
+| Stable | Stable | Mời bản stable mới hơn (như cũ) |
+| Stable | Dev | Mời bản Dev mới hơn (chuyển sang Dev) |
+| Dev | Dev | Mời bản Dev mới hơn (so theo số build) |
+| Dev | Stable | Mời khi stable ra bản **mới hơn** base của Dev; nếu stable bằng/thấp hơn sẽ báo "đang dùng bản Dev mới hơn Stable" (không tự hạ cấp) |
+
+Lựa chọn kênh được lưu trong `skey.conf` (`UpdateChannel=`), có hiệu lực ngay, không cần khởi động lại.
+
+**Dành cho maintainer — cắt bản stable mới:** merge `dev` → `main`, bump `project(fcitx5-skey VERSION ...)` trong `CMakeLists.txt`, push tag `vX.Y.Z` (workflow tự build + tạo release + publish repo gh-pages). Luôn bump version trên nhánh `dev` ≥ main để build Dev không bao giờ thấp hơn bản stable đã phát hành.
 
 ### Chế độ Auto (mặc định)
 

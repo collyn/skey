@@ -15,6 +15,9 @@ std::string appModesPath();
 std::string macroPath();
 std::string fcitx5ConfigPath();
 
+/// Update channel for the in-GUI updater (persisted as "Stable" / "Dev").
+enum class UpdateChannel { Stable = 0, Dev = 1 };
+
 /// Main Skey configuration (maps to skey.conf)
 struct SKeyConfig {
     std::string inputMethod  = "Telex";       // "Telex", "VNI"
@@ -35,6 +38,7 @@ struct SKeyConfig {
     std::string iconTheme    = "default";  // preset name ("default"/"v-blue"/"v-dark")
                                            // or custom filename ("my-logo.png")
     std::string customIconPath = "";       // kept for backward compat; not used by resolver
+    UpdateChannel updateChannel = UpdateChannel::Stable;  // "Stable", "Dev"
 };
 
 /// Per-application mode overrides (maps to skey-app-modes.conf)

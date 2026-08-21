@@ -3,8 +3,8 @@
 #include "updater.h"
 
 #include <QApplication>
+#include <QComboBox>
 #include <QDateTime>
-#include <QDesktopServices>
 #include <QDir>
 #include <QFileDialog>
 #include <QFrame>
@@ -16,6 +16,7 @@
 #include <QProcess>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
@@ -29,6 +30,7 @@ static const char *kGitHubUrl = "https://github.com/collyn/skey";
 
 InfoTab::InfoTab(QWidget *parent) : QWidget(parent) {
   updater_ = new Updater(SKEY_VERSION, this);
+  updater_->setChannel(readSkeyConfig().updateChannel);
 
   // Connect updater signals
   connect(updater_, &Updater::updateAvailable, this,
@@ -85,16 +87,9 @@ void InfoTab::setupUI() {
   }
   mainLayout->addWidget(iconLabel, 0, Qt::AlignHCenter);
 
-  // ── Description ──
-  auto *descLabel =
-      new QLabel(QString::fromUtf8("Skey - Bộ gõ tiếng Việt cho Fcitx5"), this);
-  descLabel->setAlignment(Qt::AlignCenter);
-  descLabel->setWordWrap(true);
-  mainLayout->addWidget(descLabel);
-
   // ── Version ──
   versionLabel_ =
-      new QLabel(QString::fromUtf8("Phiên bản: ") + SKEY_VERSION, this);
+      new QLabel(QString::fromUtf8("SKey - Phiên bản: ") + SKEY_VERSION, this);
   versionLabel_->setAlignment(Qt::AlignCenter);
   versionLabel_->setStyleSheet("font-size: 13px;");
   mainLayout->addWidget(versionLabel_);
@@ -115,22 +110,38 @@ void InfoTab::setupUI() {
   linkLabel->setCursor(Qt::PointingHandCursor);
   mainLayout->addWidget(linkLabel);
 
+  // ── Update channel ──
+  // Switching the channel takes effect immediately, then Check Update
+  // queries the selected channel.
+  auto *channelRow = new QHBoxLayout();
+  channelRow->setSpacing(8);
+  auto *channelLabel = new QLabel(QString::fromUtf8("Kênh cập nhật:"), this);
+  channelCombo_ = new QComboBox(this);
+  channelCombo_->addItem(QString::fromUtf8("Ổn định (Stable)"),
+                         static_cast<int>(UpdateChannel::Stable));
+  channelCombo_->addItem(QString::fromUtf8("Thử nghiệm (Dev)"),
+                         static_cast<int>(UpdateChannel::Dev));
+  channelCombo_->setCurrentIndex(
+      readSkeyConfig().updateChannel == UpdateChannel::Dev ? 1 : 0);
+  connect(channelCombo_, &QComboBox::currentIndexChanged, this,
+          &InfoTab::onChannelChanged);
+  channelRow->addStretch();
+  channelRow->addWidget(channelLabel);
+  channelRow->addWidget(channelCombo_);
+  channelRow->addStretch();
+  mainLayout->addLayout(channelRow);
+
   // ── Buttons row ──
   auto *btnRow = new QHBoxLayout();
   btnRow->setSpacing(8);
 
-  auto *githubBtn = new QPushButton(QString::fromUtf8("GitHub"), this);
-  connect(githubBtn, &QPushButton::clicked, this, &InfoTab::onOpenGitHub);
-
-  updateBtn_ = new QPushButton(QString::fromUtf8("Kiểm tra cập nhật"), this);
+  updateBtn_ = new QPushButton(QString::fromUtf8("Check Update"), this);
   connect(updateBtn_, &QPushButton::clicked, this, &InfoTab::onCheckUpdate);
 
-  restartBtn_ =
-      new QPushButton(QString::fromUtf8("Khởi động lại Fcitx5"), this);
+  restartBtn_ = new QPushButton(QString::fromUtf8("Restart Fcitx5"), this);
   connect(restartBtn_, &QPushButton::clicked, this, &InfoTab::onRestartFcitx5);
 
   btnRow->addStretch();
-  btnRow->addWidget(githubBtn);
   btnRow->addWidget(updateBtn_);
   btnRow->addWidget(restartBtn_);
   btnRow->addStretch();
@@ -166,15 +177,6 @@ void InfoTab::setupUI() {
   auto *authorLabel = new QLabel(QString::fromUtf8("Nguyễn Tiến Huy"), this);
   authorLabel->setAlignment(Qt::AlignCenter);
   mainLayout->addWidget(authorLabel);
-
-  auto *emailLabel = new QLabel(this);
-  emailLabel->setText(QString::fromUtf8(
-      "<a href=\"mailto:collyn094@gmail.com\">collyn094@gmail.com</a>"));
-  emailLabel->setTextFormat(Qt::RichText);
-  emailLabel->setOpenExternalLinks(true);
-  emailLabel->setAlignment(Qt::AlignCenter);
-  emailLabel->setCursor(Qt::PointingHandCursor);
-  mainLayout->addWidget(emailLabel);
 
   auto *telegramLabel = new QLabel(this);
   telegramLabel->setText(QString::fromUtf8(
@@ -230,7 +232,28 @@ void InfoTab::onCheckUpdate() {
   updater_->checkForUpdate();
 }
 
-void InfoTab::onOpenGitHub() { QDesktopServices::openUrl(QUrl(kGitHubUrl)); }
+UpdateChannel InfoTab::updateChannel() const {
+  return channelCombo_->currentIndex() == 1 ? UpdateChannel::Dev
+                                            : UpdateChannel::Stable;
+}
+
+void InfoTab::setUpdateChannel(UpdateChannel channel) {
+  // Block signals so syncing from outside (loadSettings / onDefaults)
+  // doesn't trigger onChannelChanged's write + updater round-trip.
+  const QSignalBlocker blocker(channelCombo_);
+  channelCombo_->setCurrentIndex(channel == UpdateChannel::Dev ? 1 : 0);
+}
+
+void InfoTab::onChannelChanged(int /*index*/) {
+  // Read-modify-write: writeSkeyConfig rewrites the whole file, so start
+  // from what's on disk to avoid clobbering fields edited in other tabs.
+  SKeyConfig cfg = readSkeyConfig();
+  cfg.updateChannel = channelCombo_->currentIndex() == 1
+                          ? UpdateChannel::Dev
+                          : UpdateChannel::Stable;
+  writeSkeyConfig(cfg);
+  updater_->setChannel(cfg.updateChannel);
+}
 
 void InfoTab::onRestartFcitx5() {
   restartBtn_->setEnabled(false);
@@ -303,6 +326,18 @@ void InfoTab::onUpdateAvailable(const QString &newVersion,
 void InfoTab::onNoUpdate() {
   updateBtn_->setEnabled(true);
   updateBtn_->setText(QString::fromUtf8("Kiểm tra cập nhật"));
+#if SKEY_DEV_BUILD > 0
+  // This build is a dev build checking the stable channel: "no update"
+  // usually means stable is at the same or lower version than this dev
+  // build (no same-base downgrade is ever offered).  Say so honestly.
+  if (channelCombo_->currentIndex() == 0) {
+    statusLabel_->setText(QString::fromUtf8(
+        "✓ Bạn đang dùng bản Dev mới hơn hoặc bằng bản Stable hiện tại."));
+    statusLabel_->setStyleSheet("font-size: 12px; color: green;");
+    statusLabel_->show();
+    return;
+  }
+#endif
   statusLabel_->setText(
       QString::fromUtf8("✓ Bạn đang dùng phiên bản mới nhất."));
   statusLabel_->setStyleSheet("font-size: 12px; color: green;");
@@ -356,7 +391,7 @@ void InfoTab::onInstallFinished(bool success, const QString &message) {
     statusLabel_->setText(QString::fromUtf8("✓ %1").arg(message));
     statusLabel_->setStyleSheet("font-size: 12px; color: green;");
     versionLabel_->setText(
-        QString::fromUtf8("Phiên bản: %1").arg(pendingVersion_));
+        QString::fromUtf8("SKey - Phiên bản: %1").arg(pendingVersion_));
 
     // Close and reopen the settings GUI so the user is running
     // the freshly-installed version.  Brief delay lets the user
@@ -404,20 +439,49 @@ void InfoTab::onBackup() {
       {appModesPath(), "skey-app-modes.conf"},
       {macroPath(), "skey-macro.conf"},
       {fcitx5ConfigPath(), "fcitx5-config"},
+      {userDictPath(), "user-dict.txt"},
   };
+
+  QStringList missing;
   for (auto &f : files) {
-    QFile::copy(QString::fromStdString(f.srcPath),
-                tmpDir.path() + "/" + f.destName);
+    if (!QFile::copy(QString::fromStdString(f.srcPath),
+                     tmpDir.path() + "/" + f.destName))
+      missing << f.destName;
+  }
+
+  // Custom icons (imported via the Icons tab) — back up the whole dir so
+  // a restore brings the icons back with the config that references them.
+  const QDir iconsDir(QString::fromStdString(userIconDir()));
+  if (iconsDir.exists()) {
+    QDir dest(tmpDir.path() + "/icons");
+    dest.mkpath(".");
+    for (const QString &f :
+         iconsDir.entryList(QDir::Files | QDir::NoDotAndDotDot)) {
+      QFile::copy(iconsDir.filePath(f), dest.filePath(f));
+    }
   }
 
   QProcess tar;
   tar.setWorkingDirectory(tmpDir.path());
   tar.start("tar", {"-czf", savePath, "."});
   tar.waitForFinished(10000);
+  if (tar.exitCode() != 0) {
+    QMessageBox::warning(
+        this, QString::fromUtf8("Lỗi"),
+        QString::fromUtf8("Không thể tạo tệp sao lưu:\n%1").arg(savePath));
+    return;
+  }
 
-  QMessageBox::information(
-      this, QString::fromUtf8("Đã sao lưu"),
-      QString::fromUtf8("Cấu hình đã được lưu vào:\n%1").arg(savePath));
+  QString msg =
+      QString::fromUtf8("Cấu hình đã được lưu vào:\n%1").arg(savePath);
+  if (!missing.isEmpty()) {
+    QMessageBox::warning(
+        this, QString::fromUtf8("Đã sao lưu (thiếu tệp)"),
+        msg + QString::fromUtf8("\n\nKhông tìm thấy (bỏ qua): %1")
+                  .arg(missing.join(", ")));
+  } else {
+    QMessageBox::information(this, QString::fromUtf8("Đã sao lưu"), msg);
+  }
 }
 
 void InfoTab::onRestore() {
@@ -472,6 +536,26 @@ void InfoTab::onRestore() {
     QFile::remove(QString::fromStdString(m.destPath));
     if (!QFile::copy(src, QString::fromStdString(m.destPath))) {
       allOk = false;
+    }
+  }
+
+  // Optional user data — older backups don't contain them, so skip
+  // silently when absent; report only real copy failures.
+  const QString dictSrc = tmpDir.path() + "/user-dict.txt";
+  if (QFile::exists(dictSrc)) {
+    QFile::remove(QString::fromStdString(userDictPath()));
+    if (!QFile::copy(dictSrc, QString::fromStdString(userDictPath())))
+      allOk = false;
+  }
+  const QDir iconSrcDir(tmpDir.path() + "/icons");
+  if (iconSrcDir.exists()) {
+    QDir dest(QString::fromStdString(userIconDir()));
+    dest.mkpath(".");
+    for (const QString &f :
+         iconSrcDir.entryList(QDir::Files | QDir::NoDotAndDotDot)) {
+      QFile::remove(dest.filePath(f));
+      if (!QFile::copy(iconSrcDir.filePath(f), dest.filePath(f)))
+        allOk = false;
     }
   }
 

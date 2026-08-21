@@ -15,6 +15,11 @@
 
 static const char *kLatestReleaseUrl =
     "https://api.github.com/repos/collyn/skey/releases/latest";
+// Dev channel: list releases (newest first, includes prereleases) and scan
+// for the newest published dev prerelease.  `releases/latest` always skips
+// prereleases, so the stable channel is immune to dev builds by construction.
+static const char *kReleasesListUrl =
+    "https://api.github.com/repos/collyn/skey/releases?per_page=20";
 
 // ── Distro detection ─────────────────────────────────────────────────────
 
@@ -86,6 +91,27 @@ static bool hasFedoraDistTag(const QString &name) {
     return re.match(name).hasMatch();
 }
 
+// ── Dev build version helpers ─────────────────────────────────────────────
+// Dev builds carry a monotonic counter in their version string.  The tag
+// uses "v0.7.5-dev.123" ('~' is invalid in git refs); deb/rpm package
+// versions use "0.7.5~dev.123" and Arch uses "0.7.5.dev.123".  QVersionNumber
+// cannot distinguish two dev builds of the same base (it truncates at the
+// first non-digit char), so dev→dev comparison must use the counter.
+static const QRegularExpression kDevSuffixRe(
+    QStringLiteral(R"(^(.*)[-~.]dev\.(\d+)$)"));
+
+/// Dev build counter, or -1 when `version` is not a dev build.
+static int devCounterOf(const QString &version) {
+    const auto m = kDevSuffixRe.match(version);
+    return m.hasMatch() ? m.captured(2).toInt() : -1;
+}
+
+/// Base version ("0.7.5"), or the whole string when not a dev build.
+static QString devBaseOf(const QString &version) {
+    const auto m = kDevSuffixRe.match(version);
+    return m.hasMatch() ? m.captured(1) : version;
+}
+
 // Pick the best asset for a distro out of a list.
 // For Fedora, prefers RPMs with a .fc dist tag (Fedora-built) over generic
 // ones (e.g. OpenSUSE-built), since they have the correct Requires.
@@ -129,6 +155,12 @@ Updater::Updater(const QString &currentVersion, QObject *parent)
     distro_ = detectDistro();
 }
 
+void Updater::setChannel(UpdateChannel channel) {
+    // Only the pending selection changes; activeChannel_ is snapshotted in
+    // checkForUpdate() so a switch mid-request can't corrupt the reply parse.
+    channel_ = channel;
+}
+
 // ── Check for update ────────────────────────────────────────────────────
 
 void Updater::checkForUpdate() {
@@ -137,7 +169,9 @@ void Updater::checkForUpdate() {
         return;
     }
 
-    QUrl url{QString::fromUtf8(kLatestReleaseUrl)};
+    activeChannel_ = channel_;
+    QUrl url{QString::fromUtf8(activeChannel_ == UpdateChannel::Dev
+                                   ? kReleasesListUrl : kLatestReleaseUrl)};
     QNetworkRequest req{url};
     req.setHeader(QNetworkRequest::UserAgentHeader, "fcitx5-skey-updater");
     req.setRawHeader("Accept", "application/vnd.github+json");
@@ -167,6 +201,64 @@ void Updater::onCheckReplyFinished() {
         return;
     }
 
+    if (activeChannel_ == UpdateChannel::Dev) {
+        // ── Dev channel ──
+        // Scan the release list (API returns newest first, includes
+        // prereleases) for the newest published dev build.
+        if (!doc.isArray()) {
+            emit checkFailed(
+                QString::fromUtf8("Phản hồi không hợp lệ từ máy chủ."));
+            return;
+        }
+        const QJsonArray releases = doc.array();
+        for (const QJsonValue &v : releases) {
+            const QJsonObject rel = v.toObject();
+            if (rel.value("draft").toBool(false))
+                continue;
+            QString tag = rel.value("tag_name").toString();
+            if (tag.startsWith('v') || tag.startsWith('V'))
+                tag = tag.mid(1);
+
+            const int remoteCounter = devCounterOf(tag);
+            if (remoteCounter < 0)
+                continue; // not a dev release — keep scanning
+
+            const int currentCounter = devCounterOf(currentVersion_);
+            const QVersionNumber remoteBase =
+                QVersionNumber::fromString(devBaseOf(tag));
+            const QVersionNumber currentBase =
+                QVersionNumber::fromString(devBaseOf(currentVersion_));
+
+            bool newer;
+            if (remoteBase != currentBase) {
+                newer = remoteBase > currentBase;
+            } else {
+                // Same base: compare build counters.  A stable build has no
+                // counter and counts as 0, so a same-base dev build is an
+                // offer to a stable user who opts into the dev channel.
+                newer = remoteCounter >
+                        (currentCounter >= 0 ? currentCounter : 0);
+            }
+            if (!newer) {
+                emit noUpdateAvailable();
+                return;
+            }
+
+            const QJsonObject best =
+                pickBestAsset(rel.value("assets").toArray(), distro_);
+            QString downloadUrl;
+            if (!best.isEmpty())
+                downloadUrl = best.value("browser_download_url").toString();
+
+            emit updateAvailable(tag, downloadUrl,
+                                 rel.value("body").toString());
+            return;
+        }
+        emit noUpdateAvailable(); // no dev release published yet
+        return;
+    }
+
+    // ── Stable channel (releases/latest, prereleases excluded by GitHub) ──
     QJsonObject root = doc.object();
     QString tagName = root.value("tag_name").toString();
 
