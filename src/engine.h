@@ -405,7 +405,16 @@ private:
 
 class SKeyEngineFactory : public AddonFactory {
     AddonInstance *create(AddonManager *manager) override {
-        registerDomain("fcitx5-skey", FCITX_INSTALL_LOCALEDIR);
+        // No registerDomain() here on purpose: skey ships no .mo
+        // translations, and the fcitx5 5.1 headers only declare the
+        // std::filesystem::path overload — a skey.so built against 5.1
+        // then fails to dlopen on 5.0 with "undefined symbol:
+        // fcitx::registerDomain(char const*, std::filesystem::path const&)",
+        // taking the whole fcitx5 down with it (symbol lookup error at
+        // addon load).  The const char* overload exists in both ABI
+        // versions, but there is nothing to register until translations
+        // are added; if they ever are, call the const char* overload
+        // through an explicit extern declaration to stay 5.0-compatible.
         return new SKeyEngine(manager->instance());
     }
 };
