@@ -20,12 +20,22 @@
 // (it operates on a list of files), so it cannot be scoped to a single
 // unit — granting it would let any user enable any system unit.
 // Enabling therefore stays a one-time root/sudo operation.
+//
+// reload-daemon is additionally granted: skey-setup runs
+// `systemctl daemon-reload` before restarting so an updated unit file on
+// disk takes effect (without it the restart would run the stale in-memory
+// unit).  daemon-reload only re-reads root-owned unit files — it gives
+// the user no ability to modify anything.
 polkit.addRule(function (action, subject) {
-    if (action.id == "org.freedesktop.systemd1.manage-units" &&
-        subject.local && subject.active) {
-        var unit = action.lookup("unit");
-        if (unit == "fcitx5-skey-uinput-server@" + subject.user + ".service") {
+    if (subject.local && subject.active) {
+        if (action.id == "org.freedesktop.systemd1.reload-daemon") {
             return polkit.Result.YES;
+        }
+        if (action.id == "org.freedesktop.systemd1.manage-units") {
+            var unit = action.lookup("unit");
+            if (unit == "fcitx5-skey-uinput-server@" + subject.user + ".service") {
+                return polkit.Result.YES;
+            }
         }
     }
 });

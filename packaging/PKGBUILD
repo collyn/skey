@@ -87,14 +87,11 @@ post_install() {
             # looks like the terminal hanging.  post_remove disables each
             # instance on removal, so fresh installs start clean.
             if command -v systemctl >/dev/null 2>&1; then
-                # Add the user to the skey_uinput group: connect() needs
-                # write permission on the server socket, which the
-                # unprivileged server can no longer chown to them.  Takes
-                # effect on next login; the abstract socket keeps working
-                # until then.
-                if ! id -nG "$CONSOLE_USER" 2>/dev/null | tr ' ' '\n' | grep -qx skey_uinput; then
-                    usermod -aG skey_uinput "$CONSOLE_USER" 2>/dev/null || :
-                fi
+                # No group membership needed: the server socket sits in a
+                # 0700 RuntimeDirectory with a per-user named ACL granted
+                # by ExecStartPost (traverse only); authorization happens
+                # at accept time (SO_PEERCRED + /proc/pid/exe) — so users
+                # work immediately after an upgrade without a re-login.
                 systemctl enable "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
                 systemctl start "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
             fi

@@ -121,13 +121,11 @@ if [ "$1" -eq 1 ]; then
     # removal, so fresh installs start clean.
     if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && \
        [ -x /usr/bin/systemctl ]; then
-        # Add the user to the skey_uinput group: connect() needs write
-        # permission on the server socket, which the unprivileged server
-        # can no longer chown to them.  Takes effect on next login; the
-        # abstract socket keeps working until then.
-        if ! id -nG "$CONSOLE_USER" 2>/dev/null | tr ' ' '\n' | grep -qx skey_uinput; then
-            /usr/sbin/usermod -aG skey_uinput "$CONSOLE_USER" 2>/dev/null || :
-        fi
+        # No group membership needed: the server socket sits in a 0700 RuntimeDirectory
+        # with a per-user named ACL granted by ExecStartPost (traverse only);
+        # authorization happens at accept time
+        # (SO_PEERCRED + /proc/pid/exe) — so users work immediately after
+        # an upgrade without a re-login.
         /usr/bin/systemctl enable "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
         /usr/bin/systemctl start "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
     fi
@@ -157,14 +155,6 @@ if [ "$1" -eq 1 ]; then
     fi
 elif [ "$1" -ge 2 ]; then
     # ── Upgrade ──
-    # Upgrading users ran the old root server without group membership —
-    # add the console user to the skey_uinput group so the fs socket
-    # becomes reachable after their next login (the abstract socket
-    # covers the session in the meantime).
-    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && \
-       ! id -nG "$CONSOLE_USER" 2>/dev/null | tr ' ' '\n' | grep -qx skey_uinput; then
-        /usr/sbin/usermod -aG skey_uinput "$CONSOLE_USER" 2>/dev/null || :
-    fi
     # Restart every running uinput server instance so it picks up the new
     # binary.  Instance-agnostic on purpose: CONSOLE_USER only finds a
     # seat0 session, so a headless/multi-seat or SSH-driven upgrade used to

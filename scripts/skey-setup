@@ -584,6 +584,16 @@ if command -v systemctl >/dev/null 2>&1; then
     REAL_USER="${REAL_USER:-$USER}"
 
     UINPUT_SERVICE="fcitx5-skey-uinput-server@${REAL_USER}.service"
+    # Reload unit definitions BEFORE the restart below: an update (package
+    # or plain `cmake --install`) replaces the unit file on disk without
+    # telling systemd, and restarting against the stale in-memory unit runs
+    # the OLD definition — e.g. without the ExecStartPre that creates the
+    # skey_uinput sysuser, so the updated service never comes up.  Root runs
+    # this for free; unprivileged runs are covered by the polkit rule
+    # (org.freedesktop.systemd1.reload-daemon, local+active sessions).
+    # Best-effort: if it fails, the restart below still runs against
+    # whatever systemd currently knows.
+    systemctl daemon-reload 2>/dev/null || true
     if systemctl is-enabled "$UINPUT_SERVICE" >/dev/null 2>&1; then
         # Already enabled: an unprivileged restart is authorised by the
         # polkit rule in data/60-fcitx5-skey-uinput.rules (manage-units,

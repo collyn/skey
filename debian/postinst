@@ -27,21 +27,11 @@ case "$1" in
             udevadm control --reload-rules 2>/dev/null || true
             udevadm trigger --subsystem-match=misc 2>/dev/null || true
         fi
-        # Add the desktop user to the skey_uinput group: connect() needs
-        # write permission on the socket, which the unprivileged server can
-        # no longer chown to them (no root anymore).  Takes effect on next
-        # login; the abstract socket keeps working until then.  Upgrades
-        # via pkexec or a GUI package manager leave SUDO_USER unset — find
-        # the seat0 console user through loginctl in that case.
-        GROUP_USER="${SUDO_USER:-}"
-        if [ -z "$GROUP_USER" ] && command -v loginctl >/dev/null 2>&1; then
-            GROUP_USER=$(loginctl list-sessions --no-legend 2>/dev/null | \
-                awk '$4=="seat0" {print $3}' | sort -u | head -1)
-        fi
-        if [ -n "$GROUP_USER" ] && [ "$GROUP_USER" != "root" ] && \
-           ! id -nG "$GROUP_USER" 2>/dev/null | tr ' ' '\n' | grep -qx skey_uinput; then
-            usermod -aG skey_uinput "$GROUP_USER" 2>/dev/null || true
-        fi
+        # No group membership needed: the server socket sits in a 0700 RuntimeDirectory
+        # with a per-user named ACL granted by ExecStartPost (traverse only);
+        # authorization happens at accept time
+        # (SO_PEERCRED + /proc/pid/exe) — so users work immediately after
+        # an upgrade without a re-login.
 
         if [ -z "$2" ]; then
             # ── First install ──
