@@ -5,8 +5,8 @@ on:
     tags:
       - 'v*'
       - '[0-9]*'
-    branches:
-      - dev
+  # Dev builds are manual: Actions → "Build Packages" → Run workflow →
+  # branch "dev".  Every commit does NOT auto-build (too noisy).
   workflow_dispatch:
 
 permissions:
@@ -253,7 +253,7 @@ jobs:
             *.db*
             *.files*
 
-  # ── Dev prerelease (dev branch pushes only) ─────────────────────────────
+  # ── Dev prerelease (manual workflow_dispatch on the dev branch) ──────────
   dev-release:
     needs: [build-deb, build-rpm, build-arch]
     if: github.ref_type == 'branch' && github.ref_name == 'dev'

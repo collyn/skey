@@ -373,7 +373,7 @@ Toàn bộ quy trình diễn ra trong GUI — người dùng chỉ cần bấm 2
 Tab Info có combo **"Kênh cập nhật"** với 2 lựa chọn:
 
 - **Ổn định (Stable)** — mặc định. Kiểm tra bản phát hành chính thức (`releases/latest` trên GitHub). Các bản Dev dạng prerelease không bao giờ xuất hiện ở kênh này.
-- **Thử nghiệm (Dev)** — build tự động từ nhánh `dev`, mỗi lần push lên `dev` là một build mới (version dạng `0.7.5~dev.123`). Có thể chưa ổn định. Chỉ giữ **3 bản Dev mới nhất** trên GitHub; bản cũ bị xóa tự động.
+- **Thử nghiệm (Dev)** — build từ nhánh `dev`, phát hành **thủ công** khi cần (Actions → "Build Packages" → Run workflow → branch `dev`, hoặc `gh workflow run build-packages.yml --ref dev`), version dạng `0.7.5~dev.123`. Có thể chưa ổn định. Chỉ giữ **3 bản Dev mới nhất** trên GitHub; bản cũ bị xóa tự động.
 
 Quy tắc khi check update:
 
