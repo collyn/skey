@@ -335,6 +335,36 @@ if pidof ibus-daemon > /dev/null 2>&1; then
     echo "✓ ibus stopped and disabled"
 fi
 
+# Debian/Ubuntu: use im-config to set fcitx5 as the system IM framework.
+# This ensures the IM is available even in GDM/XDM login sessions and
+# is respected by im-launch in X11 sessions.  Needs root: when running
+# unprivileged, go through sudo and warn honestly if that fails — a
+# silently failed im-config leaves the distro default (Ubuntu: ibus)
+# active, whose login scripts inject QT_IM_MODULE=ibus into every
+# session.  On KDE Plasma Wayland that makes Qt apps connect through a
+# second fcitx5 frontend while KWin's zwp_input_method_v2 already serves
+# them — the two input contexts fight over focus and surrounding-text
+# updates land on the wrong one.
+#
+# Deliberately BEFORE the fcitx5 restart block below: im-config (re)starts
+# the IM daemon inside the root/sudo context — with DISPLAY preserved that
+# spawns a ROOT-owned fcitx5 which then fights the real user's daemon for
+# the D-Bus name.  Kill that root daemon immediately; the restart block
+# below then starts fcitx5 as the actual user, so the user's process is
+# always the final one.
+if [ "$DISTRO" = "debian" ] && command -v im-config >/dev/null 2>&1; then
+    if [ "$(id -u)" -eq 0 ]; then
+        im-config -n fcitx5 && echo "✓ im-config set to fcitx5"
+        pkill -u root -x fcitx5 2>/dev/null || true
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        sudo im-config -n fcitx5 && echo "✓ im-config set to fcitx5"
+        sudo pkill -u root -x fcitx5 2>/dev/null || true
+    else
+        echo "⚠ im-config chưa chuyển sang fcitx5 (cần quyền admin)."
+        echo "  Chạy thủ công: sudo im-config -n fcitx5"
+    fi
+fi
+
 # ── Restart fcitx5 FIRST before touching session environment ──
 # systemd set-environment and dbus-update-activation-environment can
 # briefly disrupt D-Bus service registration.  Restart fcitx5 while
@@ -423,27 +453,6 @@ AUTOSTARTEOF
     echo "✓ fcitx5 autostart enabled ($AUTOSTART_DIR/fcitx5.desktop)"
 else
     echo "✓ fcitx5 autostart already configured"
-fi
-
-# Debian/Ubuntu: use im-config to set fcitx5 as the system IM framework.
-# This ensures the IM is available even in GDM/XDM login sessions and
-# is respected by im-launch in X11 sessions.  Needs root: when running
-# unprivileged, go through sudo and warn honestly if that fails — a
-# silently failed im-config leaves the distro default (Ubuntu: ibus)
-# active, whose login scripts inject QT_IM_MODULE=ibus into every
-# session.  On KDE Plasma Wayland that makes Qt apps connect through a
-# second fcitx5 frontend while KWin's zwp_input_method_v2 already serves
-# them — the two input contexts fight over focus and surrounding-text
-# updates land on the wrong one.
-if [ "$DISTRO" = "debian" ] && command -v im-config >/dev/null 2>&1; then
-    if [ "$(id -u)" -eq 0 ]; then
-        im-config -n fcitx5 && echo "✓ im-config set to fcitx5"
-    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-        sudo im-config -n fcitx5 && echo "✓ im-config set to fcitx5"
-    else
-        echo "⚠ im-config chưa chuyển sang fcitx5 (cần quyền admin)."
-        echo "  Chạy thủ công: sudo im-config -n fcitx5"
-    fi
 fi
 
 # ── Now update session environment ──
