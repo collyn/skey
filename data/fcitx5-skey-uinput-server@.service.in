@@ -12,6 +12,16 @@ After=systemd-udevd.service
 # "+" prefix runs it in the root context of systemd, and the leading "-"
 # makes a missing setfacl (no acl package) non-fatal so the service still
 # starts and can fall back to the abstract socket.
+#
+# First ExecStartPre runs systemd-sysusers on every start so the unit is
+# self-healing: package scriptlets (postinst/spec/PKGBUILD) create the
+# user, but a plain `cmake --install` — or any install path without
+# scriptlets — does not, and systemd then refuses to start the service
+# with status=217/USER ("user cannot be resolved").  sysusers is
+# idempotent, so re-running it is free.  The "-" prefix keeps NixOS
+# working: /usr/bin/systemd-sysusers does not exist there, but the
+# module creates the user declaratively anyway.
+ExecStartPre=-+/usr/bin/systemd-sysusers /usr/lib/sysusers.d/skey-uinput.conf
 ExecStartPre=-+/usr/bin/setfacl -m u:@SKEY_UINPUT_USER@:rw /dev/uinput
 
 # CAP_SYS_PTRACE: the server verifies connecting clients by readlink of
