@@ -198,12 +198,15 @@ void bindFsSocket(Fd &fsServer, const std::string &path, uid_t uid, gid_t gid) {
     return;
   }
   // connect() requires write permission on the socket file.  The socket is
-  // created by the skey_uinput sysuser, so its owner cannot be chowned;
-  // chmod 0666 lets any user connect, but the accept-time checks
-  // (SO_PEERCRED uid == target user AND /proc/pid/exe == fcitx5) are the
-  // real authorization — file permissions deliberately play no part, so an
-  // upgraded user works immediately without group membership / re-login.
-  // A legacy root run chowns to the target user and keeps 0600 semantics.
+  // created by the skey_uinput sysuser, so it cannot be chowned to the
+  // target user; chmod 0666 grants that write to "other".  This is NOT the
+  // security boundary: the directory gate is — /run/skey-uinput-<user> is
+  // 0700 root:skey_uinput with a named ACL granting traverse to exactly
+  // the target user (systemd ExecStartPost setfacl), so nobody else can
+  // even reach the socket file.  Accept-time checks (SO_PEERCRED uid ==
+  // target user AND /proc/pid/exe == fcitx5) remain the real
+  // authorization.  A legacy root run chowns to the target user and keeps
+  // 0600 semantics.
   if (geteuid() == 0) {
     if (chown(path.c_str(), uid, gid) != 0 || chmod(path.c_str(), 0600) != 0) {
       std::cerr << "fs socket chown/chmod failed: " << strerror(errno)
