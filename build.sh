@@ -90,10 +90,29 @@ if command -v udevadm >/dev/null 2>&1; then
 fi
 if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
     systemctl enable --now "fcitx5-skey-uinput-server@${SUDO_USER}.service" 2>/dev/null || true
-    # Pass the X11 display through: `su -` resets the environment and
-    # fcitx5 dies instantly without DISPLAY, which made skey-setup burn
-    # its whole readiness poll looking hung.
-    su - "$SUDO_USER" -c "DISPLAY='${DISPLAY:-:0}' skey-setup" 2>/dev/null || true
+    # im-config deliberately NOT run here: it must run as the USER (it
+    # writes ~/.xinputrc, not a system file) — skey-setup does it inside
+    # the user's session below.  Running it as root writes the system-wide
+    # default AND spawns a root-owned fcitx5 that steals the session
+    # D-Bus name.  Keep this pkill as migration cleanup for machines that
+    # already have such a zombie from older installs.
+    pkill -u root -x fcitx5 2>/dev/null || true
+    # Run skey-setup INSIDE the user's session via systemd-run when
+    # possible: it carries the full session environment (DISPLAY,
+    # XAUTHORITY, DBUS_SESSION_BUS_ADDRESS) which plain `su -` resets —
+    # without the session bus fcitx5 starts but no app can reach it, and
+    # fcitx5-remote inside skey-setup can't verify readiness.
+    if command -v systemd-run >/dev/null 2>&1 && \
+       systemd-run --user --machine="${SUDO_USER}@.host" \
+           --wait --pipe true 2>/dev/null; then
+        # KillMode=none: skey-setup starts fcitx5 -d, which daemonizes
+        # inside the transient unit.
+        systemd-run --user --machine="${SUDO_USER}@.host" \
+            --wait --pipe -p KillMode=none skey-setup 2>/dev/null || true
+    else
+        # Fallback: no user systemd manager — bare su with X11 passthrough.
+        su - "$SUDO_USER" -c "DISPLAY='${DISPLAY:-:0}' XAUTHORITY='${XAUTHORITY:-}' skey-setup" 2>/dev/null || true
+    fi
 else
     # Installed from a root session (no SUDO_USER): restart any running
     # instance so the new binary/unit takes effect (the self-healing

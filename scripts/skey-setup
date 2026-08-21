@@ -335,33 +335,27 @@ if pidof ibus-daemon > /dev/null 2>&1; then
     echo "✓ ibus stopped and disabled"
 fi
 
-# Debian/Ubuntu: use im-config to set fcitx5 as the system IM framework.
-# This ensures the IM is available even in GDM/XDM login sessions and
-# is respected by im-launch in X11 sessions.  Needs root: when running
-# unprivileged, go through sudo and warn honestly if that fails — a
-# silently failed im-config leaves the distro default (Ubuntu: ibus)
-# active, whose login scripts inject QT_IM_MODULE=ibus into every
-# session.  On KDE Plasma Wayland that makes Qt apps connect through a
-# second fcitx5 frontend while KWin's zwp_input_method_v2 already serves
-# them — the two input contexts fight over focus and surrounding-text
-# updates land on the wrong one.
+# Debian/Ubuntu: use im-config to set fcitx5 as the user's IM framework.
+# im-config -n writes the USER's ~/.xinputrc — it must run as the user,
+# never as root: root would write the system-wide default
+# (/etc/default/im-config) AND spawn a root-owned fcitx5 that steals the
+# session D-Bus name.  No privileges are needed, so no sudo here — the
+# old "cần quyền admin" path was wrong and is gone.
 #
 # Deliberately BEFORE the fcitx5 restart block below: im-config (re)starts
-# the IM daemon inside the root/sudo context — with DISPLAY preserved that
-# spawns a ROOT-owned fcitx5 which then fights the real user's daemon for
-# the D-Bus name.  Kill that root daemon immediately; the restart block
-# below then starts fcitx5 as the actual user, so the user's process is
-# always the final one.
+# the IM daemon; the restart block then stops it and starts the daemon
+# fresh as the user, so the user's process is always the final one.
 if [ "$DISTRO" = "debian" ] && command -v im-config >/dev/null 2>&1; then
-    if [ "$(id -u)" -eq 0 ]; then
-        im-config -n fcitx5 && echo "✓ im-config set to fcitx5"
-        pkill -u root -x fcitx5 2>/dev/null || true
-    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-        sudo im-config -n fcitx5 && echo "✓ im-config set to fcitx5"
-        sudo pkill -u root -x fcitx5 2>/dev/null || true
+    if im-config -n fcitx5 2>/dev/null; then
+        echo "✓ im-config set to fcitx5"
     else
-        echo "⚠ im-config chưa chuyển sang fcitx5 (cần quyền admin)."
-        echo "  Chạy thủ công: sudo im-config -n fcitx5"
+        echo "⚠ im-config could not set fcitx5"
+    fi
+    if [ "$(id -u)" -eq 0 ]; then
+        # Elevated manual run (`sudo skey-setup`): im-config just spawned
+        # a root-owned fcitx5 — evict it so the restart block below can
+        # start the daemon as the real user.
+        pkill -u root -x fcitx5 2>/dev/null || true
     fi
 fi
 
@@ -371,16 +365,26 @@ fi
 # the session environment is stable, then update env vars afterwards.
 if pidof fcitx5 > /dev/null 2>&1; then
     echo "→ Stopping fcitx5..."
-    OLD_PID=$(pidof fcitx5)
+    # Only the CURRENT user's processes: a root-owned fcitx5 (left over
+    # from a packaging context that started it via sudo) can't be killed
+    # by us and would make the wait loop below burn its full timeout.
+    OLD_PID=$(pgrep -u "$(id -u)" -x fcitx5)
     kill $OLD_PID 2>/dev/null || true
 
-    # Wait for old process to fully exit (up to 5s)
-    for i in $(seq 1 50); do
-        if ! kill -0 $OLD_PID 2>/dev/null; then
-            break
-        fi
-        sleep 0.1
+    # Wait for old processes to fully exit (up to 5s each; kill -0 with
+    # several pids reports failure as soon as ONE is gone, so loop per pid)
+    for p in $OLD_PID; do
+        for i in $(seq 1 50); do
+            if ! kill -0 "$p" 2>/dev/null; then
+                break
+            fi
+            sleep 0.1
+        done
     done
+
+    # Evict a root-owned fcitx5 too, best-effort via cached sudo (the
+    # package postinst does the same unconditionally as root).
+    sudo -n pkill -u root -x fcitx5 2>/dev/null || true
 
     # Ensure stale socket files are cleaned up
     rm -f /tmp/fcitx-socket-* 2>/dev/null || true
@@ -396,15 +400,24 @@ fcitx5 -d >/dev/null 2>&1
 # fcitx5-remote returns 2 when active, 1 when inactive, 0 when not running.
 READY=0
 for i in $(seq 1 50); do
+    if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+        # No session bus in this context (e.g. a `su -` packaging run):
+        # fcitx5-remote cannot work at all, so liveness of our daemon is
+        # the best signal available.  Don't burn the 10s poll.
+        if pgrep -u "$(id -u)" -x fcitx5 >/dev/null 2>&1; then
+            READY=1
+        fi
+        break
+    fi
     STATE=$(fcitx5-remote 2>/dev/null || echo "0")
     if [ "$STATE" = "2" ]; then
         READY=1
         break
     fi
-    if ! pidof fcitx5 >/dev/null 2>&1; then
-        # Daemon died right after start (e.g. DISPLAY lost through `su -`
-        # in a packaging context) — stop waiting, the full 10s poll just
-        # makes skey-setup look hung.
+    if ! pgrep -u "$(id -u)" -x fcitx5 >/dev/null 2>&1; then
+        # OUR daemon died right after start (e.g. DISPLAY lost through
+        # `su -`, or a root-owned fcitx5 still holding the D-Bus name) —
+        # stop waiting, the full 10s poll just makes skey-setup look hung.
         break
     fi
     sleep 0.2
@@ -415,7 +428,7 @@ if [ "$READY" = "1" ]; then
 else
     echo "⚠ WARNING: fcitx5 may not be fully ready yet."
     echo "  If input is not working, run: fcitx5 -r -d"
-    if ! pidof fcitx5 >/dev/null 2>&1; then
+    if ! pgrep -u "$(id -u)" -x fcitx5 >/dev/null 2>&1; then
         echo "  (fcitx5 process exited immediately — X11 session: check DISPLAY)"
     fi
 fi

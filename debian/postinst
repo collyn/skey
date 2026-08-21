@@ -52,6 +52,14 @@ case "$1" in
                 if command -v systemctl >/dev/null 2>&1; then
                     systemctl enable --now "fcitx5-skey-uinput-server@${SUDO_USER}.service" 2>/dev/null || true
                 fi
+                # im-config deliberately NOT run here: it must run as the
+                # USER (it writes ~/.xinputrc, not a system file) —
+                # skey-setup does it inside the user's session below.
+                # Running it as root writes the system-wide default AND
+                # spawns a root-owned fcitx5 that steals the session D-Bus
+                # name.  Keep this pkill as migration cleanup for machines
+                # that already have such a zombie from older installs.
+                pkill -u root -x fcitx5 2>/dev/null || true
                 if command -v systemd-run >/dev/null 2>&1 && \
                    systemd-run --user --machine="${SUDO_USER}@.host" \
                        --wait --pipe true 2>/dev/null; then
