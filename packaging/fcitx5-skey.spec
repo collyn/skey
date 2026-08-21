@@ -67,7 +67,12 @@ export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_HOME=%{_builddir}/.cargo
 mkdir -p "$CARGO_HOME"
 
-%cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=%{_prefix}
+# SKEY_UDEV_RULES_DIR is pinned to %{_prefix}/lib/udev/rules.d (merged-usr):
+# data/CMakeLists.txt defaults to /lib/udev/rules.d (Debian style), which
+# rpmbuild's %files check would reject — it compares literal paths and
+# does not resolve the /lib → /usr/lib symlink.
+%cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+    -DSKEY_UDEV_RULES_DIR=%{_prefix}/lib/udev/rules.d
 %cmake_build
 
 %install
