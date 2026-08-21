@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.16)
-project(fcitx5-skey VERSION 0.7.4)
+project(fcitx5-skey VERSION 0.7.5)
+
+# Version compiled into the settings GUI / updater.  Dev builds append a
+# suffix (e.g. 0.7.5~dev.123) — project() VERSION must stay purely numeric,
+# hence this separate cache var.  Stable builds default to PROJECT_VERSION.
+set(SKEY_APP_VERSION "${PROJECT_VERSION}" CACHE STRING
+    "App version shown by the settings GUI / updater (may carry a dev suffix)")
+set(SKEY_DEV_BUILD 0 CACHE STRING
+    "Dev build counter (GITHUB_RUN_NUMBER); 0 means a stable build")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 

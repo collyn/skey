@@ -3,9 +3,12 @@ set -e
 
 # Define project variables
 PKG_NAME="fcitx5-skey"
-PKG_VERSION=$(grep -oP 'project\(fcitx5-skey VERSION \K[0-9.]+' CMakeLists.txt)
-if [ -z "$PKG_VERSION" ]; then
-    PKG_VERSION="0.1.0"
+# Respect an externally supplied version (CI dev builds); otherwise derive.
+if [ -z "${PKG_VERSION:-}" ]; then
+    PKG_VERSION=$(grep -oP 'project\(fcitx5-skey VERSION \K[0-9.]+' CMakeLists.txt)
+    if [ -z "$PKG_VERSION" ]; then
+        PKG_VERSION="0.1.0"
+    fi
 fi
 PKG_ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
 PKG_DIR="${PKG_NAME}_${PKG_VERSION}_${PKG_ARCH}"
@@ -34,7 +37,9 @@ rm -f "${PKG_DIR}.deb"
 echo "--> Configuring project with CMake..."
 cmake -B build-deb -S . \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX=/usr
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DSKEY_APP_VERSION="${PKG_VERSION}" \
+    -DSKEY_DEV_BUILD="${SKEY_DEV_BUILD:-0}"
 
 echo "--> Compiling..."
 cmake --build build-deb --config Release -j$(nproc)

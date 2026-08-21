@@ -5,6 +5,8 @@ on:
     tags:
       - 'v*'
       - '[0-9]*'
+  # Dev builds are manual: Actions → "Build Packages" → Run workflow →
+  # branch "dev".  Every commit does NOT auto-build (too noisy).
   workflow_dispatch:
 
 permissions:
@@ -33,7 +35,21 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
+      - name: Compute version (dev branch → suffixed)
+        run: |
+          CMVER=$(grep -oP 'project\(fcitx5-skey VERSION \K[0-9.]+' CMakeLists.txt)
+          if [[ "${{ github.ref_type }}" == "branch" && "${{ github.ref_name }}" == "dev" ]]; then
+            echo "DEV_COUNTER=${{ github.run_number }}" >> "$GITHUB_ENV"
+            echo "PKG_VERSION=${CMVER}~dev.${{ github.run_number }}" >> "$GITHUB_ENV"
+          else
+            echo "DEV_COUNTER=0" >> "$GITHUB_ENV"
+            echo "PKG_VERSION=${CMVER}" >> "$GITHUB_ENV"
+          fi
+
       - name: Build .deb package
+        env:
+          PKG_VERSION: ${{ env.PKG_VERSION }}
+          SKEY_DEV_BUILD: ${{ env.DEV_COUNTER }}
         run: |
           chmod +x build.sh
           ./build.sh
@@ -88,10 +104,16 @@ jobs:
         run: |
           echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
 
-      - name: Extract version
+      - name: Compute version (dev branch → suffixed)
         run: |
-          VER=$(grep -oP 'project\(fcitx5-skey VERSION \K[0-9.]+' CMakeLists.txt)
-          echo "PKG_VERSION=$VER" >> $GITHUB_ENV
+          CMVER=$(grep -oP 'project\(fcitx5-skey VERSION \K[0-9.]+' CMakeLists.txt)
+          if [[ "${{ github.ref_type }}" == "branch" && "${{ github.ref_name }}" == "dev" ]]; then
+            echo "DEV_COUNTER=${{ github.run_number }}" >> "$GITHUB_ENV"
+            echo "PKG_VERSION=${CMVER}~dev.${{ github.run_number }}" >> "$GITHUB_ENV"
+          else
+            echo "DEV_COUNTER=0" >> "$GITHUB_ENV"
+            echo "PKG_VERSION=${CMVER}" >> "$GITHUB_ENV"
+          fi
 
       - name: Prepare source tarball and spec
         run: |
@@ -99,8 +121,12 @@ jobs:
           tar czf ~/rpmbuild/SOURCES/fcitx5-skey-${{ env.PKG_VERSION }}.tar.gz \
             --exclude='.git' --exclude='build' --exclude='build-deb' \
             --transform "s,^.,fcitx5-skey-${{ env.PKG_VERSION }}," .
-          sed "s/^Version:.*/Version:        ${{ env.PKG_VERSION }}/" \
-            packaging/fcitx5-skey.spec > ~/rpmbuild/SPECS/fcitx5-skey.spec
+          # %{version} expands at rpmbuild time to the Version field just
+          # injected, so dev builds compile their suffixed version string
+          # into the settings GUI / updater.
+          sed -e "s/^Version:.*/Version:        ${{ env.PKG_VERSION }}/" \
+              -e "s|%cmake |%cmake -DSKEY_APP_VERSION=%{version} -DSKEY_DEV_BUILD=${{ env.DEV_COUNTER }} |" \
+              packaging/fcitx5-skey.spec > ~/rpmbuild/SPECS/fcitx5-skey.spec
 
       - name: Install Rust and build RPM
         run: |
@@ -174,15 +200,31 @@ jobs:
         run: |
           sudo -u builder gpg --batch --import <<< "$APT_GPG_PRIVATE_KEY"
 
-      - name: Extract version and prepare src
+      - name: Compute version and prepare src (dev branch → suffixed)
         run: |
-          VER=$(grep -oP 'project\(fcitx5-skey VERSION \K[0-9.]+' CMakeLists.txt)
-          echo "PKG_VERSION=$VER" >> $GITHUB_ENV
+          CMVER=$(grep -oP 'project\(fcitx5-skey VERSION \K[0-9.]+' CMakeLists.txt)
+          if [[ "${{ github.ref_type }}" == "branch" && "${{ github.ref_name }}" == "dev" ]]; then
+            IS_DEV=true
+            DEV_COUNTER=${{ github.run_number }}
+            PKG_VERSION="${CMVER}.dev.${{ github.run_number }}"
+          else
+            IS_DEV=false
+            DEV_COUNTER=0
+            PKG_VERSION="$CMVER"
+          fi
+          echo "DEV_COUNTER=$DEV_COUNTER" >> $GITHUB_ENV
+          echo "PKG_VERSION=$PKG_VERSION" >> $GITHUB_ENV
           cp packaging/PKGBUILD ./PKGBUILD
-          sed -i "s/^pkgver=.*/pkgver=$VER/" PKGBUILD
-          mkdir -p /tmp/pkgsrc/fcitx5-skey-$VER
-          cp -a . /tmp/pkgsrc/fcitx5-skey-$VER/
-          mv /tmp/pkgsrc/fcitx5-skey-$VER src/
+          sed -i "s/^pkgver=.*/pkgver=$PKG_VERSION/" PKGBUILD
+          sed -i "s|cmake -B build |cmake -B build -DSKEY_APP_VERSION=$PKG_VERSION -DSKEY_DEV_BUILD=$DEV_COUNTER |" PKGBUILD
+          if [[ "$IS_DEV" == "true" ]]; then
+            # pkgver() re-derives the version from CMakeLists.txt and would
+            # overwrite the dev pkgver (makepkg calls it unconditionally).
+            sed -i '/^pkgver()/,/^}/d' PKGBUILD
+          fi
+          mkdir -p /tmp/pkgsrc/fcitx5-skey-$PKG_VERSION
+          cp -a . /tmp/pkgsrc/fcitx5-skey-$PKG_VERSION/
+          mv /tmp/pkgsrc/fcitx5-skey-$PKG_VERSION src/
 
       - name: Build Arch package
         env:
@@ -211,10 +253,65 @@ jobs:
             *.db*
             *.files*
 
+  # ── Dev prerelease (manual workflow_dispatch on the dev branch) ──────────
+  dev-release:
+    needs: [build-deb, build-rpm, build-arch]
+    if: github.ref_type == 'branch' && github.ref_name == 'dev'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute dev tag
+        id: ver
+        run: |
+          CMVER=$(grep -oP 'project\(fcitx5-skey VERSION \K[0-9.]+' CMakeLists.txt)
+          echo "DEV_TAG=v${CMVER}-dev.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.DEV_TAG }}
+          name: "Skey Dev ${{ steps.ver.outputs.DEV_TAG }}"
+          body: |
+            Bản thử nghiệm (Dev) tự động tạo từ nhánh `dev` — có thể chưa ổn định.
+
+            Cài từ GUI: Settings → Tab Info → chọn kênh "Thử nghiệm (Dev)" → "Kiểm tra cập nhật".
+            Build #${{ github.run_number }} — commit ${{ github.sha }}
+          files: |
+            fcitx5-skey_*.deb
+            fcitx5-skey-[0-9]*.rpm
+            fcitx5-skey-[0-9]*.pkg.tar.zst
+            fcitx5-skey-[0-9]*.pkg.tar.zst.sig
+          draft: false
+          prerelease: true
+
+      - name: Keep only the 3 newest dev prereleases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release list --repo collyn/skey --limit 100 \
+            --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease) | .tagName' \
+            | sort -V \
+            | head -n -3 \
+            | while read -r tag; do
+                echo "Deleting old dev release: $tag"
+                gh release delete "$tag" --repo collyn/skey --yes --cleanup-tag
+              done
+
   # ── GitHub Release (all artifacts, tag only) ───────────────────────────
   release:
     needs: [build-deb, build-rpm, build-arch]
-    if: github.ref_type == 'tag'
+    # '-dev.' guard: a manually pushed dev tag must not create a stable
+    # release (dev tags are managed by the dev-release job above).
+    if: github.ref_type == 'tag' && !contains(github.ref_name, '-dev.')
     runs-on: ubuntu-latest
 
     steps:
@@ -238,7 +335,8 @@ jobs:
   # ── Publish all repos to gh-pages (single job, no race) ──────────────────
   publish:
     needs: [build-deb, build-rpm, build-arch]
-    if: github.ref_type == 'tag'
+    # '-dev.' guard: dev tags must never enter the gh-pages repos.
+    if: github.ref_type == 'tag' && !contains(github.ref_name, '-dev.')
     runs-on: ubuntu-latest
 
     steps:

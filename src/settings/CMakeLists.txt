@@ -21,7 +21,9 @@ add_executable(fcitx5-skey-settings ${SETTINGS_SOURCES})
 target_include_directories(fcitx5-skey-settings PRIVATE "${SKEY_ENGINE_DIR}")
 target_link_libraries(fcitx5-skey-settings PRIVATE Qt6::Widgets Qt6::Core Qt6::Network Qt6::DBus skey_engine pthread dl)
 target_compile_features(fcitx5-skey-settings PRIVATE cxx_std_17)
-target_compile_definitions(fcitx5-skey-settings PRIVATE SKEY_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(fcitx5-skey-settings PRIVATE
+    SKEY_VERSION="${SKEY_APP_VERSION}"
+    SKEY_DEV_BUILD=${SKEY_DEV_BUILD})
 
 # Optional Qt6 SVG for native SVG icon rendering (custom icon uploads + presets).
 # Gracefully degrades to PNG fallback when absent.

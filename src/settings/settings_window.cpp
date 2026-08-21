@@ -66,7 +66,9 @@ void SkeySettingsWindow::setupUI() {
 
   // ── Hint label ──
   auto *hint = new QLabel(
-      QString::fromUtf8("Nhấn Áp dụng để thay đổi có hiệu lực"), this);
+      QString::fromUtf8("Nhấn Áp dụng để thay đổi có hiệu lực "
+                        "(kênh cập nhật ở tab Info có hiệu lực ngay)"),
+      this);
   hint->setStyleSheet("color: #888; font-size: 11px;");
   mainLayout->addWidget(hint);
 
@@ -128,6 +130,10 @@ void SkeySettingsWindow::loadSettings() {
   dictTab_->loadFromConfig(readUserDict());
 
   appearanceTab_->loadFromConfig(cfg);
+
+  // Sync the Info tab's channel combo (no write: config just came from
+  // disk, and loadSettings also runs on showEvent for external changes).
+  infoTab_->setUpdateChannel(cfg.updateChannel);
 }
 
 void SkeySettingsWindow::onApply() {
@@ -146,6 +152,12 @@ void SkeySettingsWindow::onApply() {
   // Merge appearance (icon) fields
   SKeyConfig appearance = appearanceTab_->collectConfig();
   cfg.iconTheme = appearance.iconTheme;
+
+  // Merge update channel from the Info tab — generalTab_'s collectConfig()
+  // has no notion of it and would otherwise reset it to Stable here,
+  // clobbering the channel the user just picked (the combo persists it
+  // immediately, so Apply must not undo it).
+  cfg.updateChannel = infoTab_->updateChannel();
 
   MacroConfig macroCfg;
   macroCfg.entries = macroData.entries;
@@ -179,6 +191,7 @@ void SkeySettingsWindow::onDefaults() {
     macroTab_->setDefaults();
     dictTab_->setDefaults();
     appearanceTab_->setDefaults();
+    infoTab_->setUpdateChannel(UpdateChannel::Stable);
   }
 }
 

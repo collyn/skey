@@ -4,6 +4,9 @@
 #include <QObject>
 #include <QString>
 
+// Defines UpdateChannel (used by the member initializers below).
+#include "config_io.h"
+
 class QNetworkAccessManager;
 class QNetworkReply;
 
@@ -16,6 +19,8 @@ public:
     explicit Updater(const QString &currentVersion, QObject *parent = nullptr);
 
     void checkForUpdate();
+    /// Select which channel checkForUpdate() queries.
+    void setChannel(UpdateChannel channel);
     void downloadAndInstall(const QString &downloadUrl, const QString &version);
 
     /// Detect which distro family we're running on.
@@ -43,6 +48,11 @@ private slots:
 private:
     QNetworkAccessManager *nam_;
     QString currentVersion_;
+
+    UpdateChannel channel_ = UpdateChannel::Stable;
+    // Snapshot taken when the check request starts; a channel switch while
+    // the reply is in flight must not change how this reply is parsed.
+    UpdateChannel activeChannel_ = UpdateChannel::Stable;
 
     QNetworkReply *checkReply_ = nullptr;
     QNetworkReply *downloadReply_ = nullptr;

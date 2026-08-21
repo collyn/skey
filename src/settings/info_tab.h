@@ -3,7 +3,10 @@
 
 #include <QWidget>
 
+#include "config_io.h" // UpdateChannel
+
 class QLabel;
+class QComboBox;
 class QPushButton;
 class QProgressBar;
 class Updater;
@@ -13,13 +16,18 @@ class InfoTab : public QWidget {
 public:
     explicit InfoTab(QWidget *parent = nullptr);
 
+    /// Live update-channel selection (backed by the combo box).
+    UpdateChannel updateChannel() const;
+    /// Sync the combo to an externally-loaded channel (no config write).
+    void setUpdateChannel(UpdateChannel channel);
+
 signals:
     /// Emitted after a config restore so the parent window can reload all tabs.
     void configRestored();
 
 private slots:
     void onCheckUpdate();
-    void onOpenGitHub();
+    void onChannelChanged(int index);
     void onRestartFcitx5();
     void onBackup();
     void onRestore();
@@ -41,6 +49,7 @@ private:
 
     QLabel *versionLabel_;
     QLabel *statusLabel_;
+    QComboBox *channelCombo_ = nullptr;
     QPushButton *updateBtn_;
     QPushButton *restartBtn_;
     QPushButton *backupButton_;

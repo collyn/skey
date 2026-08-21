@@ -102,6 +102,9 @@ SKeyConfig readSkeyConfig() {
         else if (key == "ModeMenuKey")   cfg.modeMenuKey    = val;
         else if (key == "IconTheme")       cfg.iconTheme      = val;
         else if (key == "CustomIconPath")  cfg.customIconPath = val;
+        else if (key == "UpdateChannel")
+            cfg.updateChannel = (val == "Dev") ? UpdateChannel::Dev
+                                               : UpdateChannel::Stable;
     }
 
     // Migration: the old "Telex W" input method is now Telex + ShortW.
@@ -147,6 +150,8 @@ bool writeSkeyConfig(const SKeyConfig &cfg) {
     out << "IconTheme="      << maybeQuote(cfg.iconTheme)      << "\n";
     out << "# Custom icon path (only when IconTheme=custom)"    << "\n";
     out << "CustomIconPath=" << maybeQuote(cfg.customIconPath)  << "\n";
+    out << "# Update channel (Stable / Dev)"    << "\n";
+    out << "UpdateChannel=" << (cfg.updateChannel == UpdateChannel::Dev ? "Dev" : "Stable") << "\n";
     out << "MacroEditor=fcitx://config/addon/skey/skey-macro" << "\n";
 
     return out.good();
