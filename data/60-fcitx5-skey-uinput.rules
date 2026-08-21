@@ -1,15 +1,28 @@
 // Allow the owning user to restart their own fcitx5-skey-uinput-server
 // instance without an admin password.
 //
-// The service runs as root by design (it injects keystrokes via
-// /dev/uinput, mode 0660 root:input per 99-skey-uinput.rules).  The
+// The service runs as root by design: it opens /dev/uinput (root-owned on
+// a stock system) before dropping privileges to the target user.  The
 // settings GUI and skey-setup call `systemctl try-restart
 // fcitx5-skey-uinput-server@$USER.service`; without this rule that
-// triggers a polkit password prompt (or fails silently).  Only the
-// exact instance for the requesting user is whitelisted.
+// triggers a polkit password prompt (or fails silently).  Only the exact
+// instance for the requesting user is whitelisted.
+//
+// `local && active` is the standard polkit idiom for "sitting at this
+// machine's currently active session".  Do NOT reach for
+// subject.isInSession(): it is not part of the polkit JS API — the only
+// methods on Subject are isInGroup() and isInNetGroup() — and calling it
+// throws a TypeError that aborts rule evaluation entirely, silently
+// falling back to an admin password prompt.
+//
+// Only manage-units is granted.  `systemctl enable` uses the separate
+// manage-unit-files action, for which systemd passes no "unit" detail
+// (it operates on a list of files), so it cannot be scoped to a single
+// unit — granting it would let any user enable any system unit.
+// Enabling therefore stays a one-time root/sudo operation.
 polkit.addRule(function (action, subject) {
     if (action.id == "org.freedesktop.systemd1.manage-units" &&
-        subject.isInSession()) {
+        subject.local && subject.active) {
         var unit = action.lookup("unit");
         if (unit == "fcitx5-skey-uinput-server@" + subject.user + ".service") {
             return polkit.Result.YES;

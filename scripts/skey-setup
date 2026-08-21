@@ -585,8 +585,18 @@ if command -v systemctl >/dev/null 2>&1; then
 
     UINPUT_SERVICE="fcitx5-skey-uinput-server@${REAL_USER}.service"
     if systemctl is-enabled "$UINPUT_SERVICE" >/dev/null 2>&1; then
-        systemctl restart "$UINPUT_SERVICE" 2>/dev/null || true
-        echo "✓ Uinput server restarted: $UINPUT_SERVICE"
+        # Already enabled: an unprivileged restart is authorised by the
+        # polkit rule in data/60-fcitx5-skey-uinput.rules (manage-units,
+        # scoped to this exact instance).  Report the real outcome — the
+        # old `|| true` printed a success tick even when polkit denied
+        # the request, which hid a broken rule for weeks.
+        if systemctl restart "$UINPUT_SERVICE" 2>/dev/null; then
+            echo "✓ Uinput server restarted: $UINPUT_SERVICE"
+        else
+            echo "⚠ Could not restart $UINPUT_SERVICE"
+            echo "  Run: sudo systemctl restart $UINPUT_SERVICE"
+            echo "  Diagnose the polkit rule with: journalctl -b -t polkitd"
+        fi
     elif [ "$(id -u)" -eq 0 ]; then
         # Running as root (e.g., from package postinst).  Also disable a
         # stale @root instance left by a previous sudo run — fcitx5 never
@@ -600,10 +610,19 @@ if command -v systemctl >/dev/null 2>&1; then
         sudo systemctl enable --now "$UINPUT_SERVICE" 2>/dev/null || true
         echo "✓ Uinput server enabled + started: $UINPUT_SERVICE (via sudo)"
     else
-        # PolKit may prompt; best-effort with user scope as last resort
-        systemctl enable --now "$UINPUT_SERVICE" 2>/dev/null || \
-        systemctl --user enable --now "$UINPUT_SERVICE" 2>/dev/null || true
-        echo "✓ Uinput server enable attempted (may need sudo): $UINPUT_SERVICE"
+        # Not enabled yet.  Enabling needs root: it uses the
+        # manage-unit-files polkit action, which systemd cannot scope to a
+        # single unit, so 60-fcitx5-skey-uinput.rules deliberately does not
+        # cover it.  Try anyway — a graphical polkit agent will prompt for
+        # a password.  (`systemctl --user` used to sit here as a fallback
+        # but was never reachable: the unit lives in system scope and the
+        # user manager cannot see it.)
+        if systemctl enable --now "$UINPUT_SERVICE" 2>/dev/null; then
+            echo "✓ Uinput server enabled + started: $UINPUT_SERVICE"
+        else
+            echo "⚠ Uinput server not enabled: $UINPUT_SERVICE"
+            echo "  Run once: sudo systemctl enable --now $UINPUT_SERVICE"
+        fi
     fi
 fi
 

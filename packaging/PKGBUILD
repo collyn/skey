@@ -53,6 +53,12 @@ post_install() {
     # Reload systemd units
     if command -v systemctl >/dev/null 2>&1; then
         systemctl daemon-reload 2>/dev/null || :
+        # Restart every running uinput server instance so it picks up the
+        # new binary.  Must happen here, as root: the su'd skey-setup
+        # below cannot do it itself — `su` has no active login session, so
+        # the local/active check in 60-fcitx5-skey-uinput.rules does not
+        # apply and polkit would deny the restart.  No-op on first install.
+        systemctl try-restart "fcitx5-skey-uinput-server@*.service" 2>/dev/null || :
     fi
 
     # Run skey-setup for the console user
@@ -60,6 +66,17 @@ post_install() {
         CONSOLE_USER=$(loginctl list-sessions --no-legend 2>/dev/null | \
             awk '$4=="seat0" {print $3}' | sort -u | head -1)
         if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+            # Enable the uinput server as root BEFORE skey-setup runs.
+            # Without this, the su'd skey-setup hits its enable branch as
+            # the user: `systemctl enable` uses the manage-unit-files
+            # polkit action, which cannot be scoped per unit, so the
+            # graphical polkit agent pops a root-password dialog that
+            # looks like the terminal hanging.  post_remove disables each
+            # instance on removal, so fresh installs start clean.
+            if command -v systemctl >/dev/null 2>&1; then
+                systemctl enable "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
+                systemctl start "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
+            fi
             su -s /bin/bash "$CONSOLE_USER" -c skey-setup >/dev/null 2>&1 || :
         fi
     fi

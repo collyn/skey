@@ -25,6 +25,15 @@ case "$1" in
             # KDE-Wayland blocks (KWin reconnect, session env files) silently
             # skip.  Route through the user's systemd manager instead.
             if [ -n "$SUDO_USER" ]; then
+                # Enable the uinput server as root BEFORE skey-setup runs.
+                # If skey-setup sees the unit not yet enabled, it takes its
+                # enable branch as the user, and `systemctl enable` uses the
+                # manage-unit-files polkit action (unscopable per unit) —
+                # the graphical polkit agent pops a root-password dialog
+                # that looks like the terminal hanging.
+                if command -v systemctl >/dev/null 2>&1; then
+                    systemctl enable --now "fcitx5-skey-uinput-server@${SUDO_USER}.service" 2>/dev/null || true
+                fi
                 if command -v systemd-run >/dev/null 2>&1 && \
                    systemd-run --user --machine="${SUDO_USER}@.host" \
                        --wait --pipe true 2>/dev/null; then
@@ -36,12 +45,19 @@ case "$1" in
                 else
                     su - "$SUDO_USER" -c "skey-setup" 2>/dev/null || true
                 fi
-                if command -v systemctl >/dev/null 2>&1; then
-                    systemctl enable --now "fcitx5-skey-uinput-server@${SUDO_USER}.service" 2>/dev/null || true
-                fi
             fi
         else
             # ── Upgrade ──
+            # Restart every running uinput server instance so it picks up
+            # the new binary.  Deliberately outside the $SUDO_USER guard
+            # below: updates arriving via pkexec (the settings GUI updater)
+            # or a GUI package manager leave SUDO_USER unset, and the
+            # restart used to be skipped entirely in those cases.  The glob
+            # only matches instances systemd has already loaded, so it is a
+            # no-op when nobody is using Uinput mode.
+            if command -v systemctl >/dev/null 2>&1; then
+                systemctl try-restart "fcitx5-skey-uinput-server@*.service" 2>/dev/null || true
+            fi
             # Restart fcitx5 to load the new skey.so and gently reconnect
             # KWin's zwp_input_method_v2.  The helper script must run
             # INSIDE the user's graphical session — `su -` loses
@@ -49,10 +65,6 @@ case "$1" in
             # toggle silently never ran), so route through the user's
             # systemd manager, which carries the session environment.
             if [ -n "$SUDO_USER" ]; then
-                # Restart uinput server first (picks up new binary)
-                if command -v systemctl >/dev/null 2>&1; then
-                    systemctl try-restart "fcitx5-skey-uinput-server@${SUDO_USER}.service" 2>/dev/null || true
-                fi
                 if command -v systemd-run >/dev/null 2>&1 && \
                    systemd-run --user --machine="${SUDO_USER}@.host" \
                        --wait --pipe true 2>/dev/null; then

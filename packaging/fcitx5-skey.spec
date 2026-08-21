@@ -96,6 +96,23 @@ if [ -x /usr/bin/loginctl ]; then
 fi
 
 if [ "$1" -eq 1 ]; then
+    # ── First install: enable the uinput server as root ──
+    # Deb postinst and the NixOS module both enable the service during
+    # packaging; without this, the first `skey-setup` run hits the
+    # enable branch as the user, and `systemctl enable` uses the
+    # manage-unit-files polkit action which cannot be scoped per unit —
+    # the graphical polkit agent pops a root-password dialog that appears
+    # to hang the terminal.  Do it here so the service is already enabled
+    # by the time skey-setup runs.  %preun disables each instance on
+    # removal, so fresh installs start clean.
+    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && \
+       [ -x /usr/bin/systemctl ]; then
+        /usr/bin/systemctl enable "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
+        /usr/bin/systemctl start "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
+    fi
+fi
+
+if [ "$1" -eq 1 ]; then
     # ── First install ──
     # Run full skey-setup: configures fcitx5 profile, shell env vars,
     # KWin virtual keyboard, autostart, ibus disable, etc.
@@ -119,16 +136,20 @@ if [ "$1" -eq 1 ]; then
     fi
 elif [ "$1" -ge 2 ]; then
     # ── Upgrade ──
+    # Restart every running uinput server instance so it picks up the new
+    # binary.  Instance-agnostic on purpose: CONSOLE_USER only finds a
+    # seat0 session, so a headless/multi-seat or SSH-driven upgrade used to
+    # skip the restart.  The glob only matches instances systemd has
+    # already loaded.
+    if [ -x /usr/bin/systemctl ]; then
+        /usr/bin/systemctl try-restart "fcitx5-skey-uinput-server@*.service" 2>/dev/null || :
+    fi
     # Restart fcitx5 to load the new skey.so and gently reconnect KWin's
     # zwp_input_method_v2.  The helper script must run INSIDE the user's
     # graphical session — `su -` loses XDG_SESSION_TYPE /
     # DBUS_SESSION_BUS_ADDRESS (the reconnect toggle silently never ran),
     # so route through the user's systemd manager.
     if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
-        # Restart uinput server first
-        if [ -x /usr/bin/systemctl ]; then
-            /usr/bin/systemctl try-restart "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
-        fi
         if [ -x /usr/bin/systemd-run ] && \
            /usr/bin/systemd-run --user --machine="${CONSOLE_USER}@.host" \
                --wait --pipe true 2>/dev/null; then
