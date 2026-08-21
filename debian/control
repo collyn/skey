@@ -28,6 +28,9 @@ Depends: ${shlibs:Depends},
          ${misc:Depends},
          fcitx5,
          hicolor-icon-theme,
+         # Qt6 SVG image plugin — the settings GUI loads SVG icons via QIcon;
+         # without it the Icons tab (and system tray icon) render blank.
+         libqt6svg6,
          acl,
          udev
 Description: Vietnamese SKey input method addon for Fcitx5
