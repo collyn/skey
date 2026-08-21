@@ -55,9 +55,8 @@ post_install() {
         systemctl daemon-reload 2>/dev/null || :
         # Restart every running uinput server instance so it picks up the
         # new binary.  Must happen here, as root: the su'd skey-setup
-        # below cannot do it itself — `su` has no active login session, so
-        # the local/active check in 60-fcitx5-skey-uinput.rules does not
-        # apply and polkit would deny the restart.  No-op on first install.
+        # below has no seat session and its polkit restart may be denied,
+        # so the authoritative restart lives here.  No-op on first install.
         systemctl try-restart "fcitx5-skey-uinput-server@*.service" 2>/dev/null || :
     fi
 

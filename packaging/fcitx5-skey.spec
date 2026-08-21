@@ -269,6 +269,8 @@ fi
 %{_datadir}/applications/fcitx5-skey-settings.desktop
 /lib/systemd/system/fcitx5-skey-uinput-server@.service
 %config(noreplace) /etc/polkit-1/rules.d/60-fcitx5-skey-uinput.rules
+%{_prefix}/lib/udev/rules.d/99-skey-uinput.rules
+%{_prefix}/lib/sysusers.d/skey-uinput.conf
 %config %{_sysconfdir}/profile.d/fcitx5-skey.sh
 
 %changelog
