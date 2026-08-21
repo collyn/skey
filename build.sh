@@ -90,7 +90,10 @@ if command -v udevadm >/dev/null 2>&1; then
 fi
 if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
     systemctl enable --now "fcitx5-skey-uinput-server@${SUDO_USER}.service" 2>/dev/null || true
-    su - "$SUDO_USER" -c "skey-setup" 2>/dev/null || true
+    # Pass the X11 display through: `su -` resets the environment and
+    # fcitx5 dies instantly without DISPLAY, which made skey-setup burn
+    # its whole readiness poll looking hung.
+    su - "$SUDO_USER" -c "DISPLAY='${DISPLAY:-:0}' skey-setup" 2>/dev/null || true
 else
     # Installed from a root session (no SUDO_USER): restart any running
     # instance so the new binary/unit takes effect (the self-healing

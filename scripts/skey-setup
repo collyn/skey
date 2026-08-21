@@ -371,6 +371,12 @@ for i in $(seq 1 50); do
         READY=1
         break
     fi
+    if ! pidof fcitx5 >/dev/null 2>&1; then
+        # Daemon died right after start (e.g. DISPLAY lost through `su -`
+        # in a packaging context) — stop waiting, the full 10s poll just
+        # makes skey-setup look hung.
+        break
+    fi
     sleep 0.2
 done
 
@@ -379,6 +385,9 @@ if [ "$READY" = "1" ]; then
 else
     echo "⚠ WARNING: fcitx5 may not be fully ready yet."
     echo "  If input is not working, run: fcitx5 -r -d"
+    if ! pidof fcitx5 >/dev/null 2>&1; then
+        echo "  (fcitx5 process exited immediately — X11 session: check DISPLAY)"
+    fi
 fi
 
 # ── Ensure fcitx5 starts automatically on login ──
@@ -672,7 +681,14 @@ if [ -f /usr/share/pixmaps/fcitx-skey.svg ]; then
     fi
     # GTK / fallback
     if [ -z "$CURRENT_THEME" ] && command -v gsettings >/dev/null 2>&1; then
-        CURRENT_THEME=$(su - "$THEME_USER" -c "gsettings get org.gnome.desktop.interface icon-theme" 2>/dev/null | tr -d "'" || true)
+        if [ "$(id -un 2>/dev/null)" = "$THEME_USER" ]; then
+            # Already running as the user — no su.  A login-shell `su -` to
+            # the SAME user blocks on stdin in packaging contexts (PAM /
+            # dotfiles), stalling skey-setup right after the uinput step.
+            CURRENT_THEME=$(gsettings get org.gnome.desktop.interface icon-theme 2>/dev/null | tr -d "'" || true)
+        else
+            CURRENT_THEME=$(su - "$THEME_USER" -c "gsettings get org.gnome.desktop.interface icon-theme" 2>/dev/null | tr -d "'" || true)
+        fi
     fi
     # Theme may be system-wide or user-local (~/.local/share/icons/)
     for ICONS_BASE in "/usr/share/icons" "$THEME_HOME/.local/share/icons"; do
