@@ -1,8 +1,8 @@
 // Allow the owning user to restart their own fcitx5-skey-uinput-server
 // instance without an admin password.
 //
-// The service runs as root by design: it opens /dev/uinput (root-owned on
-// a stock system) before dropping privileges to the target user.  The
+// The service runs as the dedicated unprivileged skey_uinput system user
+// (created by sysusers.d; /dev/uinput access via the udev ACL rule).  The
 // settings GUI and skey-setup call `systemctl try-restart
 // fcitx5-skey-uinput-server@$USER.service`; without this rule that
 // triggers a polkit password prompt (or fails silently).  Only the exact

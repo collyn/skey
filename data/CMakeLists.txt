@@ -5,6 +5,12 @@ set(SKEY_SYSTEMD_UNIT_DIR "/lib/systemd/system" CACHE PATH
     "Systemd system unit install directory")
 set(SKEY_POLKIT_RULES_DIR "/etc/polkit-1/rules.d" CACHE PATH
     "Polkit rules install directory")
+set(SKEY_UDEV_RULES_DIR "/lib/udev/rules.d" CACHE PATH
+    "udev rules install directory")
+set(SKEY_SYSUSERS_DIR "/usr/lib/sysusers.d" CACHE PATH
+    "sysusers.d snippet install directory")
+set(SKEY_UINPUT_USER "skey_uinput" CACHE STRING
+    "System user the uinput server runs as (sysusers.d, udev ACL rule, service unit)")
 set(SKEY_PROFILE_D_DIR "/etc/profile.d" CACHE PATH
     "profile.d snippet install directory")
 
@@ -101,6 +107,19 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/fcitx5-skey-uinput-server@.service"
 # (systemd manage-units for fcitx5-skey-uinput-server@<user>.service only).
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/60-fcitx5-skey-uinput.rules"
     DESTINATION "${SKEY_POLKIT_RULES_DIR}")
+
+# udev rule: ACL on /dev/uinput for the dedicated unprivileged server user.
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/99-skey-uinput.rules"
+    DESTINATION "${SKEY_UDEV_RULES_DIR}")
+
+# sysusers.d: creates the dedicated system user the server runs as.
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/skey-uinput-sysusers.conf.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/skey-uinput-sysusers.conf"
+    @ONLY
+)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/skey-uinput-sysusers.conf"
+    DESTINATION "${SKEY_SYSUSERS_DIR}" RENAME "skey-uinput.conf")
 
 # ── Settings GUI .desktop file ──
 configure_file(

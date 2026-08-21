@@ -445,13 +445,13 @@ Chế độ **Uinput** gửi yêu cầu Backspace trực tiếp đến trình đ
 sudo systemctl enable --now fcitx5-skey-uinput-server@$USER.service
 ```
 
-Service chạy dưới quyền root để tương tác với `/dev/uinput`, nhưng nhận tên người dùng từ instance `@$USER` để mở socket đúng quyền người dùng chạy Fcitx5. Kiểm tra trạng thái:
+Service chạy hoàn toàn không quyền root dưới tài khoản hệ thống `skey_uinput` (tạo tự động qua sysusers.d khi cài). Quyền ghi `/dev/uinput` được cấp qua ACL trong udev rule `99-skey-uinput.rules` — không dùng group `input` để tránh mở quyền đọc toàn bộ thiết bị input. Instance nhận tên người dùng từ `@$USER` để mở socket đúng user chạy Fcitx5; socket đặt trong `/run/skey-uinput-$USER` (do systemd `RuntimeDirectory` tạo). Kiểm tra trạng thái:
 
 ```bash
 systemctl status fcitx5-skey-uinput-server@$USER.service
 ```
 
-Khi server không hoạt động hoặc gặp sự cố mở `/dev/uinput`, SKey tự động chuyển đổi an toàn sang chế độ trì hoãn tự thích ứng của **Surrounding Text** để tránh mất chữ.
+Khi server không hoạt động hoặc gặp sự cố mở `/dev/uinput`, cần khởi động lại service (`systemctl status` để kiểm tra). Nếu cần dùng SKey trong lúc chờ, chọn thủ công chế độ **Surrounding Text** hoặc **Preedit** trong Settings GUI.
 
 ---
 

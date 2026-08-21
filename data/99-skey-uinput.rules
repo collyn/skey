@@ -1,0 +1,9 @@
+# Grant the skey_uinput system user rw access to /dev/uinput via ACL.
+#
+# Deliberately NOT group-based: adding a user to the "input" group would
+# let that user (and every process they run) read all /dev/input/event*
+# devices — a keylogging surface.  The ACL here grants exactly one
+# privilege: the ability to open /dev/uinput as skey_uinput.  The service
+# unit also runs `setfacl` in ExecStartPre as a fallback for when the
+# device node predates this rule.
+KERNEL=="uinput", SUBSYSTEM=="misc", ACTION=="add|change", RUN+="/usr/bin/setfacl -m u:skey_uinput:rw /dev/uinput"

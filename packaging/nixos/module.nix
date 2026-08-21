@@ -36,18 +36,40 @@ in
       description = ''
         Users to run a `fcitx5-skey-uinput-server` instance for.  The
         server injects BackSpace/Unicode keystrokes via /dev/uinput and
-        runs as root (system service), so one instance per user must be
-        enabled explicitly.
+        runs as the unprivileged `skey_uinput` system user, so one
+        instance per user must be enabled explicitly.
       '';
     };
   };
 
   config = lib.mkIf cfg.enable {
-    # The uinput server opens /dev/uinput as root — the module and udev
-    # rules must be available.
+    # Instance users get extraGroups (socket access) merged into their
+    # declaration — they must already exist in users.users, otherwise this
+    # would implicitly create a malformed user with no uid/home.
+    assertions = [
+      {
+        assertion = lib.all (user: config.users.users ? ${user}) cfg.users;
+        message = "services.fcitx5-skey.users must only contain users declared in users.users";
+      }
+    ];
+
     hardware.uinput.enable = true;
 
     environment.systemPackages = [ cfg.package ];
+
+    # Dedicated system user the uinput server runs as.  The udev rule
+    # (shipped in the package) grants it an rw ACL on /dev/uinput — never
+    # group "input", which would let it read every /dev/input/event*
+    # device.  Instance users are added to the skey_uinput group so they
+    # can connect() to the server socket (write permission); SO_PEERCRED
+    # checks remain the real authorization.
+    users.users.skey_uinput = {
+      isSystemUser = true;
+      group = "skey_uinput";
+    };
+    users.groups.skey_uinput = { };
+
+    services.udev.packages = [ cfg.package ];
 
     # Load the template unit shipped in the package
     # ($out/lib/systemd/system/fcitx5-skey-uinput-server@.service).
@@ -59,6 +81,15 @@ in
       map (user:
         lib.nameValuePair "fcitx5-skey-uinput-server@${user}" {
           wantedBy = [ "multi-user.target" ];
+        }
+      ) cfg.users
+    );
+
+    # Group membership for socket connect() (see above).
+    users.users = lib.listToAttrs (
+      map (user:
+        lib.nameValuePair user {
+          extraGroups = [ "skey_uinput" ];
         }
       ) cfg.users
     );

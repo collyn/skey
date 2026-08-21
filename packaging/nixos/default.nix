@@ -63,6 +63,7 @@ stdenv.mkDerivation (finalAttrs: {
     qt6.qtbase
     qt6.qtwayland # runtime platform plugin for the settings GUI on Wayland
     qt6.qtsvg # QIcon SVG loading at runtime
+    acl # setfacl in the uinput server unit's ExecStartPre
   ];
 
   cmakeFlags = [
@@ -74,6 +75,8 @@ stdenv.mkDerivation (finalAttrs: {
     # systemd.packages in the NixOS module picks the unit up from here.
     "-DSKEY_SYSTEMD_UNIT_DIR=${placeholder "out"}/lib/systemd/system"
     "-DSKEY_POLKIT_RULES_DIR=${placeholder "out"}/etc/polkit-1/rules.d"
+    "-DSKEY_UDEV_RULES_DIR=${placeholder "out"}/lib/udev/rules.d"
+    "-DSKEY_SYSUSERS_DIR=${placeholder "out"}/lib/sysusers.d"
     "-DSKEY_PROFILE_D_DIR=${placeholder "out"}/etc/profile.d"
   ];
 

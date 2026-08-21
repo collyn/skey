@@ -290,6 +290,11 @@ static std::string outputModeName(SKeyOutputMode mode) {
 
 static constexpr size_t maxBufferedUinputKeys = 32;
 
+// Probe helper: one-shot connect to the uinput server (fs socket, then
+// legacy abstract name), returning a trusted fd or -1.  Defined near
+// connectUinputServer (needs peerIsTrusted).
+static int probeUinputServer();
+
 struct UinputSocketPaths {
   std::string fsPath;       // "/run/skey-uinput-<user>/kb_socket"; empty if
                             // longer than sun_path
@@ -2063,61 +2068,110 @@ static bool connectUnixSocket(int fd, const std::string &path, bool abstract) {
   if (abstract) {
     addr.sun_path[0] = '\0';
     memcpy(&addr.sun_path[1], path.c_str(), len);
+    // len now counts the leading NUL: the address is exactly these bytes.
+    // Do NOT add a further "+1" — the kernel compares abstract names byte
+    // for byte up to the given length, and one stray trailing NUL makes
+    // every connect fail with ECONNREFUSED against the server's bind
+    // (which is len = offsetof + name.size() + 1, i.e. NUL + name, no
+    // extra terminator).  Verified with a standalone repro, 2026-08-21.
     len += 1;
-  } else {
-    memcpy(addr.sun_path, path.c_str(), len);
+    socklen_t slen = offsetof(sockaddr_un, sun_path) + len;
+    return connect(fd, reinterpret_cast<sockaddr *>(&addr), slen) == 0;
   }
+  memcpy(addr.sun_path, path.c_str(), len);
+  // Pathname sockets: include the terminating NUL, as usual.
   socklen_t slen = offsetof(sockaddr_un, sun_path) + len + 1;
   return connect(fd, reinterpret_cast<sockaddr *>(&addr), slen) == 0;
 }
 
-// The peer must be the real uinput server: the hardened server runs as our
-// own uid (it drops privileges after init), the legacy server ran as root.
+// The peer must be the real uinput server.  Accepted peers:
+//  - our own uid  — the old hardened server that dropped privileges to us
+//  - root (0)     — the legacy root server
+//  - skey_uinput  — the current server, which runs as its own dedicated
+//                   sysuser from start (never root, never drops)
 // Anything else — a squatter on the abstract name, another user's process —
 // is refused.
 static bool peerIsTrusted(int fd) {
   ucred cred{};
   socklen_t credLen = sizeof(cred);
-  return getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &credLen) == 0 &&
-         (cred.uid == getuid() || cred.uid == 0);
-}
-
-bool SKeyState::connectUinputServer() {
-  if (uinputClientFd_ >= 0) {
+  if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &credLen) != 0) {
+    SKEY_DEBUG() << "Uinput: probe SO_PEERCRED failed: " << strerror(errno);
+    return false;
+  }
+  if (cred.uid == getuid() || cred.uid == 0) {
     return true;
   }
+  // Resolve the sysuser uid once (getpwnam is cheap; the result is cached).
+  static uid_t sysUserUid = [] {
+    passwd pw{};
+    passwd *result = nullptr;
+    std::vector<char> buf(16384);
+    if (getpwnam_r("skey_uinput", &pw, buf.data(), buf.size(), &result) == 0 &&
+        result != nullptr) {
+      return result->pw_uid;
+    }
+    return static_cast<uid_t>(-1);
+  }();
+  if (sysUserUid != static_cast<uid_t>(-1) && cred.uid == sysUserUid) {
+    return true;
+  }
+  SKEY_DEBUG() << "Uinput: probe peer uid " << cred.uid
+               << " untrusted (self=" << getuid()
+               << " sysuser=" << static_cast<long>(sysUserUid) << ")";
+  return false;
+}
 
+// One-shot probe connect: fs socket first, legacy abstract name second.
+// Returns a connected+trusted fd or -1.  Never caches — callers decide
+// whether to keep the fd (connectUinputServer) or discard it.
+static int probeUinputServer() {
   auto tryConnect = [](const std::string &path, bool abstract) -> int {
     int fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0);
     if (fd < 0) {
       SKEY_DEBUG() << "Uinput: socket failed: " << strerror(errno);
       return -1;
     }
-    if (connectUnixSocket(fd, path, abstract) && peerIsTrusted(fd)) {
-      return fd;
+    if (!connectUnixSocket(fd, path, abstract)) {
+      SKEY_DEBUG() << "Uinput: probe connect failed ("
+                   << (abstract ? "abstract" : "fs") << "): " << strerror(errno);
+      close(fd);
+      return -1;
     }
-    close(fd); // a failed connect poisons the fd — always close + recreate
-    return -1;
+    if (!peerIsTrusted(fd)) {
+      close(fd);
+      return -1;
+    }
+    return fd;
   };
 
   UinputSocketPaths paths = uinputSocketPaths("kb_socket");
   if (!paths.fsPath.empty()) {
     int fd = tryConnect(paths.fsPath, /*abstract=*/false);
     if (fd >= 0) {
-      uinputClientFd_ = fd;
-      SKEY_DEBUG() << "Uinput: connected (fs socket)";
-      return true;
+      return fd;
     }
   }
-  int fd = tryConnect(paths.abstractName, /*abstract=*/true);
-  if (fd >= 0) {
-    uinputClientFd_ = fd;
-    SKEY_DEBUG() << "Uinput: connected (abstract socket)";
+  if (!paths.abstractName.empty()) {
+    int fd = tryConnect(paths.abstractName, /*abstract=*/true);
+    if (fd >= 0) {
+      return fd;
+    }
+  }
+  return -1;
+}
+
+bool SKeyState::connectUinputServer() {
+  if (uinputClientFd_ >= 0) {
     return true;
   }
-
-  SKEY_DEBUG() << "Uinput: connect failed: " << strerror(errno);
-  return false;
+  int fd = probeUinputServer();
+  if (fd < 0) {
+    SKEY_DEBUG() << "Uinput: server unavailable";
+    return false;
+  }
+  uinputClientFd_ = fd;
+  SKEY_DEBUG() << "Uinput: connected";
+  return true;
 }
 
 void SKeyState::sendBackspaceUinput(int count, uint32_t flags) {

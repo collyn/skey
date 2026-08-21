@@ -50,6 +50,7 @@ Requires:       qt6-svg
 Requires:       fcitx5
 Requires:       hicolor-icon-theme
 Requires:       systemd
+Requires:       acl
 
 %description
 SKey (Simple Key) is a Vietnamese input method engine for Fcitx5,
@@ -88,6 +89,19 @@ if [ -x /usr/bin/systemctl ]; then
     /usr/bin/systemctl daemon-reload 2>/dev/null || :
 fi
 
+# Create the skey_uinput system user (the uinput server runs as this
+# unprivileged user instead of root) and re-apply udev rules so the
+# /dev/uinput ACL grants it rw access.
+if [ -x /usr/bin/systemd-sysusers ]; then
+    /usr/bin/systemd-sysusers %{_prefix}/lib/sysusers.d/skey-uinput.conf 2>/dev/null || :
+elif ! getent passwd skey_uinput >/dev/null 2>&1 && [ -x /usr/sbin/useradd ]; then
+    /usr/sbin/useradd --system --no-create-home --user-group --shell /usr/sbin/nologin skey_uinput 2>/dev/null || :
+fi
+if [ -x /usr/bin/udevadm ]; then
+    /usr/bin/udevadm control --reload-rules 2>/dev/null || :
+    /usr/bin/udevadm trigger --subsystem-match=misc 2>/dev/null || :
+fi
+
 # Find the console user (SUDO_USER not available in rpm scripts)
 CONSOLE_USER=""
 if [ -x /usr/bin/loginctl ]; then
@@ -107,6 +121,13 @@ if [ "$1" -eq 1 ]; then
     # removal, so fresh installs start clean.
     if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && \
        [ -x /usr/bin/systemctl ]; then
+        # Add the user to the skey_uinput group: connect() needs write
+        # permission on the server socket, which the unprivileged server
+        # can no longer chown to them.  Takes effect on next login; the
+        # abstract socket keeps working until then.
+        if ! id -nG "$CONSOLE_USER" 2>/dev/null | tr ' ' '\n' | grep -qx skey_uinput; then
+            /usr/sbin/usermod -aG skey_uinput "$CONSOLE_USER" 2>/dev/null || :
+        fi
         /usr/bin/systemctl enable "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
         /usr/bin/systemctl start "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
     fi
@@ -136,6 +157,14 @@ if [ "$1" -eq 1 ]; then
     fi
 elif [ "$1" -ge 2 ]; then
     # ── Upgrade ──
+    # Upgrading users ran the old root server without group membership —
+    # add the console user to the skey_uinput group so the fs socket
+    # becomes reachable after their next login (the abstract socket
+    # covers the session in the meantime).
+    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && \
+       ! id -nG "$CONSOLE_USER" 2>/dev/null | tr ' ' '\n' | grep -qx skey_uinput; then
+        /usr/sbin/usermod -aG skey_uinput "$CONSOLE_USER" 2>/dev/null || :
+    fi
     # Restart every running uinput server instance so it picks up the new
     # binary.  Instance-agnostic on purpose: CONSOLE_USER only finds a
     # seat0 session, so a headless/multi-seat or SSH-driven upgrade used to
@@ -191,6 +220,26 @@ if [ "$1" = "0" ]; then
         /usr/bin/gtk-update-icon-cache %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
         /usr/bin/gtk-update-icon-cache %{_datadir}/icons/breeze >/dev/null 2>&1 || :
         /usr/bin/gtk-update-icon-cache %{_datadir}/icons/breeze-dark >/dev/null 2>&1 || :
+    fi
+    # Remove the dedicated sysuser created by sysusers.d — sysusers only
+    # creates, never deletes.  %preun already stopped the service, so the
+    # RuntimeDirectory is gone.  Order matters: drop the /dev/uinput ACL
+    # entry first (it references the user by name), then evict group
+    # members (groupdel refuses a non-empty group), then userdel, then
+    # groupdel as a safety net.
+    if [ -x /usr/bin/setfacl ] && [ -c /dev/uinput ]; then
+        /usr/bin/setfacl -x u:skey_uinput /dev/uinput 2>/dev/null || :
+    fi
+    if [ -x /usr/bin/gpasswd ] && getent group skey_uinput >/dev/null 2>&1; then
+        for member in $(getent group skey_uinput | cut -d: -f4 | tr ',' ' '); do
+            [ -n "$member" ] && /usr/bin/gpasswd -d "$member" skey_uinput 2>/dev/null || :
+        done
+    fi
+    if getent passwd skey_uinput >/dev/null 2>&1; then
+        /usr/sbin/userdel skey_uinput 2>/dev/null || :
+    fi
+    if getent group skey_uinput >/dev/null 2>&1; then
+        /usr/sbin/groupdel skey_uinput 2>/dev/null || :
     fi
 fi
 

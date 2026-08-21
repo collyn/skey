@@ -1,0 +1,5 @@
+# System user for the SKey uinput helper.  The server runs as this user
+# instead of root; /dev/uinput access is granted via the udev ACL rule
+# (99-skey-uinput.rules), never via group membership in "input" — that
+# would let the server read every /dev/input/event* device.
+u @SKEY_UINPUT_USER@ - "SKey uinput server"

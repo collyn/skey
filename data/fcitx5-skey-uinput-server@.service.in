@@ -4,7 +4,38 @@ Documentation=https://github.com/collyn/skey
 After=systemd-udevd.service
 
 [Service]
+# Runs entirely unprivileged as the dedicated skey_uinput system user
+# (created by the sysusers.d snippet).  /dev/uinput access comes from the
+# udev ACL rule (99-skey-uinput.rules); the setfacl below is a belt-and-
+# braces fallback for the case where the device node already existed
+# before the rule was installed (e.g. uinput loaded early at boot).  The
+# "+" prefix runs it in the root context of systemd, and the leading "-"
+# makes a missing setfacl (no acl package) non-fatal so the service still
+# starts and can fall back to the abstract socket.
+ExecStartPre=-+/usr/bin/setfacl -m u:@SKEY_UINPUT_USER@:rw /dev/uinput
+
+# CAP_SYS_PTRACE: the server verifies connecting clients by readlink of
+# /proc/<pid>/exe — an unprivileged user cannot read another uid's exe
+# link without this capability (the old root-run server could).  Scoped
+# to this single process; a compromised server can already inject input
+# via /dev/uinput, so this adds no meaningful new attack surface.
+CapabilityBoundingSet=CAP_SYS_PTRACE
+AmbientCapabilities=CAP_SYS_PTRACE
+
+# RuntimeDirectory creates /run/skey-uinput-%i owned by root:@SKEY_UINPUT_USER@
+# with mode 0770.  The server (running as @SKEY_UINPUT_USER@) can bind the
+# socket inside; the target user connects through group membership
+# (postinst adds them to the @SKEY_UINPUT_USER@ group).  RemoveOnStop cleans
+# up the directory when the service stops — including the 0700 directory
+# left behind by pre-0.x versions of the root-run server, which the new
+# unprivileged server would otherwise be unable to write to.
+RuntimeDirectory=skey-uinput-%i
+RuntimeDirectoryMode=0770
+RuntimeDirectoryPreserve=no
+
 Type=simple
+User=@SKEY_UINPUT_USER@
+Group=@SKEY_UINPUT_USER@
 ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/fcitx5-skey-uinput-server %i
 Restart=on-failure
 RestartSec=1s

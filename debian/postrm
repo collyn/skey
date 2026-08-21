@@ -11,4 +11,28 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     fi
 fi
 
+if [ "$1" = "purge" ]; then
+    # Remove the dedicated sysuser created by sysusers.d — sysusers only
+    # creates, never deletes.  The service is already stopped (prerm), so
+    # the RuntimeDirectory is gone.  Order matters: drop the /dev/uinput
+    # ACL entry first (it references the user by name), then evict group
+    # members (groupdel refuses a non-empty group), then userdel (removes
+    # the private group on systems with USERGROUPS_ENAB), then groupdel
+    # as a safety net.
+    if command -v setfacl >/dev/null 2>&1 && [ -c /dev/uinput ]; then
+        setfacl -x u:skey_uinput /dev/uinput 2>/dev/null || true
+    fi
+    if command -v gpasswd >/dev/null 2>&1 && getent group skey_uinput >/dev/null 2>&1; then
+        for member in $(getent group skey_uinput | cut -d: -f4 | tr ',' ' '); do
+            [ -n "$member" ] && gpasswd -d "$member" skey_uinput 2>/dev/null || true
+        done
+    fi
+    if getent passwd skey_uinput >/dev/null 2>&1; then
+        userdel skey_uinput 2>/dev/null || true
+    fi
+    if getent group skey_uinput >/dev/null 2>&1; then
+        groupdel skey_uinput 2>/dev/null || true
+    fi
+fi
+
 #DEBHELPER#

@@ -8,7 +8,7 @@ pkgdesc="Vietnamese SKey input method addon for Fcitx5 (skey-engine)"
 arch=('x86_64')
 url="https://github.com/collyn/skey"
 license=('MIT')
-depends=('fcitx5' 'hicolor-icon-theme' 'qt6-base' 'qt6-svg' 'systemd')
+depends=('fcitx5' 'hicolor-icon-theme' 'qt6-base' 'qt6-svg' 'systemd' 'acl')
 makedepends=('cmake' 'extra-cmake-modules' 'gettext' 'dbus' 'rust' 'gcc' 'libxcb' 'librsvg')
 # source is the git checkout itself — CI populates src/ before invoking makepkg -e
 source=()
@@ -61,6 +61,19 @@ post_install() {
         systemctl try-restart "fcitx5-skey-uinput-server@*.service" 2>/dev/null || :
     fi
 
+    # Create the skey_uinput system user (the uinput server runs as this
+    # unprivileged user instead of root) and re-apply udev rules so the
+    # /dev/uinput ACL grants it rw access.
+    if command -v systemd-sysusers >/dev/null 2>&1; then
+        systemd-sysusers /usr/lib/sysusers.d/skey-uinput.conf 2>/dev/null || :
+    elif ! getent passwd skey_uinput >/dev/null 2>&1 && command -v useradd >/dev/null 2>&1; then
+        useradd --system --no-create-home --user-group --shell /usr/bin/nologin skey_uinput 2>/dev/null || :
+    fi
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules 2>/dev/null || :
+        udevadm trigger --subsystem-match=misc 2>/dev/null || :
+    fi
+
     # Run skey-setup for the console user
     if command -v loginctl >/dev/null 2>&1 && command -v skey-setup >/dev/null 2>&1; then
         CONSOLE_USER=$(loginctl list-sessions --no-legend 2>/dev/null | \
@@ -74,6 +87,14 @@ post_install() {
             # looks like the terminal hanging.  post_remove disables each
             # instance on removal, so fresh installs start clean.
             if command -v systemctl >/dev/null 2>&1; then
+                # Add the user to the skey_uinput group: connect() needs
+                # write permission on the server socket, which the
+                # unprivileged server can no longer chown to them.  Takes
+                # effect on next login; the abstract socket keeps working
+                # until then.
+                if ! id -nG "$CONSOLE_USER" 2>/dev/null | tr ' ' '\n' | grep -qx skey_uinput; then
+                    usermod -aG skey_uinput "$CONSOLE_USER" 2>/dev/null || :
+                fi
                 systemctl enable "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
                 systemctl start "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
             fi
@@ -101,5 +122,25 @@ post_remove() {
         gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || :
         gtk-update-icon-cache /usr/share/icons/breeze 2>/dev/null || :
         gtk-update-icon-cache /usr/share/icons/breeze-dark 2>/dev/null || :
+    fi
+    # Remove the dedicated sysuser created by sysusers.d — sysusers only
+    # creates, never deletes.  pre_remove already stopped the service, so
+    # the RuntimeDirectory is gone.  Order matters: drop the /dev/uinput
+    # ACL entry first (it references the user by name), then evict group
+    # members (groupdel refuses a non-empty group), then userdel, then
+    # groupdel as a safety net.
+    if command -v setfacl >/dev/null 2>&1 && [ -c /dev/uinput ]; then
+        setfacl -x u:skey_uinput /dev/uinput 2>/dev/null || :
+    fi
+    if command -v gpasswd >/dev/null 2>&1 && getent group skey_uinput >/dev/null 2>&1; then
+        for member in $(getent group skey_uinput | cut -d: -f4 | tr ',' ' '); do
+            [ -n "$member" ] && gpasswd -d "$member" skey_uinput 2>/dev/null || :
+        done
+    fi
+    if getent passwd skey_uinput >/dev/null 2>&1; then
+        userdel skey_uinput 2>/dev/null || :
+    fi
+    if getent group skey_uinput >/dev/null 2>&1; then
+        groupdel skey_uinput 2>/dev/null || :
     fi
 }

@@ -27,7 +27,9 @@ Architecture: amd64
 Depends: ${shlibs:Depends},
          ${misc:Depends},
          fcitx5,
-         hicolor-icon-theme
+         hicolor-icon-theme,
+         acl,
+         udev
 Description: Vietnamese SKey input method addon for Fcitx5
  Skey is a Vietnamese input method engine for the Fcitx5
  input method framework, supporting Telex, Telex W, and VNI

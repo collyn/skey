@@ -2,7 +2,6 @@
 #include <atomic>
 #include <cerrno>
 #include <csignal>
-#include <grp.h>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -133,17 +132,19 @@ bool executableIsFcitx5(pid_t pid) {
          (path.size() >= 7 && path.compare(path.size() - 7, 7, "/fcitx5") == 0);
 }
 
-// Idempotent setup of the filesystem socket dir: mkdir 0700, chown to the
-// target user, chmod 0700.  EEXIST on mkdir is success (race between
-// instances), then chown/chmod repair wrong owner/mode from any previous
-// run.  Returns false if the fs socket must be skipped (e.g. manual non-root
-// run) — the server then falls back to the abstract socket only.
-bool setupFsSocketDir(const std::string &dir, uid_t uid, gid_t gid) {
+// Validate the filesystem socket dir for the unprivileged model: the
+// server runs as the skey_uinput sysuser and cannot create or chown
+// directories under /run, so the dir must already exist and be writable —
+// systemd creates it via RuntimeDirectory=skey-uinput-%i (root:skey_uinput,
+// mode 0770).  A root-run (legacy / manual) instance creates it directly.
+// Symlink-safe by design: lstat only, never follow.  Returns false if the
+// fs socket must be skipped — the server then falls back to the abstract
+// socket only.
+bool setupFsSocketDir(const std::string &dir) {
   struct stat st{};
   if (lstat(dir.c_str(), &st) == 0) {
     if (!S_ISDIR(st.st_mode)) {
-      // Not a directory (stale file from tampering): unlink, never open —
-      // safe against symlinks by design.
+      // Not a directory (stale file from tampering): unlink, never open.
       if (unlink(dir.c_str()) != 0) {
         std::cerr << "fs socket dir " << dir
                   << " is not a directory and cannot be removed: "
@@ -162,8 +163,9 @@ bool setupFsSocketDir(const std::string &dir, uid_t uid, gid_t gid) {
               << " — continuing with abstract socket only\n";
     return false;
   }
-  if (chown(dir.c_str(), uid, gid) != 0 || chmod(dir.c_str(), 0700) != 0) {
-    std::cerr << "fs socket dir chown/chmod failed: " << strerror(errno)
+  if (geteuid() != 0 && access(dir.c_str(), W_OK) != 0) {
+    std::cerr << "fs socket dir not writable (missing RuntimeDirectory?): "
+              << strerror(errno)
               << " — continuing with abstract socket only\n";
     return false;
   }
@@ -195,10 +197,20 @@ void bindFsSocket(Fd &fsServer, const std::string &path, uid_t uid, gid_t gid) {
     fsServer.reset();
     return;
   }
-  // connect() requires write permission on the socket file; the 0700 dir
-  // already gates traversal to the target user.
-  if (chown(path.c_str(), uid, gid) != 0 || chmod(path.c_str(), 0600) != 0) {
-    std::cerr << "fs socket chown/chmod failed: " << strerror(errno)
+  // connect() requires write permission on the socket file.  The socket is
+  // created by the skey_uinput sysuser, so its owner cannot be chowned;
+  // chmod 0660 grants group write, and the target user reaches it via
+  // membership in the skey_uinput group (added by postinst).  A legacy
+  // root run chowns to the target user and keeps 0600 semantics.
+  if (geteuid() == 0) {
+    if (chown(path.c_str(), uid, gid) != 0 || chmod(path.c_str(), 0600) != 0) {
+      std::cerr << "fs socket chown/chmod failed: " << strerror(errno)
+                << " — continuing with abstract socket only\n";
+      fsServer.reset();
+      return;
+    }
+  } else if (chmod(path.c_str(), 0660) != 0) {
+    std::cerr << "fs socket chmod failed: " << strerror(errno)
               << " — continuing with abstract socket only\n";
     fsServer.reset();
     return;
@@ -234,34 +246,6 @@ void bindAbstractSocket(Fd &server, const std::string &username) {
                  "only): " << strerror(errno) << "\n";
     server.reset();
   }
-}
-
-// Drop from root to the target user.  Called only after every privileged
-// operation (uinput open, dir creation, both socket binds) is done — after
-// this point the process only writes to the already-open uinput fd (write
-// permission persists), accepts on already-bound fds, and reads
-// /proc/<pid>/exe of same-uid clients.  Best-effort with loud logging: a
-// failed drop keeps serving rather than crash-looping, and the client-side
-// peer check still accepts uid 0.
-void dropPrivileges(const passwd *target) {
-  if (geteuid() != 0) {
-    return; // manual non-root run: already unprivileged
-  }
-  if (setgroups(0, nullptr) != 0) {
-    std::cerr << "setgroups failed: " << strerror(errno)
-              << " — SECURITY WARNING: continuing with root privileges\n";
-  }
-  if (setgid(target->pw_gid) != 0) {
-    std::cerr << "setgid failed: " << strerror(errno)
-              << " — SECURITY WARNING: continuing with root privileges\n";
-  }
-  if (setuid(target->pw_uid) != 0) {
-    std::cerr << "setuid failed: " << strerror(errno)
-              << " — SECURITY WARNING: continuing with root privileges\n";
-  }
-  std::cerr << "Dropped privileges to " << target->pw_name
-            << " (uid=" << target->pw_uid << " gid=" << target->pw_gid
-            << ")\n";
 }
 
 class UinputDevice {
@@ -390,22 +374,19 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // All privileged work (uinput open, fs dir creation, both socket binds)
-  // happens BEFORE dropPrivileges below — order is load-bearing.
+  // All privileged work (uinput open) happens before anything else.  The
+  // process normally runs as the skey_uinput sysuser from the start (the
+  // systemd unit sets User= and grants /dev/uinput via udev ACL), so there
+  // is no privilege to drop.  A manual root run still works: the fs socket
+  // path below detects euid 0 and uses the legacy chown semantics.
   Fd fsServer(socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0));
   if (!fsServer) {
     std::cerr << "socket failed: " << strerror(errno) << "\n";
     return 1;
   }
-  if (geteuid() == 0) {
-    if (setupFsSocketDir(fsSocketDir(targetUser), target->pw_uid,
-                         target->pw_gid)) {
-      bindFsSocket(fsServer, fsSocketPath(targetUser), target->pw_uid,
-                   target->pw_gid);
-    }
-  } else {
-    std::cerr << "not running as root — skipping fs socket, abstract only\n";
-    fsServer.reset();
+  if (setupFsSocketDir(fsSocketDir(targetUser))) {
+    bindFsSocket(fsServer, fsSocketPath(targetUser), target->pw_uid,
+                 target->pw_gid);
   }
 
   Fd abstractServer(socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0));
@@ -415,8 +396,6 @@ int main(int argc, char **argv) {
     std::cerr << "abstract socket creation failed: " << strerror(errno)
               << " — continuing with fs socket only\n";
   }
-
-  dropPrivileges(target);
 
   signal(SIGTERM, onSignal);
   signal(SIGINT, onSignal);
