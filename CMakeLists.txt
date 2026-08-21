@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(fcitx5-skey VERSION 0.7.5)
+project(fcitx5-skey VERSION 0.7.6)
 
 # Version compiled into the settings GUI / updater.  Dev builds append a
 # suffix (e.g. 0.7.5~dev.123) — project() VERSION must stay purely numeric,

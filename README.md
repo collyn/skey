@@ -361,7 +361,7 @@ SKey hỗ trợ **cập nhật tự động ngay trong giao diện** — không 
 1. Mở `fcitx5-skey-settings` → **Tab Info**
 2. Bấm **"Kiểm tra cập nhật"** — app truy vấn GitHub Releases API để so sánh phiên bản
 3. Nếu có phiên bản mới → hiện dialog với **version + release notes** → bấm **"Cập nhật ngay"**
-4. App tự động **tải .deb** → **cài qua `pkexec dpkg -i`** → **chạy `skey-setup`** → **restart Fcitx5** (có reconnect Wayland virtual keyboard)
+4. App tự động **tải .deb** → **cài qua `pkexec apt-get install -y`** (tự kéo thêm dependency mới như libqt6svg6) → **chạy `skey-setup`** → **restart Fcitx5** (có reconnect Wayland virtual keyboard)
 5. Settings GUI tự khởi động lại với phiên bản mới sau khi cài xong
 
 Toàn bộ quy trình diễn ra trong GUI — người dùng chỉ cần bấm 2 nút: "Kiểm tra cập nhật" → "Cập nhật ngay". Sau khi cập nhật, Fcitx5 được restart tự động và sẵn sàng sử dụng ngay.
