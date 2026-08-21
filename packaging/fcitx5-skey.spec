@@ -254,7 +254,11 @@ fi
 %{_datadir}/icons/breeze/apps/*/fcitx-skey.svg
 %{_datadir}/icons/breeze-dark/status/*/fcitx-skey.svg
 %{_datadir}/icons/breeze-dark/apps/*/fcitx-skey.svg
+# 128px PNG fallbacks (rsvg-convert at build time) — renderable without
+# the Qt SVG image plugin.
+%{_datadir}/icons/hicolor/128x128/apps/fcitx-skey*.png
 %{_datadir}/pixmaps/fcitx-skey.*
+%{_datadir}/pixmaps/fcitx-skey*.png
 # Preset icons (v-blue, v-dark, v-light, v-red, vn-flag) — SVG only,
 # loaded at runtime by icon_resolver via absolute path.
 %{_datadir}/icons/hicolor/scalable/apps/fcitx-skey-v-*.svg

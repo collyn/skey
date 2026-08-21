@@ -24,24 +24,38 @@ install(FILES icons/fcitx-skey.svg
 install(FILES icons/fcitx-skey.svg
     DESTINATION "${CMAKE_INSTALL_DATADIR}/pixmaps"
     RENAME "fcitx-skey.svg")
-# Generate a 128px PNG for pixmaps (fallback for environments without QtSvg plugin)
+# Generate 128px PNG fallbacks for the default icon AND every preset, so
+# environments without the Qt SVG image plugin (libqt6svg6) still render
+# icons — QIcon loads PNG natively.  The resolver probes
+# hicolor/128x128/apps first, then scalable/apps, then pixmaps; without
+# these PNGs the preset tiles went blank when the SVG plugin was missing
+# (presets used to ship SVG-only).
 find_program(RSVG_CONVERT rsvg-convert)
 if(RSVG_CONVERT)
-    set(SVG_ICON "${CMAKE_CURRENT_SOURCE_DIR}/icons/fcitx-skey.svg")
-    set(PIXMAPS_PNG "${CMAKE_CURRENT_BINARY_DIR}/pixmaps/fcitx-skey.png")
-    add_custom_command(
-        OUTPUT ${PIXMAPS_PNG}
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/pixmaps"
-        COMMAND ${RSVG_CONVERT} -w 128 -h 128 "${SVG_ICON}" -o ${PIXMAPS_PNG}
-        DEPENDS "${SVG_ICON}"
-        COMMENT "Generating 128x128 pixmaps icon"
-    )
-    install(FILES ${PIXMAPS_PNG}
-        DESTINATION "${CMAKE_INSTALL_DATADIR}/pixmaps"
-        RENAME "fcitx-skey.png")
-    add_custom_target(skey_icons ALL DEPENDS ${PIXMAPS_PNG})
+    set(SKEY_PNG_ICONS fcitx-skey fcitx-skey-v-blue fcitx-skey-v-dark
+                       fcitx-skey-v-light fcitx-skey-v-red fcitx-skey-vn-flag)
+    set(SKEY_PNG_OUTPUTS)
+    foreach(ICON_NAME ${SKEY_PNG_ICONS})
+        set(PNG_OUT "${CMAKE_CURRENT_BINARY_DIR}/pixmaps/${ICON_NAME}.png")
+        add_custom_command(
+            OUTPUT ${PNG_OUT}
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/pixmaps"
+            COMMAND ${RSVG_CONVERT} -w 128 -h 128
+                "${CMAKE_CURRENT_SOURCE_DIR}/icons/${ICON_NAME}.svg" -o ${PNG_OUT}
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/icons/${ICON_NAME}.svg"
+            COMMENT "Generating 128x128 PNG fallback for ${ICON_NAME}"
+        )
+        list(APPEND SKEY_PNG_OUTPUTS ${PNG_OUT})
+        install(FILES ${PNG_OUT}
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/128x128/apps"
+            RENAME "${ICON_NAME}.png")
+        install(FILES ${PNG_OUT}
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/pixmaps"
+            RENAME "${ICON_NAME}.png")
+    endforeach()
+    add_custom_target(skey_icons ALL DEPENDS ${SKEY_PNG_OUTPUTS})
 else()
-    message(WARNING "rsvg-convert not found — PNG fallback icon will not be generated")
+    message(WARNING "rsvg-convert not found — PNG fallback icons will not be generated")
 endif()
 
 # status/ — KDE system tray (system tray uses 'status' icon context, not 'apps')
