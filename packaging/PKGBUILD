@@ -31,10 +31,14 @@ build() {
     mkdir -p "$CARGO_HOME"
     local src_dir
     src_dir=$(ls -d "$srcdir"/fcitx5-skey-*/ 2>/dev/null | head -1)
+    # Arch is usr-merged: the CMake defaults are Debian/Fedora paths under
+    # /lib, and a real lib/ dir in the package conflicts with the /lib
+    # symlink owned by the filesystem package (pacman: "conflicting files").
     cmake -B build -S "$src_dir" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/usr \
-        -DSKEY_SYSTEMD_UNIT_DIR=/usr/lib/systemd/system
+        -DSKEY_SYSTEMD_UNIT_DIR=/usr/lib/systemd/system \
+        -DSKEY_UDEV_RULES_DIR=/usr/lib/udev/rules.d
     cmake --build build -j"$(nproc)"
 }
 
