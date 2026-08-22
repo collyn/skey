@@ -17,6 +17,10 @@ permissions:
 jobs:
   # ── Debian / Ubuntu (.deb) ──────────────────────────────────────────────
   build-deb:
+    # Dev prerelease tags (vX-dev.N) are created by the dev-release job,
+    # which already attached its artifacts — the follow-up tag push must
+    # not rebuild everything (it would also strip the dev version suffix).
+    if: ${{ !contains(github.ref_name, '-dev.') }}
     runs-on: ubuntu-22.04
 
     steps:
@@ -62,6 +66,8 @@ jobs:
 
   # ── Fedora / openSUSE (.rpm) ────────────────────────────────────────────
   build-rpm:
+    # Same guard as build-deb: dev prerelease tags must not rebuild.
+    if: ${{ !contains(github.ref_name, '-dev.') }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -164,6 +170,8 @@ jobs:
 
   # ── Arch Linux (.pkg.tar.zst) ───────────────────────────────────────────
   build-arch:
+    # Same guard as build-deb: dev prerelease tags must not rebuild.
+    if: ${{ !contains(github.ref_name, '-dev.') }}
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
