@@ -450,7 +450,7 @@ void Updater::onDownloadFinished() {
 
 // ── NixOS: rebuild instead of download ───────────────────────────────────
 
-void Updater::rebuildNixos() {
+void Updater::rebuildNixos(const QString &version) {
     if (distro_ != Distro::NixOS)
         return;
 
@@ -471,12 +471,57 @@ void Updater::rebuildNixos() {
 
     // Root's nix.conf does not enable flakes by default, so pass the
     // experimental features explicitly; nixos-rebuild adds its own flags.
-    const QString script =
-        QStringLiteral("cd /etc/nixos || exit 42\n"
-                       "%1 --extra-experimental-features 'nix-command flakes'"
-                       " flake update skey || exit 42\n"
-                       "%2 switch --flake /etc/nixos")
-            .arg(QString::fromLatin1(kNix), QString::fromLatin1(kRebuild));
+    const QString flakeFeatures =
+        QStringLiteral("--extra-experimental-features 'nix-command flakes'");
+
+    // Marker comments in configuration.nix that the GUI itself manages.
+    // Their presence means the dev channel is active (input pinned to a
+    // dev tag), so a stable update must first undo both the devVersion
+    // line and the input override (--override-input persists in flake.lock).
+    const QString devBegin =
+        QString::fromUtf8("# ── fcitx5-skey dev channel (settings GUI) ──");
+    const QString devEnd =
+        QString::fromUtf8("# ── end fcitx5-skey dev channel ──");
+    const QString configPath = QStringLiteral("/etc/nixos/configuration.nix");
+
+    const bool dev = activeChannel_ == UpdateChannel::Dev;
+    QString script = QStringLiteral("cd /etc/nixos || exit 42\n");
+
+    if (dev) {
+        // Dev channel: pin the input to the exact dev prerelease tag — the
+        // same source the .deb/.rpm dev package is built from — and record
+        // the dev version so the rebuilt package carries the dev suffix
+        // (otherwise the updater would re-offer the same dev tag forever).
+        script +=
+            QStringLiteral("sed -i '/%1/,/%2/d' %3 2>/dev/null || true\n"
+                           "cat >> %3 <<'SKEOF'\n"
+                           "%1\n"
+                           "services.fcitx5-skey.devVersion = \"%4\";\n"
+                           "%2\n"
+                           "SKEOF\n"
+                           "%5 %6 flake lock --override-input skey"
+                           " github:collyn/skey/v%4 || exit 42\n"
+                           "%7 switch --flake /etc/nixos\n")
+                .arg(devBegin, devEnd, configPath, version,
+                     QString::fromLatin1(kNix), flakeFeatures,
+                     QString::fromLatin1(kRebuild));
+    } else {
+        // Stable: when the dev block is present, drop it and reset the
+        // input override back to the default branch; otherwise leave the
+        // user's own input untouched.
+        script +=
+            QStringLiteral("if grep -q '%1' %3; then\n"
+                           "  sed -i '/%1/,/%2/d' %3\n"
+                           "  %5 %6 flake lock --override-input skey"
+                           " github:collyn/skey || exit 42\n"
+                           "else\n"
+                           "  %5 %6 flake update skey || exit 42\n"
+                           "fi\n"
+                           "%7 switch --flake /etc/nixos\n")
+                .arg(devBegin, devEnd, configPath, version,
+                     QString::fromLatin1(kNix), flakeFeatures,
+                     QString::fromLatin1(kRebuild));
+    }
 
     auto *proc = new QProcess(this);
     connect(proc,

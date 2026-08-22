@@ -18,11 +18,14 @@
     nixosConfigurations.hostname = nixpkgs.lib.nixosSystem {
       modules = [
         skey.nixosModules.default
-        {
+        { config, ... }: {
           i18n.inputMethod = {
             enable = true;
             type = "fcitx5";
-            fcitx5.addons = [ skey.packages.x86_64-linux.fcitx5-skey ];
+            # Tham chiếu qua module (không phải pkgs trực tiếp) để
+            # services.fcitx5-skey.devVersion (kênh Dev) áp dụng cho cả
+            # engine addon lẫn uinput server.
+            fcitx5.addons = [ config.services.fcitx5-skey.package ];
           };
           services.fcitx5-skey = {
             enable = true;
@@ -62,6 +65,41 @@ Các biến môi trường (`GTK_IM_MODULE`, `QT_IM_MODULE`, …) do module
 
 Sau `nixos-rebuild switch`, chạy `fcitx5 -r -d` (hoặc logout/login), rồi
 bật SKey trong `fcitx5-configtool`.
+
+## Kênh Dev
+
+Settings GUI (tab Thông tin → Kênh cập nhật: Thử nghiệm) hoạt động trên
+NixOS bằng cách:
+
+- pin flake input vào đúng tag prerelease
+  (`github:collyn/skey/v0.7.7-dev.3`) qua `nix flake update --override-input`
+  — source build ra **y hệt** source của dev package trên các distro khác
+- ghi `services.fcitx5-skey.devVersion = "0.7.7-dev.3";` vào
+  `configuration.nix` (kèm marker comment do GUI quản lý) — build mang
+  version string dev + counter (`SKEY_DEV_BUILD`) nên updater nhận diện
+  đúng bản dev, không lặp lại offer cùng tag
+
+Quay lại kênh Stable, GUI xóa block devVersion và reset input về
+`github:collyn/skey`.
+
+Thủ công tương đương:
+
+```bash
+# Bật dev (thay tag bằng dev prerelease mới nhất):
+# thêm vào configuration.nix:
+#   services.fcitx5-skey.devVersion = "0.7.7-dev.3";
+sudo nix flake lock --override-input skey github:collyn/skey/v0.7.7-dev.3
+sudo nixos-rebuild switch --flake /etc/nixos
+
+# Về stable:
+# xóa dòng devVersion khỏi configuration.nix
+sudo nix flake lock --override-input skey github:collyn/skey
+sudo nixos-rebuild switch --flake /etc/nixos
+```
+
+Điều kiện để dev channel áp dụng đúng: addon phải tham chiếu
+`config.services.fcitx5-skey.package` (như ví dụ trên) — nếu dùng
+`pkgs.fcitx5-skey` trực tiếp, engine addon vẫn là bản stable.
 
 ## Đóng gói riêng (không dùng flake)
 

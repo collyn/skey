@@ -306,6 +306,12 @@ void InfoTab::onUpdateAvailable(const QString &newVersion,
       msg += QString::fromUtf8(
           "\n\nBạn đang dùng NixOS: bản cập nhật sẽ được cài qua "
           "nixos-rebuild (không tải file từ GitHub).");
+      if (updateChannel() == UpdateChannel::Dev) {
+        msg += QString::fromUtf8(
+            "\nBản Dev sẽ pin flake input vào tag v%1 và ghi "
+            "services.fcitx5-skey.devVersion vào configuration.nix.")
+                   .arg(newVersion);
+      }
     } else {
       msg += QString::fromUtf8("\n\nKhông tìm thấy file cài đặt phù hợp. "
                                "Vui lòng tải thủ công từ GitHub.");
@@ -338,7 +344,7 @@ void InfoTab::onUpdateAvailable(const QString &newVersion,
       progressBar_->setValue(0);
       progressBar_->setRange(0, 0); // indeterminate — rebuild can take minutes
       progressBar_->show();
-      updater_->rebuildNixos();
+      updater_->rebuildNixos(pendingVersion_);
       return;
     }
 
@@ -407,8 +413,14 @@ void InfoTab::onDownloadFailed(const QString &errorMessage) {
 
 void InfoTab::onInstallStarted() {
   if (updater_->distro() == Distro::NixOS) {
-    statusLabel_->setText(QString::fromUtf8(
-        "Đang build lại hệ thống bằng nixos-rebuild... (cần quyền root)"));
+    if (updateChannel() == UpdateChannel::Dev) {
+      statusLabel_->setText(QString::fromUtf8(
+          "Đang pin bản Dev và build lại hệ thống bằng nixos-rebuild... "
+          "(cần quyền root)"));
+    } else {
+      statusLabel_->setText(QString::fromUtf8(
+          "Đang build lại hệ thống bằng nixos-rebuild... (cần quyền root)"));
+    }
     statusLabel_->setStyleSheet("font-size: 12px; color: #666;");
     statusLabel_->show();
   } else {
@@ -470,16 +482,32 @@ void InfoTab::onNixosManualUpdateRequired() {
 }
 
 void InfoTab::showNixosManualInstructions() {
-  const QString instructions = QString::fromUtf8(
+  const bool dev = updateChannel() == UpdateChannel::Dev;
+  QString instructions = QString::fromUtf8(
       "Không thể tự động cập nhật SKey trên NixOS.\n\n"
       "Hệ thống cần dùng flake với input tên là \"skey\".\n"
       "Thêm vào /etc/nixos/flake.nix:\n\n"
       "  inputs.skey.url = \"github:collyn/skey\";\n\n"
       "Rồi chạy (cần quyền root):\n\n"
-      "  cd /etc/nixos\n"
-      "  sudo nix flake update skey\n"
-      "  sudo nixos-rebuild switch --flake /etc/nixos\n"
-      "  fcitx5 -r -d\n\n"
+      "  cd /etc/nixos\n");
+  if (dev && !pendingVersion_.isEmpty()) {
+    // Dev channel: pin the input to the dev tag and record the dev
+    // version so the build carries the "-dev.N" suffix.
+    instructions += QString::fromUtf8(
+        "  # thêm vào configuration.nix:\n"
+        "  # services.fcitx5-skey.devVersion = \"%1\";\n"
+        "  sudo nix flake lock --override-input skey "
+        "github:collyn/skey/v%1\n"
+        "  sudo nixos-rebuild switch --flake /etc/nixos\n"
+        "  fcitx5 -r -d\n\n")
+        .arg(pendingVersion_);
+  } else {
+    instructions += QString::fromUtf8(
+        "  sudo nix flake update skey\n"
+        "  sudo nixos-rebuild switch --flake /etc/nixos\n"
+        "  fcitx5 -r -d\n\n");
+  }
+  instructions += QString::fromUtf8(
       "Xem chi tiết: https://github.com/collyn/skey/blob/main/"
       "packaging/nixos/README.md");
 

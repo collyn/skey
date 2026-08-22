@@ -24,10 +24,13 @@ public:
     void downloadAndInstall(const QString &downloadUrl, const QString &version);
 
     /// NixOS: run `nix flake update skey` + `nixos-rebuild switch` via
-    /// pkexec (no download).  Emits installStarted() then
-    /// installFinished(), or nixosManualUpdateRequired() when manual
-    /// action is needed.
-    void rebuildNixos();
+    /// pkexec (no download).  Stable channel follows the default branch;
+    /// dev channel pins the input to the dev prerelease tag and records
+    /// `services.fcitx5-skey.devVersion` in configuration.nix so the
+    /// rebuilt package carries the dev version string.  Emits
+    /// installStarted() then installFinished(), or
+    /// nixosManualUpdateRequired() when manual action is needed.
+    void rebuildNixos(const QString &version);
 
     /// Detect which distro family we're running on.
     static Distro detectDistro();

@@ -127,6 +127,8 @@ sudo nix flake update skey
 sudo nixos-rebuild switch --flake /etc/nixos
 ```
 
+Kênh **Thử nghiệm (Dev)** hoạt động đầy đủ trên NixOS: GUI pin flake input vào đúng tag dev prerelease + ghi `services.fcitx5-skey.devVersion` để build mang version string dev; quay lại Stable sẽ reset cả hai.
+
 > 💡 Hướng dẫn cấu hình thủ công chi tiết (kể cả hệ thống chưa dùng flake): [packaging/nixos/README.md](packaging/nixos/README.md). Để cập nhật qua GUI hoạt động, input trong flake phải tên là `skey`.
 
 > **GPG key fingerprint:** Tất cả repository (APT, RPM, Arch) dùng chung một GPG key. Public key tại `https://collyn.github.io/skey/key.asc`. Import thủ công: `curl -fsSL https://collyn.github.io/skey/key.asc | gpg --import`

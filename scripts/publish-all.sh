@@ -330,7 +330,9 @@ services.fcitx5-skey = {
 i18n.inputMethod = {
   enable = true;
   type = "fcitx5";
-  fcitx5.addons = [ pkgs.fcitx5-skey ];
+  # Reference the module's package (not pkgs directly) so the dev channel
+  # (services.fcitx5-skey.devVersion) applies to the addon too.
+  fcitx5.addons = [ config.services.fcitx5-skey.package ];
 };
 # ── end fcitx5-skey ──
 EOF
