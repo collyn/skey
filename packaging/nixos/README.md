@@ -2,6 +2,7 @@
 
 | File | Nội dung |
 |---|---|
+| `../../flake.nix` | Flake ở repo root, re-export thư mục này (flakes chỉ được phát hiện ở root) |
 | `flake.nix` | Package `fcitx5-skey` + NixOS module |
 | `default.nix` | Package derivation (dùng được không cần flake) |
 | `module.nix` | `services.fcitx5-skey` — uinput server, polkit rule |
@@ -17,11 +18,14 @@
     nixosConfigurations.hostname = nixpkgs.lib.nixosSystem {
       modules = [
         skey.nixosModules.default
-        {
+        { config, ... }: {
           i18n.inputMethod = {
             enable = true;
             type = "fcitx5";
-            fcitx5.addons = [ skey.packages.x86_64-linux.fcitx5-skey ];
+            # Tham chiếu qua module (không phải pkgs trực tiếp) để
+            # services.fcitx5-skey.devVersion (kênh Dev) áp dụng cho cả
+            # engine addon lẫn uinput server.
+            fcitx5.addons = [ config.services.fcitx5-skey.package ];
           };
           services.fcitx5-skey = {
             enable = true;
@@ -41,9 +45,16 @@ và `XDG_DATA_DIRS` trỏ vào package — đây là cách fcitx5 tìm thấy `s
 Module `services.fcitx5-skey` xử lý những việc mà trên Fedora/Debian do
 `%post` của RPM/DEB làm:
 
-- `hardware.uinput.enable = true` — load module + udev rule cho `/dev/uinput`
+- `hardware.uinput.enable = true` — load module + tạo group `uinput` với
+  udev rule `MODE="0660" GROUP="uinput"` cho `/dev/uinput`
+- Tạo system user `skey_uinput` và thêm vào group `uinput` — đây là cách
+  NixOS cấp quyền mở `/dev/uinput` cho server (udev rule trong package gọi
+  `/usr/bin/setfacl`, không dùng được trên NixOS — xem Ghi chú kỹ thuật)
 - `systemd.packages` — nạp unit template `fcitx5-skey-uinput-server@.service`
-  từ package và enable một instance cho mỗi user trong `users`
+  từ package và enable một instance cho mỗi user trong `users`; đồng thời
+  override `ExecStartPre`/`ExecStartPost` của unit bằng store path của
+  `setfacl` (template gốc gọi `/usr/bin/setfacl` và
+  `/usr/bin/systemd-sysusers` — không tồn tại trên NixOS)
 - Polkit rule (qua `security.polkit.extraConfig` — trên NixOS
   `/etc/polkit-1/rules.d` là file được generate, không sửa trực tiếp) để
   user restart instance của mình không cần mật khẩu
@@ -55,6 +66,41 @@ Các biến môi trường (`GTK_IM_MODULE`, `QT_IM_MODULE`, …) do module
 Sau `nixos-rebuild switch`, chạy `fcitx5 -r -d` (hoặc logout/login), rồi
 bật SKey trong `fcitx5-configtool`.
 
+## Kênh Dev
+
+Settings GUI (tab Thông tin → Kênh cập nhật: Thử nghiệm) hoạt động trên
+NixOS bằng cách:
+
+- pin flake input vào đúng tag prerelease
+  (`github:collyn/skey/v0.7.7-dev.3`) qua `nix flake update --override-input`
+  — source build ra **y hệt** source của dev package trên các distro khác
+- ghi `services.fcitx5-skey.devVersion = "0.7.7-dev.3";` vào
+  `configuration.nix` (kèm marker comment do GUI quản lý) — build mang
+  version string dev + counter (`SKEY_DEV_BUILD`) nên updater nhận diện
+  đúng bản dev, không lặp lại offer cùng tag
+
+Quay lại kênh Stable, GUI xóa block devVersion và reset input về
+`github:collyn/skey`.
+
+Thủ công tương đương:
+
+```bash
+# Bật dev (thay tag bằng dev prerelease mới nhất):
+# thêm vào configuration.nix:
+#   services.fcitx5-skey.devVersion = "0.7.7-dev.3";
+sudo nix flake lock --override-input skey github:collyn/skey/v0.7.7-dev.3
+sudo nixos-rebuild switch --flake /etc/nixos
+
+# Về stable:
+# xóa dòng devVersion khỏi configuration.nix
+sudo nix flake lock --override-input skey github:collyn/skey
+sudo nixos-rebuild switch --flake /etc/nixos
+```
+
+Điều kiện để dev channel áp dụng đúng: addon phải tham chiếu
+`config.services.fcitx5-skey.package` (như ví dụ trên) — nếu dùng
+`pkgs.fcitx5-skey` trực tiếp, engine addon vẫn là bản stable.
+
 ## Đóng gói riêng (không dùng flake)
 
 ```nix
@@ -63,6 +109,11 @@ pkgs.callPackage (builtins.fetchTarball "https://github.com/collyn/skey/archive/
 
 ## Ghi chú kỹ thuật
 
+- **`nixosModules.default` là wrapper module**: overlay `fcitx5-skey` vào
+  pkgs (để `services.fcitx5-skey.package` mặc định resolve được — package
+  nằm trong flake chứ không phải nixpkgs) rồi mới import `module.nix`.
+  Nếu dùng `module.nix` trực tiếp (không qua flake), phải tự overlay
+  hoặc set `services.fcitx5-skey.package` thủ công.
 - **skey-engine (Rust)** được build bằng `buildRustPackage` riêng vì bước
   cargo trong CMake cần network (bị cấm trong sandbox nix). CMake được
   truyền `-DSKEY_ENGINE_PREBUILT_LIB` để bỏ qua bước cargo và
@@ -70,10 +121,31 @@ pkgs.callPackage (builtins.fetchTarball "https://github.com/collyn/skey/archive/
   `Cargo.lock` của skey-engine nên không cần `cargoHash`.
 - **Path distro-specific** (`/lib/systemd/system`, `/etc/polkit-1/rules.d`,
   `/etc/profile.d`) được override qua cache vars `SKEY_SYSTEMD_UNIT_DIR`,
-  `SKEY_POLKIT_RULES_DIR`, `SKEY_PROFILE_D_DIR` để trỏ vào `$out` — mặc định
-  giữ nguyên như cũ cho Fedora/Debian/Arch.
+  `SKEY_POLKIT_RULES_DIR`, `SKEY_UDEV_RULES_DIR`, `SKEY_SYSUSERS_DIR`,
+  `SKEY_PROFILE_D_DIR` (định nghĩa trong `data/CMakeLists.txt`) để trỏ vào
+  `$out` — mặc định giữ nguyên như cũ cho Fedora/Debian/Arch.
+- **Udev rule của package KHÔNG ship qua `services.udev.packages`**:
+  nixpkgs có guard quét udev rules còn reference `/usr/bin` và fail build
+  (`exit 1`) — rule `99-skey-uinput.rules` gọi `/usr/bin/setfacl` nên sẽ
+  dính guard. Thay vào đó module thêm `skey_uinput` vào group `uinput`
+  (do `hardware.uinput.enable` tạo, 0660 trên `/dev/uinput`) — tương đương
+  về quyền hạn và hoàn toàn declarative. `ExecStartPre`/`ExecStartPost`
+  của unit được override bằng `${pkgs.acl}/bin/setfacl` (store path) để
+  giữ ACL belt-and-braces cho device node và ACL per-user trên
+  `/run/skey-uinput-<user>`.
 - **Icon**: code có fallback `FCITX_SKEY_ICON_PATH` compile-time trỏ vào
   `$out/share/icons/...` nên tray icon hoạt động dù `/usr/share/icons`
   không tồn tại trên NixOS.
 - `qt6.qtwayland` được wrap vào settings GUI (wrapQtAppsHook) để chạy được
   trên Wayland; `qt6.qtsvg` để QIcon load SVG.
+
+## Kiểm tra không cần máy NixOS
+
+Trên máy không có nix, có thể validate syntax + eval bằng container:
+
+```sh
+docker run --rm -v "$PWD":/src -w /src nixos/nix \
+  nix-instantiate --parse packaging/nixos/default.nix packaging/nixos/module.nix flake.nix
+docker run --rm -v "$PWD":/src -w /src nixos/nix \
+  nix build .#fcitx5-skey --no-link
+```

@@ -72,24 +72,30 @@ QIcon makeRoundedIcon(const QString &iconPath, int size,
     QIcon icon(iconPath);
     if (icon.isNull()) return {};
 
+    // QIcon::pixmap() treats `size` as device-independent and returns a
+    // pixmap already scaled by the app's devicePixelRatio.  Start `rounded`
+    // from src so both share physical size and dpr — the draw below is then
+    // identity.  The old code passed a pre-multiplied size plus an explicit
+    // source rect, double-scaling the icon so it overflowed the tile at
+    // fractional scaling (e.g. 125%).
     QPixmap src = icon.pixmap(size, size);
-    QPixmap rounded(size, size);
+    QPixmap rounded = src;
     rounded.fill(Qt::transparent);
     QPainter p(&rounded);
     p.setRenderHint(QPainter::Antialiasing, true);
 
-    // Clip to rounded rect
+    const QSizeF logical = rounded.deviceIndependentSize();
     QPainterPath pp;
-    pp.addRoundedRect(QRectF(0, 0, size, size), kTileRadius - 2, kTileRadius - 2);
+    pp.addRoundedRect(QRectF(QPointF(0, 0), logical), kTileRadius - 2, kTileRadius - 2);
     p.setClipPath(pp);
 
     // Solid background fill
     if (bgColor.alpha() > 0) {
-        p.fillRect(QRectF(0, 0, size, size), bgColor);
+        p.fillRect(QRectF(QPointF(0, 0), logical), bgColor);
     }
 
     // Icon on top
-    p.drawPixmap(QRectF(0, 0, size, size), src, QRectF(0, 0, size, size));
+    p.drawPixmap(0, 0, src);
     p.end();
     return QIcon(rounded);
 }

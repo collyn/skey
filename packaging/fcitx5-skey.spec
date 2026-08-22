@@ -13,7 +13,7 @@ Version:        0.5.6
 Release:        1%{?dist}
 Summary:        Vietnamese SKey input method addon for Fcitx5
 
-License:        MIT
+License:        GPL-3.0-or-later
 URL:            https://github.com/collyn/skey
 # Source is the git checkout; CI populates ~/rpmbuild/SOURCES or builds from checkout
 Source0:        fcitx5-skey-%{version}.tar.gz
