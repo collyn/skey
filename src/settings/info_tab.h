@@ -43,9 +43,12 @@ private slots:
     void onDownloadFailed(const QString &errorMessage);
     void onInstallStarted();
     void onInstallFinished(bool success, const QString &message);
+    void onNixosManualUpdateRequired();
 
 private:
     void setupUI();
+    /// Shared by the no-flake click path and onNixosManualUpdateRequired().
+    void showNixosManualInstructions();
 
     QLabel *versionLabel_;
     QLabel *statusLabel_;

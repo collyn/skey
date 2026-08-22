@@ -24,6 +24,21 @@ static const char *kReleasesListUrl =
 // ── Distro detection ─────────────────────────────────────────────────────
 
 Distro Updater::detectDistro() {
+    // NixOS first — must run before the package-manager checks: a dev
+    // shell on NixOS can contain dpkg/rpm/pacman.  /etc/NIXOS is the
+    // canonical marker (present on NixOS containers too); /etc/os-release
+    // is the fallback for nonstandard layouts.
+    if (QFile::exists("/etc/NIXOS"))
+        return Distro::NixOS;
+    {
+        QFile osRelease("/etc/os-release");
+        if (osRelease.open(QIODevice::ReadOnly)) {
+            const QString content = QString::fromUtf8(osRelease.readAll());
+            if (content.contains("ID=nixos") ||
+                content.contains("ID=\"nixos\""))
+                return Distro::NixOS;
+        }
+    }
     // Check package managers — order matters: dnf/rpm first because some
     // Fedora systems may have dpkg installed for cross-build tooling,
     // which would cause a false Debian detection.
@@ -44,6 +59,7 @@ static const char *packageExtension(Distro d) {
     case Distro::Debian:  return ".deb";
     case Distro::Fedora:  return ".rpm";
     case Distro::Arch:    return ".pkg.tar.zst";
+    case Distro::NixOS:   return ""; // never downloaded: rebuild via nix
     case Distro::Unknown: return ".deb"; // fallback
     }
     return ".deb";
@@ -54,6 +70,7 @@ static const char *distroName(Distro d) {
     case Distro::Debian:  return "Debian/Ubuntu";
     case Distro::Fedora:  return "Fedora/RHEL";
     case Distro::Arch:    return "Arch Linux";
+    case Distro::NixOS:   return "NixOS";
     case Distro::Unknown: return "Linux";
     }
     return "Linux";
@@ -76,6 +93,10 @@ static bool assetMatchesDistro(const QString &name, Distro distro) {
     }
     case Distro::Arch:
         return name.endsWith(".pkg.tar.zst") || name.endsWith(".pkg.tar.xz");
+    case Distro::NixOS:
+        // GitHub releases carry no Nix artifact; update goes through
+        // nixos-rebuild, so no asset ever matches.
+        return false;
     case Distro::Unknown:
         // Try all; prefer .deb for backward compat
         return name.endsWith(".deb") || name.endsWith(".rpm") ||
@@ -306,6 +327,13 @@ void Updater::downloadAndInstall(const QString &downloadUrl,
         return;
     }
 
+    if (distro_ == Distro::NixOS) {
+        // Never called: InfoTab routes NixOS through rebuildNixos().
+        emit downloadFailed(QString::fromUtf8(
+            "NixOS không dùng file cài đặt; dùng nixos-rebuild."));
+        return;
+    }
+
     const char *ext = packageExtension(distro_);
     pendingPackagePath_ = QStandardPaths::writableLocation(
                               QStandardPaths::TempLocation) +
@@ -376,6 +404,8 @@ void Updater::onDownloadFinished() {
     case Distro::Arch:
         args = {"pacman", "-U", "--noconfirm", pendingPackagePath_};
         break;
+    case Distro::NixOS:
+        break; // unreachable — guarded above; updates go via rebuildNixos()
     case Distro::Unknown:
         // Fallback: try dpkg (best-effort)
         args = {"dpkg", "-i", pendingPackagePath_};
@@ -416,4 +446,66 @@ void Updater::onDownloadFinished() {
             });
 
     proc->start(program, args);
+}
+
+// ── NixOS: rebuild instead of download ───────────────────────────────────
+
+void Updater::rebuildNixos() {
+    if (distro_ != Distro::NixOS)
+        return;
+
+    // pkexec sanitizes PATH (secure default — no /run/current-system/sw),
+    // so use absolute paths; they exist on every NixOS system.  /bin/sh
+    // is guaranteed on NixOS.  Exit codes: 0 = success, 42 = `nix flake
+    // update skey` failed (input missing/not named `skey`) → manual
+    // instructions; pkexec itself returns 126 on auth cancel/deny.
+    static const char *kNix = "/run/current-system/sw/bin/nix";
+    static const char *kRebuild = "/run/current-system/sw/bin/nixos-rebuild";
+    if (!QFile::exists(kNix) || !QFile::exists(kRebuild)) {
+        emit nixosManualUpdateRequired();
+        return;
+    }
+
+    // No download, so no downloadProgress/downloadFinished will fire.
+    emit installStarted();
+
+    // Root's nix.conf does not enable flakes by default, so pass the
+    // experimental features explicitly; nixos-rebuild adds its own flags.
+    const QString script =
+        QStringLiteral("cd /etc/nixos || exit 42\n"
+                       "%1 --extra-experimental-features 'nix-command flakes'"
+                       " flake update skey || exit 42\n"
+                       "%2 switch --flake /etc/nixos")
+            .arg(QString::fromLatin1(kNix), QString::fromLatin1(kRebuild));
+
+    auto *proc = new QProcess(this);
+    connect(proc,
+            static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(
+                &QProcess::finished),
+            this, [this, proc](int exitCode, QProcess::ExitStatus) {
+                QString errOutput =
+                    QString::fromUtf8(proc->readAllStandardError());
+                proc->deleteLater();
+
+                if (exitCode == 0) {
+                    emit installFinished(
+                        true,
+                        QString::fromUtf8(
+                            "Cập nhật thành công! Hệ thống đã được build "
+                            "lại bằng nixos-rebuild."));
+                } else if (exitCode == 42) {
+                    emit nixosManualUpdateRequired();
+                } else {
+                    emit installFinished(
+                        false,
+                        QString::fromUtf8("Cập nhật thất bại (mã %1): %2")
+                            .arg(exitCode)
+                            .arg(errOutput.isEmpty()
+                                     ? QString::fromUtf8("Người dùng đã hủy "
+                                                         "hoặc lỗi quyền.")
+                                     : errOutput));
+                }
+            });
+
+    proc->start("pkexec", {"/bin/sh", "-c", script});
 }

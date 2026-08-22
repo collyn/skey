@@ -7,7 +7,7 @@ pkgrel=1
 pkgdesc="Vietnamese SKey input method addon for Fcitx5 (skey-engine)"
 arch=('x86_64')
 url="https://github.com/collyn/skey"
-license=('MIT')
+license=('GPL-3.0-or-later')
 depends=('fcitx5' 'hicolor-icon-theme' 'qt6-base' 'qt6-svg' 'systemd' 'acl')
 makedepends=('cmake' 'extra-cmake-modules' 'gettext' 'dbus' 'rust' 'gcc' 'libxcb' 'librsvg')
 # source is the git checkout itself — CI populates src/ before invoking makepkg -e

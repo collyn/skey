@@ -6,6 +6,7 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -17,6 +18,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
@@ -45,6 +47,8 @@ InfoTab::InfoTab(QWidget *parent) : QWidget(parent) {
   connect(updater_, &Updater::installStarted, this, &InfoTab::onInstallStarted);
   connect(updater_, &Updater::installFinished, this,
           &InfoTab::onInstallFinished);
+  connect(updater_, &Updater::nixosManualUpdateRequired, this,
+          &InfoTab::onNixosManualUpdateRequired);
 
   setupUI();
 }
@@ -297,10 +301,17 @@ void InfoTab::onUpdateAvailable(const QString &newVersion,
   }
 
   if (downloadUrl.isEmpty()) {
-    msg += QString::fromUtf8("\n\nKhông tìm thấy file cài đặt phù hợp. "
-                             "Vui lòng tải thủ công từ GitHub.");
-    QMessageBox::information(this, QString::fromUtf8("Có bản cập nhật"), msg);
-    return;
+    if (updater_->distro() == Distro::NixOS) {
+      // No asset expected on NixOS: the update is a system rebuild.
+      msg += QString::fromUtf8(
+          "\n\nBạn đang dùng NixOS: bản cập nhật sẽ được cài qua "
+          "nixos-rebuild (không tải file từ GitHub).");
+    } else {
+      msg += QString::fromUtf8("\n\nKhông tìm thấy file cài đặt phù hợp. "
+                               "Vui lòng tải thủ công từ GitHub.");
+      QMessageBox::information(this, QString::fromUtf8("Có bản cập nhật"), msg);
+      return;
+    }
   }
 
   QMessageBox msgBox(this);
@@ -315,7 +326,22 @@ void InfoTab::onUpdateAvailable(const QString &newVersion,
   if (msgBox.clickedButton() == yesBtn) {
     // User chose "Cập nhật ngay"
     updateBtn_->setEnabled(false);
-    updateBtn_->setText(QString::fromUtf8("Đang tải..."));
+    updateBtn_->setText(QString::fromUtf8("Đang cập nhật..."));
+
+    if (updater_->distro() == Distro::NixOS) {
+      if (!QFile::exists("/etc/nixos/flake.nix")) {
+        showNixosManualInstructions();
+        updateBtn_->setEnabled(true);
+        updateBtn_->setText(QString::fromUtf8("Kiểm tra cập nhật"));
+        return;
+      }
+      progressBar_->setValue(0);
+      progressBar_->setRange(0, 0); // indeterminate — rebuild can take minutes
+      progressBar_->show();
+      updater_->rebuildNixos();
+      return;
+    }
+
     statusLabel_->setText(QString::fromUtf8("Đang tải bản cập nhật..."));
     statusLabel_->setStyleSheet("font-size: 12px; color: #666;");
     statusLabel_->show();
@@ -380,7 +406,15 @@ void InfoTab::onDownloadFailed(const QString &errorMessage) {
 // ── Updater: install slots ──────────────────────────────────────────────
 
 void InfoTab::onInstallStarted() {
-  statusLabel_->setText(QString::fromUtf8("Đang cài đặt... (cần quyền root)"));
+  if (updater_->distro() == Distro::NixOS) {
+    statusLabel_->setText(QString::fromUtf8(
+        "Đang build lại hệ thống bằng nixos-rebuild... (cần quyền root)"));
+    statusLabel_->setStyleSheet("font-size: 12px; color: #666;");
+    statusLabel_->show();
+  } else {
+    statusLabel_->setText(
+        QString::fromUtf8("Đang cài đặt... (cần quyền root)"));
+  }
   progressBar_->setRange(0, 0); // indeterminate
 }
 
@@ -391,6 +425,12 @@ void InfoTab::onInstallFinished(bool success, const QString &message) {
   progressBar_->hide();
 
   if (success) {
+    if (updater_->distro() == Distro::NixOS) {
+      // No package postinst on NixOS: restart fcitx5 + the user's uinput
+      // server (polkit rule in the NixOS module permits it without a
+      // password) so the newly-built skey.so takes effect.
+      restartFcitx5();
+    }
     statusLabel_->setText(QString::fromUtf8("✓ %1").arg(message));
     statusLabel_->setStyleSheet("font-size: 12px; color: green;");
     versionLabel_->setText(
@@ -399,9 +439,15 @@ void InfoTab::onInstallFinished(bool success, const QString &message) {
     // Close and reopen the settings GUI so the user is running
     // the freshly-installed version.  Brief delay lets the user
     // see the success message before the window closes.
-    QTimer::singleShot(1500, this, [this]() {
+    // On NixOS, applicationFilePath() is the OLD store path (alive until
+    // GC); findExecutable resolves through PATH → /run/current-system/sw
+    // → the new generation after the rebuild.
+    QString exe = QStandardPaths::findExecutable("fcitx5-skey-settings");
+    if (exe.isEmpty())
+      exe = QApplication::applicationFilePath();
+    QTimer::singleShot(1500, this, [this, exe]() {
       QWidget *win = window();
-      QProcess::startDetached(QApplication::applicationFilePath(), {});
+      QProcess::startDetached(exe, {});
       if (win)
         win->close();
     });
@@ -410,6 +456,36 @@ void InfoTab::onInstallFinished(bool success, const QString &message) {
     statusLabel_->setStyleSheet("font-size: 12px; color: red;");
   }
   statusLabel_->show();
+}
+
+void InfoTab::onNixosManualUpdateRequired() {
+  updateBtn_->setEnabled(true);
+  updateBtn_->setText(QString::fromUtf8("Kiểm tra cập nhật"));
+  progressBar_->setRange(0, 100);
+  progressBar_->hide();
+  statusLabel_->setText(
+      QString::fromUtf8("Không thể cập nhật tự động — xem hướng dẫn."));
+  statusLabel_->setStyleSheet("font-size: 12px; color: #666;");
+  showNixosManualInstructions();
+}
+
+void InfoTab::showNixosManualInstructions() {
+  const QString instructions = QString::fromUtf8(
+      "Không thể tự động cập nhật SKey trên NixOS.\n\n"
+      "Hệ thống cần dùng flake với input tên là \"skey\".\n"
+      "Thêm vào /etc/nixos/flake.nix:\n\n"
+      "  inputs.skey.url = \"github:collyn/skey\";\n\n"
+      "Rồi chạy (cần quyền root):\n\n"
+      "  cd /etc/nixos\n"
+      "  sudo nix flake update skey\n"
+      "  sudo nixos-rebuild switch --flake /etc/nixos\n"
+      "  fcitx5 -r -d\n\n"
+      "Xem chi tiết: https://github.com/collyn/skey/blob/main/"
+      "packaging/nixos/README.md");
+
+  QMessageBox::information(this,
+                           QString::fromUtf8("Cần cập nhật thủ công"),
+                           instructions);
 }
 
 // ── Backup / Restore ────────────────────────────────────────────────────

@@ -11,7 +11,7 @@ class QNetworkAccessManager;
 class QNetworkReply;
 
 /// Supported Linux distro families for package management.
-enum class Distro { Debian, Fedora, Arch, Unknown };
+enum class Distro { Debian, Fedora, Arch, NixOS, Unknown };
 
 class Updater : public QObject {
     Q_OBJECT
@@ -23,8 +23,16 @@ public:
     void setChannel(UpdateChannel channel);
     void downloadAndInstall(const QString &downloadUrl, const QString &version);
 
+    /// NixOS: run `nix flake update skey` + `nixos-rebuild switch` via
+    /// pkexec (no download).  Emits installStarted() then
+    /// installFinished(), or nixosManualUpdateRequired() when manual
+    /// action is needed.
+    void rebuildNixos();
+
     /// Detect which distro family we're running on.
     static Distro detectDistro();
+    /// Distro detected when this Updater was constructed.
+    Distro distro() const { return distro_; }
 
 signals:
     void updateAvailable(const QString &newVersion,
@@ -39,6 +47,11 @@ signals:
 
     void installStarted();
     void installFinished(bool success, const QString &message);
+
+    /// NixOS: auto-update cannot proceed (no /etc/nixos/flake.nix, input
+    /// not named `skey`, or the nix CLI is missing).  The UI must show
+    /// copyable manual commands.
+    void nixosManualUpdateRequired();
 
 private slots:
     void onCheckReplyFinished();
