@@ -128,6 +128,44 @@ else
     fi
 fi
 
+# Append a config block to configuration.nix, inserting it BEFORE the
+# attrset's closing brace when the file ends with one — the default
+# nixos-generate-config layout — so the block lands INSIDE the config
+# (appending blindly would put it after the final "}" and break eval).
+append_config_block() {
+    local blockfile
+    blockfile=$(mktemp)
+    cat > "$blockfile"
+    awk -v blockfile="$blockfile" '
+        { lines[NR] = $0 }
+        END {
+            # Skip trailing blank/comment lines to find the last real line.
+            last = NR
+            while (last > 0 && (lines[last] ~ /^[[:space:]]*$/ ||
+                                lines[last] ~ /^[[:space:]]*#/)) last--
+            if (last > 0 && lines[last] ~ /^[[:space:]]*}[[:space:]]*$/) {
+                # Lone closing brace: insert the block before it.
+                for (i = 1; i < last; i++) print lines[i]
+                while ((getline line < blockfile) > 0) print line
+                close(blockfile)
+                for (i = last; i <= NR; i++) print lines[i]
+            } else if (last > 0 && lines[last] ~ /}[[:space:]]*$/) {
+                # Inline close ("...; }"): strip the brace, insert, restore.
+                sub(/}[[:space:]]*$/, "", lines[last])
+                for (i = 1; i <= last; i++) print lines[i]
+                while ((getline line < blockfile) > 0) print line
+                close(blockfile)
+                print "}"
+            } else {
+                for (i = 1; i <= NR; i++) print lines[i]
+                while ((getline line < blockfile) > 0) print line
+                close(blockfile)
+            }
+        }
+    ' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+    rm -f "$blockfile"
+}
+
 # 4) configuration.nix: uinput server + fcitx5 addon
 if grep -q 'services\.fcitx5-skey' "$CONFIG"; then
     echo "✓ $CONFIG already configures services.fcitx5-skey"
@@ -139,7 +177,7 @@ else
     if [ "$USER_NAME" = "root" ]; then
         echo "⚠ Could not determine your user (script ran as root) — edit users in $CONFIG after the rebuild fails."
     fi
-    cat >> "$CONFIG" <<EOF
+    append_config_block <<EOF
 
 # ── fcitx5-skey (added by install script) ──
 services.fcitx5-skey = {
