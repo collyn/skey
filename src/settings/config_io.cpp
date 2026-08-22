@@ -542,10 +542,14 @@ bool removeCustomIcon(const std::string &filename) {
 std::string effectiveIconPath(const SKeyConfig &cfg) {
     skey::IconSearchPaths paths;
     paths.userDataDir = userDataDir();
-    // PNG-first for Qt (renders natively without QtSvg plugin)
+    // SVG first: renders crisp at any scale/DPR, while the 128px PNG gets
+    // visibly soft or pixelated at fractional HiDPI scaling.  Both callers
+    // (info tab + settings window icon) fall back to the PNG when QIcon
+    // returns null — i.e. exactly when the QtSvg plugin is missing — so
+    // environments without libqt6svg stay covered.
     paths.systemDirs = {
-        "/usr/share/icons/hicolor/128x128/apps",
         "/usr/share/icons/hicolor/scalable/apps",
+        "/usr/share/icons/hicolor/128x128/apps",
         "/usr/share/pixmaps",
     };
     paths.fallback = "/usr/share/icons/hicolor/128x128/apps/fcitx-skey.png";

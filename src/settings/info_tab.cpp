@@ -78,7 +78,12 @@ void InfoTab::setupUI() {
     QPainterPath path;
     path.addRoundedRect(QRectF(0, 0, 80, 80), 12, 12);
     painter.setClipPath(path);
-    painter.drawPixmap(QRectF(0, 0, 80, 80), src, QRectF(0, 0, 80, 80));
+    // Draw the whole source at its logical size.  An explicit sourceRect is
+    // interpreted in device pixels once the pixmap carries a
+    // devicePixelRatio, so at fractional scaling (e.g. 125%) the old
+    // QRectF(0,0,80,80) source rect cropped and zoomed the icon until it
+    // overflowed the rounded tile.
+    painter.drawPixmap(0, 0, src);
     painter.end();
     iconLabel->setPixmap(rounded);
   } else {
