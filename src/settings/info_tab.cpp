@@ -65,24 +65,22 @@ void InfoTab::setupUI() {
   if (icon.isNull())
     icon = QIcon("/usr/share/icons/hicolor/128x128/apps/fcitx-skey.png");
   if (!icon.isNull()) {
-    qreal dpr = iconLabel->devicePixelRatioF();
-    int pxSize = static_cast<int>(80 * dpr);
-    QPixmap src = icon.pixmap(pxSize, pxSize);
-    src.setDevicePixelRatio(dpr);
-    // Render with rounded corners via a clipped painter
-    QPixmap rounded(pxSize, pxSize);
-    rounded.setDevicePixelRatio(dpr);
+    // QIcon::pixmap() treats its size argument as device-independent and
+    // returns a pixmap already scaled by the app's devicePixelRatio, so ask
+    // for 80×80 and let Qt do the scaling.  Start `rounded` from src so
+    // both share physical size and dpr — the draw below is then identity.
+    // The old code multiplied by dpr by hand (80 * dpr + an explicit
+    // source rect), double-scaling the icon so it overflowed the rounded
+    // tile at fractional scaling (e.g. 125%).
+    QPixmap src = icon.pixmap(80, 80);
+    QPixmap rounded = src;
     rounded.fill(Qt::transparent);
     QPainter painter(&rounded);
     painter.setRenderHint(QPainter::Antialiasing, true);
     QPainterPath path;
-    path.addRoundedRect(QRectF(0, 0, 80, 80), 12, 12);
+    path.addRoundedRect(QRectF(QPointF(0, 0), rounded.deviceIndependentSize()),
+                        12, 12);
     painter.setClipPath(path);
-    // Draw the whole source at its logical size.  An explicit sourceRect is
-    // interpreted in device pixels once the pixmap carries a
-    // devicePixelRatio, so at fractional scaling (e.g. 125%) the old
-    // QRectF(0,0,80,80) source rect cropped and zoomed the icon until it
-    // overflowed the rounded tile.
     painter.drawPixmap(0, 0, src);
     painter.end();
     iconLabel->setPixmap(rounded);

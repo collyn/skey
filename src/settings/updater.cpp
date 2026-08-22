@@ -364,7 +364,7 @@ void Updater::onDownloadFinished() {
         // plain `dpkg -i` fails with "dependency problems" whenever the
         // new package adds a dependency the system doesn't have yet.
         if (!QStandardPaths::findExecutable("apt-get").isEmpty()) {
-            args = {"apt-get", "install", "-y", pendingPackagePath_};
+            args = {"apt-get", "install", "-y", "--allow-downgrades", pendingPackagePath_};
         } else {
             args = {"dpkg", "-i", pendingPackagePath_};
         }
