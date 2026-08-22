@@ -118,7 +118,7 @@ curl -fsSL https://collyn.github.io/skey/install-nixos.sh | sudo bash
 sudo nixos-rebuild switch --flake /etc/nixos
 ```
 
-Script tự động sửa `/etc/nixos/flake.nix` (thêm input `skey` = `github:collyn/skey`, import module, thêm `skey` vào outputs) và thêm vào `/etc/nixos/configuration.nix` khối cấu hình: `services.fcitx5-skey` (uinput server cho user đang chạy script) + bật fcitx5 với addon SKey.
+Script tự động sửa `/etc/nixos/flake.nix` (thêm input `skey` = `github:collyn/skey`, import module, thêm `skey` vào outputs) và thêm vào `/etc/nixos/configuration.nix` khối cấu hình: `services.fcitx5-skey` (uinput server cho user đang chạy script) + bật fcitx5 với addon SKey. Trên máy NixOS mới chưa dùng flake, script tự sinh `flake.nix` tối thiểu bọc `configuration.nix` + `hardware-configuration.nix` sẵn có, giữ nguyên channel hiện tại (không upgrade hệ thống).
 
 Cập nhật: mở **fcitx5-skey-settings** → tab Info → **Check Update** (GUI tự chạy `nix flake update skey` + `nixos-rebuild switch`), hoặc thủ công:
 
