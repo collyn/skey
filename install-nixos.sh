@@ -2,23 +2,72 @@
 # fcitx5-skey NixOS installer — wires the skey flake input + module into
 # your system configuration, then tells you to rebuild.
 #
-# Requirements: NixOS with a flake configuration (/etc/nixos/flake.nix).
+# On a fresh NixOS (classic channel-based config, no flake) it generates a
+# minimal flake.nix wrapping the existing configuration.nix, keeping the
+# nixpkgs branch of the current channel so the system is not upgraded.
 # Idempotent: re-running is a no-op.
 set -e
 
 FLAKE=/etc/nixos/flake.nix
 CONFIG=/etc/nixos/configuration.nix
+HWCONFIG=/etc/nixos/hardware-configuration.nix
 USER_NAME="${SUDO_USER:-$USER}"
 MISSING=0
+GENERATED_FLAKE=0
 
 if [ ! -f /etc/NIXOS ] && ! grep -q '^ID=nixos$' /etc/os-release 2>/dev/null; then
     echo "✗ This script is for NixOS only."
     exit 1
 fi
-if [ ! -f "$FLAKE" ]; then
-    echo "✗ $FLAKE not found — a flake configuration is required."
-    echo "  See https://github.com/collyn/skey/blob/main/packaging/nixos/README.md"
+if [ ! -f "$CONFIG" ]; then
+    echo "✗ $CONFIG not found."
     exit 1
+fi
+if [ ! -w "$CONFIG" ]; then
+    echo "✗ $CONFIG is not writable — run via: curl -fsSL https://collyn.github.io/skey/install-nixos.sh | sudo bash"
+    exit 1
+fi
+
+if [ ! -f "$FLAKE" ]; then
+    # Fresh NixOS: generate a minimal flake wrapping the existing config.
+    # nixpkgs follows the current channel so the system is not upgraded.
+    NIXPKGS_REF="nixos-unstable"
+    CHANNEL=$(nix-channel --list 2>/dev/null | awk '/^nixos / {print $2; exit}')
+    if [ -n "$CHANNEL" ]; then
+        # https://nixos.org/channels/nixos-24.11 → nixos-24.11
+        NIXPKGS_REF=$(basename "$CHANNEL")
+    elif grep -q '^VERSION_ID=' /etc/os-release 2>/dev/null; then
+        NIXPKGS_REF="nixos-$(grep -oP '^VERSION_ID="?\K[0-9.]+' /etc/os-release)"
+    fi
+    HOST="$(cat /etc/hostname 2>/dev/null || true)"
+    HOST="${HOST:-$(hostname 2>/dev/null || true)}"
+    HOST="${HOST:-nixos}"
+    if [ -f "$HWCONFIG" ]; then
+        MODULES=$'./configuration.nix\n        ./hardware-configuration.nix'
+    else
+        MODULES='./configuration.nix'
+    fi
+    cat > "$FLAKE" <<EOF
+{
+  description = "NixOS configuration with fcitx5-skey";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/$NIXPKGS_REF";
+    skey.url = "github:collyn/skey";
+  };
+
+  outputs = { nixpkgs, skey, ... }: {
+    nixosConfigurations."$HOST" = nixpkgs.lib.nixosSystem {
+      modules = [
+        skey.nixosModules.default
+        $MODULES
+      ];
+    };
+  };
+}
+EOF
+    echo "✓ Created $FLAKE (nixpkgs: $NIXPKGS_REF, host: $HOST)"
+    GENERATED_FLAKE=1
 fi
 if [ ! -w "$FLAKE" ]; then
     echo "✗ $FLAKE is not writable — run via: curl -fsSL https://collyn.github.io/skey/install-nixos.sh | sudo bash"
@@ -109,12 +158,21 @@ EOF
     echo "✓ Added skey config to $CONFIG (uinput server for user: $USER_NAME)"
 fi
 
-# 5) lock the new input so the first rebuild does not fail on eval
+# 5) lock the inputs so the first rebuild does not fail on eval
 if command -v nix >/dev/null 2>&1; then
-    if (cd /etc/nixos && nix --extra-experimental-features 'nix-command flakes' flake update skey); then
-        echo "✓ Locked skey input in flake.lock"
+    if [ -f /etc/nixos/flake.lock ]; then
+        if (cd /etc/nixos && nix --extra-experimental-features 'nix-command flakes' flake update skey); then
+            echo "✓ Locked skey input in flake.lock"
+        else
+            echo "⚠ Could not lock the skey input now — the first nixos-rebuild will fetch it automatically."
+        fi
     else
-        echo "⚠ Could not lock the skey input now — the first nixos-rebuild will fetch it automatically."
+        # Fresh flake: lock every input (nixpkgs + skey).
+        if (cd /etc/nixos && nix --extra-experimental-features 'nix-command flakes' flake lock); then
+            echo "✓ Created flake.lock"
+        else
+            echo "⚠ Could not lock the inputs now — the first nixos-rebuild will fetch them automatically."
+        fi
     fi
 fi
 
@@ -124,6 +182,9 @@ fi
 echo ""
 echo "✓ Done. Rebuild your system:"
 echo "  sudo nixos-rebuild switch --flake /etc/nixos"
+if [ "$GENERATED_FLAKE" = "1" ]; then
+    echo "  (flake.nix was generated — from now on use --flake for rebuilds)"
+fi
 echo ""
 echo "  Restart fcitx5: fcitx5 -r -d  (or logout/login)"
 echo "  Updates: open fcitx5-skey-settings → Check Update"
