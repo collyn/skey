@@ -116,6 +116,10 @@ SKeyConfig readSkeyConfig() {
 }
 
 bool writeSkeyConfig(const SKeyConfig &cfg) {
+    // ~/.config/fcitx5/conf may not exist yet (fcitx5 only creates it when
+    // it saves an addon config — on NixOS the system config lives in
+    // /etc/xdg/fcitx5 and the user dir can stay empty).
+    if (!QDir().mkpath(QString::fromStdString(configDir()))) return false;
     std::ofstream out(skeyConfPath());
     if (!out.is_open()) return false;
 
@@ -190,6 +194,7 @@ AppModesConfig readAppModesConfig() {
 }
 
 bool writeAppModesConfig(const AppModesConfig &cfg) {
+    if (!QDir().mkpath(QString::fromStdString(configDir()))) return false;
     std::ofstream out(appModesPath());
     if (!out.is_open()) return false;
 
@@ -268,6 +273,7 @@ MacroConfig readMacroConfig() {
 }
 
 bool writeMacroConfig(const MacroConfig &cfg) {
+    if (!QDir().mkpath(QString::fromStdString(configDir()))) return false;
     std::ofstream out(macroPath());
     if (!out.is_open()) return false;
 
@@ -318,7 +324,18 @@ std::string readTriggerKey() {
 bool writeTriggerKey(const std::string &fcitx5Key) {
     std::string path = fcitx5ConfigPath();
     std::ifstream in(path);
-    if (!in.is_open()) return false;
+    if (!in.is_open()) {
+        // No user-level fcitx5 config yet — NixOS keeps the system config
+        // in /etc/xdg/fcitx5 (environment.etc), so ~/.config/fcitx5/config
+        // often doesn't exist.  Create it with just the trigger key instead
+        // of failing the whole save.
+        QDir().mkpath(QFileInfo(QString::fromStdString(path)).absolutePath());
+        std::ofstream out(path);
+        if (!out.is_open()) return false;
+        out << "[Hotkey/TriggerKeys]\n"
+            << "0=" << fcitx5Key << "\n";
+        return out.good();
+    }
 
     std::vector<std::string> lines;
     std::string line;
@@ -361,8 +378,14 @@ bool writeTriggerKey(const std::string &fcitx5Key) {
         lines.push_back(line);
     }
 
-    // If still in trigger section at EOF and not written
+    // EOF, still inside the trigger section: append the key.
     if (inTriggerSection && !wrote) {
+        lines.push_back("0=" + fcitx5Key);
+    }
+    // EOF, no [Hotkey/TriggerKeys] section at all: append one.
+    if (!inTriggerSection && !wrote) {
+        lines.push_back("");
+        lines.push_back("[Hotkey/TriggerKeys]");
         lines.push_back("0=" + fcitx5Key);
     }
 
@@ -548,10 +571,14 @@ std::string effectiveIconPath(const SKeyConfig &cfg) {
     // returns null — i.e. exactly when the QtSvg plugin is missing — so
     // environments without libqt6svg stay covered.
     paths.systemDirs = {
+        // Packaged install dir first — distros without /usr/share (NixOS)
+        // resolve the presets from the package itself.
+        FCITX_SKEY_ICON_DIR "/hicolor/scalable/apps",
+        FCITX_SKEY_ICON_DIR "/hicolor/128x128/apps",
         "/usr/share/icons/hicolor/scalable/apps",
         "/usr/share/icons/hicolor/128x128/apps",
         "/usr/share/pixmaps",
     };
-    paths.fallback = "/usr/share/icons/hicolor/128x128/apps/fcitx-skey.png";
+    paths.fallback = FCITX_SKEY_ICON_PATH; // compile-time default
     return skey::resolveIconPath(cfg.iconTheme, paths);
 }

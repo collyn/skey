@@ -1194,8 +1194,13 @@ std::string SKeyEngine::subModeIconImpl(const InputMethodEntry &entry,
   skey::IconSearchPaths paths;
   // fcitx5's PkgData = "$XDG_DATA_HOME/fcitx5" (~/.local/share/fcitx5)
   paths.userDataDir = userPkgDataDir();
-  // SVG-first: DE compositors render SVGs natively for tray icons
+  // SVG-first: DE compositors render SVGs natively for tray icons.
+  // The packaged install dir comes first so distros without /usr/share
+  // (NixOS) resolve the preset themes from the package itself.
   paths.systemDirs = {
+      FCITX_SKEY_ICON_DIR "/hicolor/scalable/apps",
+      FCITX_SKEY_ICON_DIR "/hicolor/scalable/status",
+      FCITX_SKEY_ICON_DIR "/hicolor/48x48/apps",
       "/usr/share/icons/hicolor/scalable/apps",
       "/usr/share/icons/hicolor/scalable/status",
       "/usr/share/icons/hicolor/48x48/apps",

@@ -35,6 +35,7 @@ target_include_directories(skey PRIVATE ${DBUS_INCLUDE_DIRS} ${XCB_INCLUDE_DIRS}
 target_compile_features(skey PRIVATE cxx_std_17)
 target_compile_definitions(skey PRIVATE
     FCITX_SKEY_ICON_PATH="${CMAKE_INSTALL_PREFIX}/share/icons/hicolor/scalable/apps/fcitx-skey.svg"
+    FCITX_SKEY_ICON_DIR="${CMAKE_INSTALL_PREFIX}/share/icons"
 )
 
 # Include path for skey_engine.h

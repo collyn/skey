@@ -64,10 +64,10 @@ void InfoTab::setupUI() {
   iconLabel->setAlignment(Qt::AlignCenter);
   iconLabel->setStyleSheet(
       "QLabel { border-radius: 12px; background: transparent; }");
-  // Config-driven icon with fallback to default 128px PNG
+  // Config-driven icon with fallback to the packaged default.
   QIcon icon(QString::fromStdString(effectiveIconPath(readSkeyConfig())));
   if (icon.isNull())
-    icon = QIcon("/usr/share/icons/hicolor/128x128/apps/fcitx-skey.png");
+    icon = QIcon(FCITX_SKEY_ICON_PATH);
   if (!icon.isNull()) {
     // QIcon::pixmap() treats its size argument as device-independent and
     // returns a pixmap already scaled by the app's devicePixelRatio, so ask

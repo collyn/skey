@@ -23,7 +23,12 @@ target_link_libraries(fcitx5-skey-settings PRIVATE Qt6::Widgets Qt6::Core Qt6::N
 target_compile_features(fcitx5-skey-settings PRIVATE cxx_std_17)
 target_compile_definitions(fcitx5-skey-settings PRIVATE
     SKEY_VERSION="${SKEY_APP_VERSION}"
-    SKEY_DEV_BUILD=${SKEY_DEV_BUILD})
+    SKEY_DEV_BUILD=${SKEY_DEV_BUILD}
+    # Same compile-time icon paths as the addon target (src/CMakeLists.txt):
+    # the packaged icons live under the install prefix, and distros without
+    # /usr/share (NixOS) resolve them through these.
+    FCITX_SKEY_ICON_PATH="${CMAKE_INSTALL_PREFIX}/share/icons/hicolor/scalable/apps/fcitx-skey.svg"
+    FCITX_SKEY_ICON_DIR="${CMAKE_INSTALL_PREFIX}/share/icons")
 
 # Optional Qt6 SVG for native SVG icon rendering (custom icon uploads + presets).
 # Gracefully degrades to PNG fallback when absent.

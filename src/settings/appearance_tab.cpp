@@ -105,11 +105,15 @@ QString themeToPath(const std::string &theme) {
     skey::IconSearchPaths paths;
     paths.userDataDir = userDataDir();
     paths.systemDirs = {
+        // Packaged install dir first — distros without /usr/share (NixOS)
+        // resolve the presets from the package itself.
+        FCITX_SKEY_ICON_DIR "/hicolor/128x128/apps",
+        FCITX_SKEY_ICON_DIR "/hicolor/scalable/apps",
         "/usr/share/icons/hicolor/128x128/apps",
         "/usr/share/icons/hicolor/scalable/apps",
         "/usr/share/pixmaps",
     };
-    paths.fallback = "/usr/share/icons/hicolor/128x128/apps/fcitx-skey.png";
+    paths.fallback = FCITX_SKEY_ICON_PATH; // compile-time default
     return QString::fromStdString(skey::resolveIconPath(theme, paths));
 }
 
