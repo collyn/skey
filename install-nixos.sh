@@ -54,6 +54,8 @@ if [ ! -f "$FLAKE" ]; then
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/$NIXPKGS_REF";
     skey.url = "github:collyn/skey";
+    # Reuse this flake's nixpkgs so skey does not download a second copy.
+    skey.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs = { nixpkgs, skey, ... }: {
@@ -75,15 +77,24 @@ if [ ! -w "$FLAKE" ]; then
 fi
 
 # 1) flake input: skey.url = "github:collyn/skey";
+#    + skey.inputs.nixpkgs.follows = "nixpkgs" so the skey flake reuses the
+#    system's nixpkgs instead of downloading a second one (~45 MB source
+#    tarball + ~300 MB unpacked, on top of a mismatched duplicate set).
 if grep -q 'skey\.url' "$FLAKE"; then
     echo "✓ skey input already present in $FLAKE"
 else
     if grep -q '^[[:space:]]*inputs[[:space:]]*=[[:space:]]*{[[:space:]]*$' "$FLAKE"; then
-        sed -i '/^[[:space:]]*inputs[[:space:]]*=[[:space:]]*{[[:space:]]*$/a\    skey.url = "github:collyn/skey";' "$FLAKE"
-        echo "✓ Added skey input to $FLAKE"
+        if grep -q 'nixpkgs\.url' "$FLAKE"; then
+            sed -i '/^[[:space:]]*inputs[[:space:]]*=[[:space:]]*{[[:space:]]*$/a\    skey.url = "github:collyn/skey";\n    skey.inputs.nixpkgs.follows = "nixpkgs";' "$FLAKE"
+            echo "✓ Added skey input to $FLAKE (nixpkgs follows the system's)"
+        else
+            sed -i '/^[[:space:]]*inputs[[:space:]]*=[[:space:]]*{[[:space:]]*$/a\    skey.url = "github:collyn/skey";' "$FLAKE"
+            echo "✓ Added skey input to $FLAKE (no nixpkgs input found — follows skipped)"
+        fi
     else
         echo "⚠ Could not find 'inputs = {' in $FLAKE — add manually:"
         echo '    skey.url = "github:collyn/skey";'
+        echo '    skey.inputs.nixpkgs.follows = "nixpkgs";'
         MISSING=1
     fi
 fi
