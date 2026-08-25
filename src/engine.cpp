@@ -1433,6 +1433,27 @@ bool SKeyState::useUinputMode() const {
 // Chromium-family app (SpellCheck, Alpha, ...).  UppercaseWords (bit 19) is
 // deliberately excluded: Google Sheets adds it on re-focus but still needs
 // Uinput, while Facebook chat adds SpellCheck and works with SurroundingText.
+// Any content hint at all — used to remember "this focus session showed
+// hints" (focusSawContentHints_) even when the only hint is weak
+// (UppercaseWords, bit 19).
+static constexpr uint64_t kContentHints =
+    (1ULL << 3) |  // Password
+    (1ULL << 7) |  // Email
+    (1ULL << 8) |  // Digit
+    (1ULL << 9) |  // Uppercase
+    (1ULL << 10) | // Lowercase
+    (1ULL << 11) | // NoAutoUpperCase
+    (1ULL << 13) | // Dialable
+    (1ULL << 14) | // Number
+    (1ULL << 15) | // NoOnScreenKeyboard
+    (1ULL << 16) | // SpellCheck
+    (1ULL << 17) | // NoSpellCheck
+    (1ULL << 18) | // WordCompletion
+    (1ULL << 19) | // UppercaseWords
+    (1ULL << 20) | // UppercaseSentences
+    (1ULL << 21) | // Alpha
+    (1ULL << 22);  // Name
+
 static constexpr uint64_t kChromiumStrongHints =
     (1ULL << 3) |  // Password
     (1ULL << 7) |  // Email
@@ -1463,6 +1484,13 @@ bool SKeyState::a11yFreshWebEditor() const {
     return false;
   if (!mon->isWebContentFocused())
     return false;
+  // Same requirement as a11yBrowserNonEntry(): the Sheets cell editor
+  // exposes an ENTRY role with neither editable nor line state — it must
+  // not upgrade a bare-caps decision to SurroundingText.  Real inputs
+  // (Facebook chat: editable=0 but single-line) pass.
+  if (!mon->isFocusEditable() && !mon->isFocusSingleLine() &&
+      !mon->isFocusMultiline())
+    return false;
   switch (mon->focusRole()) {
   case 61: // ATSPI_ROLE_TEXT
   case 73: // ATSPI_ROLE_PARAGRAPH
@@ -1480,8 +1508,34 @@ bool SKeyState::a11yBrowserNonEntry() const {
   if (!isChromiumCached() || !isChromiumBrowser(appProgram()))
     return false;
   auto *mon = engine_->a11yMonitor();
+  // A text-entry ROLE is not enough: Chrome (>=150) reports the Google
+  // Sheets cell editor as role ENTRY with editable=0 and NO line state,
+  // while the Facebook chat textarea also has editable=0 but carries
+  // single-line.  Require at least one of editable / line-state.
   return mon && mon->isFocusSnapshotFresh(5000000) &&
-         !mon->isTextEntryFocused();
+         (!mon->isTextEntryFocused() ||
+          (!mon->isFocusEditable() && !mon->isFocusSingleLine() &&
+           !mon->isFocusMultiline()));
+}
+
+bool SKeyState::a11yChromiumTerminal() const {
+  // Integrated terminal inside a standalone Chromium app (antigravity-ide):
+  // fresh a11y snapshot of a single-line text entry NOT inside a web
+  // document (the xterm.js helper textarea — webDoc=0).  Real web editors
+  // (Facebook chat) live inside a web document (webDoc=1).  Terminal caps
+  // can arrive stale (inherited from the previously focused widget, hints
+  // included), so this must be consulted regardless of caps.
+  if (!isChromiumCached() || isChromiumBrowser(appProgram()))
+    return false;
+  auto *mon = engine_->a11yMonitor();
+  if (!mon || !mon->isFocusSnapshotFresh(5000000))
+    return false;
+  if (mon->isWebContentFocused())
+    return false;
+  int role = mon->focusRole();
+  if (role != 61 && role != 79 && role != 94) // TEXT / ENTRY / DOCUMENT_TEXT
+    return false;
+  return mon->isFocusSingleLine() && !mon->isFocusMultiline();
 }
 
 bool SKeyState::noteSurroundingFailure() {
@@ -1519,6 +1573,15 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   // anything and fall back to the cap-based decision below.
   if (a11yBrowserNonEntry()) {
     SKEY_DEBUG() << "Auto: focus is not a text entry → Uinput";
+    return SKeyOutputMode::Uinput;
+  }
+
+  // Integrated terminal in a standalone Chromium app.  Must run before the
+  // caps-based decisions: the terminal's caps can arrive stale (inherited
+  // from the previously focused widget — hints included), which would
+  // otherwise route it to SurroundingText.
+  if (a11yChromiumTerminal()) {
+    SKEY_DEBUG() << "Auto: Chromium integrated terminal (a11y) → Uinput";
     return SKeyOutputMode::Uinput;
   }
 
@@ -1590,36 +1653,19 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   // event (a11yFreshWebEditor) supplies the missing signal immediately.
   if (caps.test(CapabilityFlag::SurroundingText) && isChromiumCached() &&
       !caps.test(CapabilityFlag::Url)) {
-    static constexpr uint64_t kContentHints =
-        (1ULL << 3) |  // Password
-        (1ULL << 7) |  // Email
-        (1ULL << 8) |  // Digit
-        (1ULL << 9) |  // Uppercase
-        (1ULL << 10) | // Lowercase
-        (1ULL << 11) | // NoAutoUpperCase
-        (1ULL << 13) | // Dialable
-        (1ULL << 14) | // Number
-        (1ULL << 15) | // NoOnScreenKeyboard
-        (1ULL << 16) | // SpellCheck
-        (1ULL << 17) | // NoSpellCheck
-        (1ULL << 18) | // WordCompletion
-        (1ULL << 19) | // UppercaseWords
-        (1ULL << 20) | // UppercaseSentences
-        (1ULL << 21) | // Alpha
-        (1ULL << 22);  // Name
     CapabilityFlags contentHints(kContentHints);
+    if (caps & contentHints) {
+      focusSawContentHints_ = true;
+    }
     if (!(caps & contentHints)) {
-      // Standalone Chromium/Electron apps (not browsers) deliver
-      // surrounding text via shared Chromium text-input code even with
-      // bare caps (verified: antigravity on Wayland — browsers get the
-      // bare-caps logic below instead, where Sheets-style tabs need
-      // Uinput).  Runtime validation in surroundingCommit() still
-      // downgrades via surroundingTextFailed_ if the app is broken.
-      // Electron terminals are routed to Uinput earlier via
-      // isTerminalApp() (delete_surrounding_text is unreliable there).
-      if (!isChromiumBrowser(appProgram())) {
-        SKEY_DEBUG() << "Auto: bare caps + standalone Chromium app → "
-                        "SurroundingText";
+      // Standalone Chromium app whose focus session saw hints earlier:
+      // the antigravity-ide chat composer reports UppercaseWords at
+      // panel-open and bare caps once typing starts — a real input that
+      // works with SurroundingText.  The IDE's integrated terminal never
+      // shows any hint (0x72 at activation and typing) and keeps the
+      // deferred-Uinput path below.
+      if (!isChromiumBrowser(appProgram()) && focusSawContentHints_) {
+        SKEY_DEBUG() << "Auto: bare caps after hints → SurroundingText";
         return SKeyOutputMode::SurroundingText;
       }
       // Fresh AT-SPI2 web-editor focus (Facebook chat) wins over bare caps:
@@ -1677,7 +1723,19 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     }
   }
 
-  SKEY_DEBUG() << "Auto: SurroundingText cap → SurroundingText";
+  // Bare caps with an unresolved program name: the Chromium-family check
+  // above was skipped, but the app could be an Electron IDE whose terminal
+  // needs Uinput (observed: antigravity console on Wayland focus races —
+  // activation lands before the WM_CLASS/program resolves).  Uinput is
+  // safe for every app; the decision re-evaluates on the next focus.
+  if (appProgram().empty() && !(caps & CapabilityFlags(kContentHints))) {
+    SKEY_DEBUG() << "Auto: unresolved app + bare caps → Uinput";
+    return SKeyOutputMode::Uinput;
+  }
+
+  SKEY_DEBUG() << "Auto: SurroundingText cap → SurroundingText (caps=0x"
+               << std::hex << static_cast<uint64_t>(caps.toInteger())
+               << std::dec << ")";
   return SKeyOutputMode::SurroundingText;
 }
 
@@ -2007,6 +2065,7 @@ void SKeyState::activate() {
 
   // Invalidate mode cache — new focus means caps/program may have changed.
   chromiumBareCapsUinput_ = false;
+  focusSawContentHints_ = false;
   modeCacheValid_ = false;
   cachedIsChromium_ = -1;
   cachedIsFirefoxOrSnap_ = -1;
@@ -2032,7 +2091,14 @@ void SKeyState::activate() {
       appProgram() == engine_->chromiumBareCapsProgram_ &&
       !appProgram().empty() && isChromiumCached() && !a11yFreshWebEditor()) {
     CapabilityFlags strong(kChromiumStrongHints);
-    if (!(caps & strong)) {
+    CapabilityFlags hints(kContentHints);
+    // Browsers keep the sticky regardless — Google Sheets re-focus adds
+    // only weak hints (UppercaseWords) yet still needs Uinput.  Standalone
+    // Chromium apps get the sticky only when caps are fully bare: any hint
+    // at activation signals a real input (antigravity chat composer) that
+    // should try SurroundingText again.
+    if (!(caps & strong) &&
+        (isChromiumBrowser(appProgram()) || !(caps & hints))) {
       chromiumBareCapsUinput_ = true;
       SKEY_DEBUG() << "Activate: engine sticky bare caps → Uinput";
     }
@@ -2733,9 +2799,12 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // shows the focus is not on a text entry and the cached mode isn't
   // Uinput yet.
   bool a11yNonEntry = a11yBrowserNonEntry();
+  bool a11yTerminal = a11yChromiumTerminal();
   if (viet_.getRawInput().empty() &&
       (modeDecisionPending_ || a11yFreshWebEditor() ||
        (a11yNonEntry &&
+        (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)) ||
+       (a11yTerminal &&
         (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)))) {
     modeCacheValid_ = false;
   }
@@ -4591,20 +4660,22 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         }
         committedLen_ = newLen;
         if (!addedPart.empty()) {
-          if (isWayland()) {
+          if (isWayland() && isChromiumCached()) {
             // Wayland has no ordering guarantee between forwardKey (via
             // the compositor's virtual-keyboard protocol) and commitString
             // (via text-input) — an immediate commit races the forwarded
-            // BackSpace keys and eats characters (observed in Chromium and
-            // Telegram: "đâu" → "dau").  Commit only after the app has had
-            // time to process them.  Pass the stable prefix (already on
-            // screen after the BS deletes): follow-up keystrokes then
-            // extend only the pending suffix, otherwise the whole word
-            // would be re-committed over the prefix ("chào" → "chchào").
+            // BackSpace keys and eats characters (observed in Chromium:
+            // "đâu" → "dau").  Commit only after the app has had time to
+            // process them.  Pass the stable prefix (already on screen
+            // after the BS deletes): follow-up keystrokes then extend
+            // only the pending suffix, otherwise the whole word would be
+            // re-committed over the prefix ("chào" → "chchào").
             scheduleDeferredCommit(addedPart, stablePrefix);
           } else {
-            // X11: forwarded BS and commitString are serialized through
-            // the X server, so committing immediately is safe.
+            // X11 serializes forwarded BS and commitString through the
+            // X server; non-Chromium Wayland apps (Telegram etc.) process
+            // forwarded BS + commit in order — commit immediately, no
+            // extra latency.
             commitText(addedPart);
           }
         }

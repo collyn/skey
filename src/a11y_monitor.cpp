@@ -494,23 +494,7 @@ static std::string queryName(DBusConnection *bus, const char *sender,
     return name;
 }
 
-static bool isChromiumBrowserAppName(const std::string &name) {
-    // Keep in sync with isChromiumBrowser() in engine.cpp; these are the
-    // application names exposed on the AT-SPI bus ("Google Chrome", ...).
-    static constexpr const char *kBrowserNames[] = {
-        "chrome", "chromium", "brave", "vivaldi", "edge", "opera",
-    };
-    std::string lower;
-    lower.reserve(name.size());
-    for (char c : name)
-        lower += static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    for (const char *b : kBrowserNames)
-        if (lower.find(b) != std::string::npos)
-            return true;
-    return false;
-}
-
-static void pokeChromiumBrowsers(DBusConnection *bus) {
+static void pokeA11yApps(DBusConnection *bus) {
     DBusError err;
     dbus_error_init(&err);
     DBusMessage *msg = dbus_message_new_method_call(
@@ -549,24 +533,30 @@ static void pokeChromiumBrowsers(DBusConnection *bus) {
         }
 
         if (appBus && appPath && appPath[0] == '/') {
+            // Poke EVERY app, not just browser names: Electron apps
+            // (antigravity-ide, VS Code forks) re-enable Chromium's
+            // native accessibility on the same GetRelationSet/GetAttributes
+            // trigger as Chrome, but their AT-SPI names don't match the
+            // browser list — and after an fcitx5 restart their a11y tree
+            // stays dead otherwise (no focus events for the integrated
+            // terminal).  The query is read-only and cheap; non-Chromium
+            // apps just return an empty relation set.
             std::string name = queryName(bus, appBus, appPath);
-            if (isChromiumBrowserAppName(name)) {
-                DBusMessage *poke = dbus_message_new_method_call(
-                    appBus, appPath, "org.a11y.atspi.Accessible",
-                    "GetRelationSet");
-                if (poke) {
-                    DBusError perr;
-                    dbus_error_init(&perr);
-                    DBusMessage *preply =
-                        dbus_connection_send_with_reply_and_block(
-                            bus, poke, 500, &perr);
-                    if (preply) dbus_message_unref(preply);
-                    dbus_message_unref(poke);
-                    A11Y_LOG("Poked '%s' (%s) to enable native a11y%s",
-                             name.c_str(), appBus,
-                             dbus_error_is_set(&perr) ? " [failed]" : "");
-                    dbus_error_free(&perr);
-                }
+            DBusMessage *poke = dbus_message_new_method_call(
+                appBus, appPath, "org.a11y.atspi.Accessible",
+                "GetRelationSet");
+            if (poke) {
+                DBusError perr;
+                dbus_error_init(&perr);
+                DBusMessage *preply =
+                    dbus_connection_send_with_reply_and_block(
+                        bus, poke, 500, &perr);
+                if (preply) dbus_message_unref(preply);
+                dbus_message_unref(poke);
+                A11Y_LOG("Poked '%s' (%s) to enable native a11y%s",
+                         name.c_str(), appBus,
+                         dbus_error_is_set(&perr) ? " [failed]" : "");
+                dbus_error_free(&perr);
             }
         }
         dbus_message_iter_next(&arr);
@@ -711,7 +701,7 @@ void A11yMonitor::threadFunc() {
     // connects (short + late retry: the app root only becomes queryable once
     // the browser's ATK bridge has registered with the registry), plus a
     // periodic sweep as a fallback.
-    pokeChromiumBrowsers(bus);
+    pokeA11yApps(bus);
 
     using Clock = std::chrono::steady_clock;
     const auto kNever = Clock::time_point::max();
@@ -939,7 +929,7 @@ void A11yMonitor::threadFunc() {
             if (now >= latePokeAt) latePokeAt = kNever;
             if (now >= periodicPokeAt)
                 periodicPokeAt = now + std::chrono::seconds(15);
-            pokeChromiumBrowsers(bus);
+            pokeA11yApps(bus);
         }
     }
 

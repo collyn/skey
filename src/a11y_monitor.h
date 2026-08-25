@@ -78,6 +78,24 @@ public:
         return textEntryFocused_.load(std::memory_order_relaxed);
     }
 
+    /// ATSPI_STATE_EDITABLE of the last focused element.  Chrome (>=150)
+    /// reports editable=0 for several real inputs (Facebook chat
+    /// textarea), so it cannot be the sole discriminator.
+    bool isFocusEditable() const {
+        return focusEditable_.load(std::memory_order_relaxed);
+    }
+
+    /// Line-state of the last focused element.  Real text inputs carry at
+    /// least one of single-line / multi-line; the Google Sheets cell
+    /// editor reports neither (role ENTRY, editable=0, no line state).
+    bool isFocusSingleLine() const {
+        return focusSingleLine_.load(std::memory_order_relaxed);
+    }
+
+    bool isFocusMultiline() const {
+        return focusMultiline_.load(std::memory_order_relaxed);
+    }
+
     /// Identity of the last focused text-entry element (bus name + object
     /// path) for the engine's own AT-SPI2 queries (GetText/GetSelection).
     /// Returns false when no text entry has been focused yet.

@@ -12,7 +12,12 @@
 ```nix
 # flake.nix của bạn
 {
-  inputs.skey.url = "github:collyn/skey";
+  inputs.skey = {
+    url = "github:collyn/skey";
+    # Dùng chung nixpkgs với hệ thống — không tải nixpkgs thứ hai
+    # (~45 MB tarball + ~300 MB giải nén).
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
 
   outputs = { nixpkgs, skey, ... }: {
     nixosConfigurations.hostname = nixpkgs.lib.nixosSystem {
