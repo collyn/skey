@@ -87,6 +87,8 @@ private:
     /// (Chrome, Brave...).  Standalone Chromium/Electron apps are excluded:
     /// their bare-caps path already maps to SurroundingText.
     bool a11yBrowserNonEntry() const;
+    /// Integrated terminal in a standalone Chromium app (see engine.cpp).
+    bool a11yChromiumTerminal() const;
     /// Record a surrounding-text failure.  Returns true when the IC should
     /// downgrade to Uinput (surroundingTextFailed_): Chromium-family apps
     /// downgrade immediately (their forwarded keys are unreliable); other
@@ -172,6 +174,12 @@ private:
     // (0x72, no content hints).  Caps may later gain hints after the app
     // enters edit mode, but commitString still won't work without Uinput.
     mutable bool chromiumBareCapsUinput_ = false;
+    // This focus session has seen at least one content hint (including
+    // weak ones like UppercaseWords).  A standalone Chromium app that
+    // reports hints at panel-open and bare caps at typing time (the
+    // antigravity-ide chat composer) has a real input — keep
+    // SurroundingText for it.  Reset on activate().
+    mutable bool focusSawContentHints_ = false;
     // SurroundingText capability was advertised but the runtime cache is
     // invalid — the app never reports surrounding text (LibreOffice,
     // Telegram...).  The per-replacement fallback cannot be verified, so
