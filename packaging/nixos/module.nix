@@ -97,8 +97,7 @@ in
     # ($out/lib/systemd/system/fcitx5-skey-uinput-server@.service).
     systemd.packages = [ cfg.package ];
 
-    # Enable one instance per user.  NixOS treats `...@<user>` as a
-    # literal instance unit, which systemd merges over the template above.
+    # Enable one instance per user.
     #
     # The template's ExecStartPre/ExecStartPost call /usr/bin/systemd-sysusers
     # and /usr/bin/setfacl — neither exists on NixOS — so override them
@@ -107,9 +106,19 @@ in
     # the group-based access; the ExecStartPost ACL is what lets <user>
     # traverse the 0700 runtime directory to reach the fs socket (without
     # it clients silently fall back to the legacy abstract socket).
+    #
+    # overrideStrategy = "asDropin" is load-bearing: a full unit file named
+    # fcitx5-skey-uinput-server@<user>.service would SHADOW the packaged
+    # template (systemd prefers an exact-name unit file over instantiating
+    # the template — it does NOT merge them), leaving the instance without
+    # ExecStart/User/RuntimeDirectory and the service fails to start.  A
+    # drop-in (.service.d/…) applies ON TOP of the template instantiation,
+    # so only these two overrides are added and everything else comes from
+    # the package.
     systemd.services = lib.listToAttrs (
       map (user:
         lib.nameValuePair "fcitx5-skey-uinput-server@${user}" {
+          overrideStrategy = "asDropin";
           wantedBy = [ "multi-user.target" ];
           serviceConfig = {
             ExecStartPre = [

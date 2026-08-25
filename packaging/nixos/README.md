@@ -59,7 +59,12 @@ Module `services.fcitx5-skey` xử lý những việc mà trên Fedora/Debian do
   từ package và enable một instance cho mỗi user trong `users`; đồng thời
   override `ExecStartPre`/`ExecStartPost` của unit bằng store path của
   `setfacl` (template gốc gọi `/usr/bin/setfacl` và
-  `/usr/bin/systemd-sysusers` — không tồn tại trên NixOS)
+  `/usr/bin/systemd-sysusers` — không tồn tại trên NixOS). **Override phải
+  dùng `overrideStrategy = "asDropin"`**: file unit đầy đủ mang tên
+  `fcitx5-skey-uinput-server@<user>.service` sẽ **che khuất template**
+  (systemd ưu tiên unit file có tên chính xác, không merge với template) →
+  instance thiếu `ExecStart`/`User`/`RuntimeDirectory` và không chạy;
+  drop-in (`.service.d/`) thì áp **chồng lên** template instantiation.
 - Polkit rule (qua `security.polkit.extraConfig` — trên NixOS
   `/etc/polkit-1/rules.d` là file được generate, không sửa trực tiếp) để
   user restart instance của mình không cần mật khẩu
