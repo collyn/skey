@@ -119,11 +119,17 @@ pkgs.callPackage (builtins.fetchTarball "https://github.com/collyn/skey/archive/
   nằm trong flake chứ không phải nixpkgs) rồi mới import `module.nix`.
   Nếu dùng `module.nix` trực tiếp (không qua flake), phải tự overlay
   hoặc set `services.fcitx5-skey.package` thủ công.
-- **skey-engine (Rust)** được build bằng `buildRustPackage` riêng vì bước
-  cargo trong CMake cần network (bị cấm trong sandbox nix). CMake được
-  truyền `-DSKEY_ENGINE_PREBUILT_LIB` để bỏ qua bước cargo và
-  `-DSKEY_ENGINE_SOURCE_DIR` để lấy `skey_engine.h`. Hash crate lấy từ
-  `Cargo.lock` của skey-engine nên không cần `cargoHash`.
+- **skey-engine (Rust)** mặc định lấy **prebuilt `libskey_engine.a`** từ
+  GitHub Release của skey-engine (`builtins.fetchurl` + sha256) — bỏ hẳn
+  Rust toolchain (rustc/cargo/LLVM ≈ 470 MB download / 1.7 GiB unpacked).
+  CMake được truyền `-DSKEY_ENGINE_PREBUILT_LIB` để bỏ qua bước cargo và
+  `-DSKEY_ENGINE_SOURCE_DIR` để lấy `skey_engine.h` (tag lấy theo
+  `SKEY_ENGINE_VERSION` trong CMakeLists.txt, bump tag là 2 URL tự đổi,
+  hash cũ sẽ fail lớn cho tới khi refresh). Muốn build từ source:
+  `pkgs.fcitx5-skey.override { skeyEngineLib = null; }` — dùng
+  `buildRustPackage` (vì bước cargo trong CMake cần network, bị cấm trong
+  sandbox nix); hash crate lấy từ `Cargo.lock` của skey-engine nên không
+  cần `cargoHash`.
 - **Path distro-specific** (`/lib/systemd/system`, `/etc/polkit-1/rules.d`,
   `/etc/profile.d`) được override qua cache vars `SKEY_SYSTEMD_UNIT_DIR`,
   `SKEY_POLKIT_RULES_DIR`, `SKEY_UDEV_RULES_DIR`, `SKEY_SYSUSERS_DIR`,
@@ -138,9 +144,14 @@ pkgs.callPackage (builtins.fetchTarball "https://github.com/collyn/skey/archive/
   của unit được override bằng `${pkgs.acl}/bin/setfacl` (store path) để
   giữ ACL belt-and-braces cho device node và ACL per-user trên
   `/run/skey-uinput-<user>`.
-- **Icon**: code có fallback `FCITX_SKEY_ICON_PATH` compile-time trỏ vào
-  `$out/share/icons/...` nên tray icon hoạt động dù `/usr/share/icons`
-  không tồn tại trên NixOS.
+- **Icon**: cả addon (tray) lẫn settings GUI đều resolve icon qua
+  `FCITX_SKEY_ICON_DIR` / `FCITX_SKEY_ICON_PATH` compile-time trỏ vào
+  `$out/share/icons/...` nên icon mặc định **và các preset theme** hoạt
+  động dù `/usr/share/icons` không tồn tại trên NixOS.
+- **Save config**: settings GUI tạo `~/.config/fcitx5/conf` nếu thiếu và
+  tự tạo `~/.config/fcitx5/config` (với section `[Hotkey/TriggerKeys]`)
+  khi chưa tồn tại — trên NixOS config hệ thống nằm ở `/etc/xdg/fcitx5`
+  (environment.etc) nên file user thường không có sẵn.
 - `qt6.qtwayland` được wrap vào settings GUI (wrapQtAppsHook) để chạy được
   trên Wayland; `qt6.qtsvg` để QIcon load SVG.
 

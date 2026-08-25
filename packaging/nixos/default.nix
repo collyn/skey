@@ -1,9 +1,12 @@
 # fcitx5-skey — Nix package.
 #
 # Usable standalone via `pkgs.callPackage ./default.nix { }` or through the
-# flake in this directory.  The skey-engine Rust library is built by a
-# separate derivation (buildRustPackage) because the CMake cargo step needs
-# network access, which nix sandboxes forbid.
+# flake in this directory.  The skey-engine Rust library defaults to the
+# prebuilt libskey_engine.a from the skey-engine GitHub release — that skips
+# the whole Rust toolchain (rustc/cargo/LLVM, ≈ 470 MB download / 1.7 GiB
+# unpacked).  Pass `skeyEngineLib = null` to build it from source instead
+# (buildRustPackage, needed because the CMake cargo step requires network
+# access, which nix sandboxes forbid).
 {
   lib,
   stdenv,
@@ -17,15 +20,32 @@
   fcitx5,
   qt6, # settings GUI (qtbase/qtwayland/qtsvg) + wrapQtAppsHook
   rustPlatform,
-  # Source of https://github.com/collyn/skey-engine.  Overridable so a
-  # caller can pass its own fetchFromGitHub result (pinned with a hash).
-  # Keep in sync with SKEY_ENGINE_VERSION in the top-level CMakeLists.txt.
-  # The sha256 keeps the fetch legal under pure evaluation (flakes); it
-  # must be updated whenever the tag changes (nix store prefetch-file
-  # --unpack <tarball-url>).
+  # Content of ../../CMakeLists.txt, flattened, so the version parsing below
+  # (package version, pinned engine tag) always matches the source.
+  cmakeLists ? builtins.replaceStrings [ "\n" ] [ " " ] (builtins.readFile ../../CMakeLists.txt),
+  # Engine tag pinned by SKEY_ENGINE_VERSION in the top-level CMakeLists.txt.
+  # The two fetches below follow it: bumping the tag updates both URLs, and
+  # the stale hashes then fail loudly until refreshed (nix store prefetch-file
+  # --unpack <tarball-url> / plain prefetch for the release asset).
+  engineVersion ? let
+    m = builtins.match ".*set\\(SKEY_ENGINE_VERSION \"([^\"]+)\"\\).*" cmakeLists;
+  in if m == null
+     then throw "fcitx5-skey: cannot parse SKEY_ENGINE_VERSION from ../../CMakeLists.txt"
+     else builtins.head m,
+  # Source of https://github.com/collyn/skey-engine (skey_engine.h + the
+  # source-build path).  Overridable so a caller can pass its own
+  # fetchFromGitHub result (pinned with a hash).
   skeyEngineSrc ? builtins.fetchTarball {
-    url = "https://github.com/collyn/skey-engine/archive/refs/tags/v0.1.23.tar.gz";
+    url = "https://github.com/collyn/skey-engine/archive/refs/tags/${engineVersion}.tar.gz";
     sha256 = "sha256-wtbL+cjr28DKTbNKoQiQwQyCKiSIs08/ghG0uw4l/08=";
+  },
+  # Prebuilt libskey_engine.a from the skey-engine GitHub release — the
+  # default.  skips the Rust toolchain entirely.  Pass null to build the
+  # engine from source instead:
+  #   pkgs.fcitx5-skey.override { skeyEngineLib = null; }
+  skeyEngineLib ? builtins.fetchurl {
+    url = "https://github.com/collyn/skey-engine/releases/download/${engineVersion}/libskey_engine.a";
+    sha256 = "sha256-pJNZpGldejtQxhe4C+zazdKavPt1UPcjL8p2gaOPzx4=";
   },
   # Dev channel: set to the dev prerelease version (e.g. "0.7.7-dev.3") to
   # build the package with that version string and the dev-build counter
@@ -40,16 +60,15 @@ let
   # VERSION stays purely numeric, so the derived string is always a valid
   # Nix version.
   stableVersion = let
-    cm = builtins.replaceStrings [ "\n" ] [ " " ]
-      (builtins.readFile ../../CMakeLists.txt);
-    m = builtins.match ".*project\\(fcitx5-skey VERSION ([0-9.]+)\\).*" cm;
+    m = builtins.match ".*project\\(fcitx5-skey VERSION ([0-9.]+)\\).*" cmakeLists;
   in if m == null
      then throw "fcitx5-skey: cannot parse version from ../../CMakeLists.txt"
      else builtins.head m;
 
+  # Only built when skeyEngineLib is null (source-build override).
   skeyEngine = rustPlatform.buildRustPackage {
     pname = "skey-engine";
-    version = "0.1.23";
+    version = lib.removePrefix "v" engineVersion;
     src = skeyEngineSrc;
     # Cargo.lock carries the per-crate checksums, so no cargoHash is needed.
     cargoLock.lockFile = "${skeyEngineSrc}/Cargo.lock";
@@ -110,9 +129,14 @@ stdenv.mkDerivation (finalAttrs: {
 
   cmakeFlags = [
     # Engine: use the fetched source for skey_engine.h and link the
-    # prebuilt static lib — CMake never invokes cargo.
+    # prebuilt static lib — CMake never invokes cargo.  skeyEngineLib
+    # (default) is the release asset; null builds from source instead.
     "-DSKEY_ENGINE_SOURCE_DIR=${skeyEngineSrc}"
-    "-DSKEY_ENGINE_PREBUILT_LIB=${skeyEngine}/lib/libskey_engine.a"
+    "-DSKEY_ENGINE_PREBUILT_LIB=${
+      if skeyEngineLib == null
+      then "${skeyEngine}/lib/libskey_engine.a"
+      else skeyEngineLib
+    }"
     # Distro-specific files: NixOS has no /lib or /etc at build time.
     # systemd.packages in the NixOS module picks the unit up from here.
     "-DSKEY_SYSTEMD_UNIT_DIR=${placeholder "out"}/lib/systemd/system"

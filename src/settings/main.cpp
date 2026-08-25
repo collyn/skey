@@ -13,11 +13,11 @@ int main(int argc, char *argv[]) {
     // the basename of the installed .desktop file without the extension.
     app.setDesktopFileName("fcitx5-skey-settings");
 
-    // Window icon — config-driven with fallback to the default 128px PNG.
+    // Window icon — config-driven with fallback to the packaged default.
     SKeyConfig cfg = readSkeyConfig();
     QIcon icon(QString::fromStdString(effectiveIconPath(cfg)));
     if (icon.isNull())
-        icon = QIcon("/usr/share/icons/hicolor/128x128/apps/fcitx-skey.png");
+        icon = QIcon(FCITX_SKEY_ICON_PATH);
     app.setWindowIcon(icon);
 
     SkeySettingsWindow window;
