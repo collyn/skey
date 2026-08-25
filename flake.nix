@@ -6,7 +6,11 @@
 # "github:collyn/skey"` would fail with "does not provide attribute flake.nix".
 #
 # Usage in your own flake:
-#   inputs.skey.url = "github:collyn/skey";
+#   inputs.skey = {
+#     url = "github:collyn/skey";
+#     # Reuse your nixpkgs so skey does not download a second copy of it.
+#     inputs.nixpkgs.follows = "nixpkgs";
+#   };
 #
 #   outputs = { nixpkgs, skey, ... }: {
 #     nixosConfigurations.hostname = nixpkgs.lib.nixosSystem {

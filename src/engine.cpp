@@ -4591,20 +4591,22 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         }
         committedLen_ = newLen;
         if (!addedPart.empty()) {
-          if (isWayland()) {
+          if (isWayland() && isChromiumCached()) {
             // Wayland has no ordering guarantee between forwardKey (via
             // the compositor's virtual-keyboard protocol) and commitString
             // (via text-input) — an immediate commit races the forwarded
-            // BackSpace keys and eats characters (observed in Chromium and
-            // Telegram: "đâu" → "dau").  Commit only after the app has had
-            // time to process them.  Pass the stable prefix (already on
-            // screen after the BS deletes): follow-up keystrokes then
-            // extend only the pending suffix, otherwise the whole word
-            // would be re-committed over the prefix ("chào" → "chchào").
+            // BackSpace keys and eats characters (observed in Chromium:
+            // "đâu" → "dau").  Commit only after the app has had time to
+            // process them.  Pass the stable prefix (already on screen
+            // after the BS deletes): follow-up keystrokes then extend
+            // only the pending suffix, otherwise the whole word would be
+            // re-committed over the prefix ("chào" → "chchào").
             scheduleDeferredCommit(addedPart, stablePrefix);
           } else {
-            // X11: forwarded BS and commitString are serialized through
-            // the X server, so committing immediately is safe.
+            // X11 serializes forwarded BS and commitString through the
+            // X server; non-Chromium Wayland apps (Telegram etc.) process
+            // forwarded BS + commit in order — commit immediately, no
+            // extra latency.
             commitText(addedPart);
           }
         }

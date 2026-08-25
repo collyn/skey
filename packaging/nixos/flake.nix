@@ -2,7 +2,11 @@
 #
 # Flakes are only discovered at the repository root; the flake.nix at the
 # repo root re-exports this file so that a plain URL works:
-#   inputs.skey.url = "github:collyn/skey";
+#   inputs.skey = {
+#     url = "github:collyn/skey";
+#     # Reuse your nixpkgs so skey does not download a second copy of it.
+#     inputs.nixpkgs.follows = "nixpkgs";
+#   };
 #   # or, for a local checkout:
 #   # inputs.skey.url = "path:/path/to/skey";
 # (For this subdirectory directly, use "github:collyn/skey?dir=packaging/nixos".)

@@ -487,7 +487,10 @@ void InfoTab::showNixosManualInstructions() {
       "Không thể tự động cập nhật SKey trên NixOS.\n\n"
       "Hệ thống cần dùng flake với input tên là \"skey\".\n"
       "Thêm vào /etc/nixos/flake.nix:\n\n"
-      "  inputs.skey.url = \"github:collyn/skey\";\n\n"
+      "  inputs.skey = {\n"
+      "    url = \"github:collyn/skey\";\n"
+      "    inputs.nixpkgs.follows = \"nixpkgs\";\n"
+      "  };\n\n"
       "Rồi chạy (cần quyền root):\n\n"
       "  cd /etc/nixos\n");
   if (dev && !pendingVersion_.isEmpty()) {
