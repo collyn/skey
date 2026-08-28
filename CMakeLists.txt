@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(fcitx5-skey VERSION 0.7.9)
+project(fcitx5-skey VERSION 0.7.10)
 
 # Version compiled into the settings GUI / updater.  Dev builds append a
 # suffix (e.g. 0.7.5~dev.123) — project() VERSION must stay purely numeric,
@@ -137,6 +137,10 @@ add_subdirectory(data)
 find_package(Qt6 QUIET COMPONENTS Widgets Core)
 if(Qt6_FOUND)
     message(STATUS "Qt6 found — building skey settings GUI")
+    # msgfmt for po/*.po → *.mo (Fcitx5Utils' fcitx5_install_translation).
+    # Only needed when the GUI is built — the .mo files serve it alone.
+    find_package(Gettext REQUIRED)
+    add_subdirectory(po)
     add_subdirectory(src/settings)
 else()
     message(STATUS "Qt6 not found — skey settings GUI will not be built")

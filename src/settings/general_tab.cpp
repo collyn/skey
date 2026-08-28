@@ -1,6 +1,7 @@
 #include "general_tab.h"
 #include "config_io.h"
 #include "hotkey_edit.h"
+#include "tr.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -30,14 +31,14 @@ void GeneralTab::setupUI() {
   inputMethodCombo_ = new QComboBox(enumFrame);
   inputMethodCombo_->addItem("Telex", "Telex");
   inputMethodCombo_->addItem("VNI", "VNI");
-  enumLayout->addRow(QString::fromUtf8("Kiểu gõ:"), inputMethodCombo_);
+  enumLayout->addRow(T("Kiểu gõ:"), inputMethodCombo_);
 
   outputModeCombo_ = new QComboBox(enumFrame);
   outputModeCombo_->addItem("Auto", "Auto");
   outputModeCombo_->addItem("Uinput", "Uinput");
   outputModeCombo_->addItem("Surrounding Text", "Surrounding Text");
   outputModeCombo_->addItem("Preedit", "Preedit");
-  enumLayout->addRow(QString::fromUtf8("Chế độ xuất:"), outputModeCombo_);
+  enumLayout->addRow(T("Chế độ xuất:"), outputModeCombo_);
 
   charsetCombo_ = new QComboBox(enumFrame);
   charsetCombo_->addItem("Unicode", "Unicode");
@@ -54,17 +55,22 @@ void GeneralTab::setupUI() {
   charsetCombo_->addItem("Vietware-X", "Vietware-X");
   charsetCombo_->addItem("VNI-MAC", "VNI-MAC");
   charsetCombo_->addItem("Unicode NFD", "Unicode NFD");
-  enumLayout->addRow(QString::fromUtf8("Bảng mã:"), charsetCombo_);
+  enumLayout->addRow(T("Bảng mã:"), charsetCombo_);
+
+  languageCombo_ = new QComboBox(enumFrame);
+  languageCombo_->addItem(T("Tiếng Việt"), "vi");
+  languageCombo_->addItem(T("English"), "en");
+  enumLayout->addRow(T("Ngôn ngữ:"), languageCombo_);
 
   triggerKeyEdit_ = new HotkeyEdit(enumFrame);
   triggerKeyEdit_->setToolTip(
-      QString::fromUtf8("Nhấn tổ hợp phím để thay đổi"));
-  enumLayout->addRow(QString::fromUtf8("Phím chuyển bộ gõ:"), triggerKeyEdit_);
+      T("Nhấn tổ hợp phím để thay đổi"));
+  enumLayout->addRow(T("Phím chuyển bộ gõ:"), triggerKeyEdit_);
 
   modeMenuKeyEdit_ = new HotkeyEdit(enumFrame);
   modeMenuKeyEdit_->setToolTip(
-      QString::fromUtf8("Phím tắt để mở menu chế độ (mặc định: `)"));
-  enumLayout->addRow(QString::fromUtf8("Phím menu chế độ:"), modeMenuKeyEdit_);
+      T("Phím tắt để mở menu chế độ (mặc định: `)"));
+  enumLayout->addRow(T("Phím menu chế độ:"), modeMenuKeyEdit_);
 
   mainLayout->addWidget(enumFrame);
 
@@ -80,37 +86,37 @@ void GeneralTab::setupUI() {
 
   // Telex-only options: 'w'→'ư' and '][' → 'ư'/'ơ'.
   // Enabled only when the current input method is Telex (see below).
-  shortWCheck_ = new QCheckBox(QString::fromUtf8("Gõ w thành ư"), checkFrame);
+  shortWCheck_ = new QCheckBox(T("Gõ w thành ư"), checkFrame);
   shortWCheck_->setToolTip(
-      QString::fromUtf8("Chỉ Telex: gõ phím w đơn lẻ sẽ ra chữ ư."));
+      T("Chỉ Telex: gõ phím w đơn lẻ sẽ ra chữ ư."));
   checkLayout->addWidget(shortWCheck_, 0, 0);
 
   bracketUOCheck_ =
-      new QCheckBox(QString::fromUtf8("Gõ ][ thành ư ơ"), checkFrame);
+      new QCheckBox(T("Gõ ][ thành ư ơ"), checkFrame);
   bracketUOCheck_->setToolTip(
-      QString::fromUtf8("Chỉ Telex: gõ [ ra ơ và ] ra ư (giống UniKey)."));
+      T("Chỉ Telex: gõ [ ra ơ và ] ra ư (giống UniKey)."));
   checkLayout->addWidget(bracketUOCheck_, 0, 1);
 
   freeMarkingCheck_ =
-      new QCheckBox(QString::fromUtf8("Đánh dấu tự do"), checkFrame);
+      new QCheckBox(T("Đánh dấu tự do"), checkFrame);
   checkLayout->addWidget(freeMarkingCheck_, 1, 0);
 
   autoRestoreCheck_ =
-      new QCheckBox(QString::fromUtf8("Tự động khôi phục"), checkFrame);
+      new QCheckBox(T("Tự động khôi phục"), checkFrame);
   checkLayout->addWidget(autoRestoreCheck_, 1, 1);
 
-  dictCheck_ = new QCheckBox(QString::fromUtf8("Dùng từ điển"), checkFrame);
-  dictCheck_->setToolTip(QString::fromUtf8(
+  dictCheck_ = new QCheckBox(T("Dùng từ điển"), checkFrame);
+  dictCheck_->setToolTip(T(
       "Tự động khôi phục kiểm tra từ thật trong từ điển tiếng Việt "
       "thay vì luật âm tiết (khôi phục cả những âm tiết hợp lệ nhưng "
       "không phải từ, ví dụ \"lước\")."));
   checkLayout->addWidget(dictCheck_, 3, 0);
 
   showPreeditCheck_ =
-      new QCheckBox(QString::fromUtf8("Hiện preedit"), checkFrame);
+      new QCheckBox(T("Hiện preedit"), checkFrame);
   checkLayout->addWidget(showPreeditCheck_, 2, 0);
 
-  debugCheck_ = new QCheckBox(QString::fromUtf8("Ghi log debug"), checkFrame);
+  debugCheck_ = new QCheckBox(T("Ghi log debug"), checkFrame);
   checkLayout->addWidget(debugCheck_, 2, 1);
 
   mainLayout->addWidget(checkFrame);
@@ -140,6 +146,7 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
   setCombo(inputMethodCombo_, cfg.inputMethod);
   setCombo(outputModeCombo_, cfg.outputMode);
   setCombo(charsetCombo_, cfg.charset);
+  setCombo(languageCombo_, cfg.uiLanguage);
 
   shortWCheck_->setChecked(cfg.shortW);
   bracketUOCheck_->setChecked(cfg.bracketUO);
@@ -156,6 +163,8 @@ SKeyConfig GeneralTab::collectConfig() const {
   cfg.inputMethod = inputMethodCombo_->currentData().toString().toStdString();
   cfg.outputMode = outputModeCombo_->currentData().toString().toStdString();
   cfg.charset = charsetCombo_->currentData().toString().toStdString();
+  cfg.uiLanguage = languageCombo_->currentData().toString().toStdString();
+  if (cfg.uiLanguage != "en") cfg.uiLanguage = "vi";
   cfg.shortW = shortWCheck_->isChecked();
   cfg.bracketUO = bracketUOCheck_->isChecked();
   cfg.freeMarking = freeMarkingCheck_->isChecked();

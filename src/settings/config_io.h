@@ -39,6 +39,7 @@ struct SKeyConfig {
                                            // or custom filename ("my-logo.png")
     std::string customIconPath = "";       // kept for backward compat; not used by resolver
     UpdateChannel updateChannel = UpdateChannel::Stable;  // "Stable", "Dev"
+    std::string uiLanguage = "vi";  // settings GUI language ("vi", "en")
 };
 
 /// Per-application mode overrides (maps to skey-app-modes.conf)

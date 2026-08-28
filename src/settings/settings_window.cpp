@@ -6,6 +6,7 @@
 #include "general_tab.h"
 #include "info_tab.h"
 #include "macro_tab.h"
+#include "tr.h"
 
 #include <QApplication>
 #include <QHBoxLayout>
@@ -31,7 +32,7 @@ SkeySettingsWindow::SkeySettingsWindow(QWidget *parent) : QWidget(parent) {
 }
 
 void SkeySettingsWindow::setupUI() {
-  setWindowTitle(QString::fromUtf8("Skey - Tùy chỉnh"));
+  setWindowTitle(T("Skey - Tùy chỉnh"));
   setFixedSize(480, 600);
 
   auto *mainLayout = new QVBoxLayout(this);
@@ -51,12 +52,12 @@ void SkeySettingsWindow::setupUI() {
   dictTab_ = new DictTab(this);
   appearanceTab_ = new AppearanceTab(this);
   infoTab_ = new InfoTab(this);
-  tabWidget_->addTab(generalTab_, QString::fromUtf8("Chung"));
-  tabWidget_->addTab(appModesTab_, QString::fromUtf8("Apps"));
-  tabWidget_->addTab(macroTab_, QString::fromUtf8("Gõ tắt"));
-  tabWidget_->addTab(dictTab_, QString::fromUtf8("Từ điển"));
-  tabWidget_->addTab(appearanceTab_, QString::fromUtf8("Icons"));
-  tabWidget_->addTab(infoTab_, QString::fromUtf8("Info"));
+  tabWidget_->addTab(generalTab_, T("Chung"));
+  tabWidget_->addTab(appModesTab_, T("Apps"));
+  tabWidget_->addTab(macroTab_, T("Gõ tắt"));
+  tabWidget_->addTab(dictTab_, T("Từ điển"));
+  tabWidget_->addTab(appearanceTab_, T("Icons"));
+  tabWidget_->addTab(infoTab_, T("Info"));
   // Tab size hints vary per platform theme (GTK themes want wider tabs
   // than Fusion/KDE). Grow the window to fit the tabs at their natural
   // size instead of crushing the tab text.
@@ -66,7 +67,7 @@ void SkeySettingsWindow::setupUI() {
 
   // ── Hint label ──
   auto *hint = new QLabel(
-      QString::fromUtf8("Nhấn Áp dụng để thay đổi có hiệu lực "
+      T("Nhấn Áp dụng để thay đổi có hiệu lực "
                         "(kênh cập nhật ở tab Info có hiệu lực ngay)"),
       this);
   hint->setStyleSheet("color: #888; font-size: 11px;");
@@ -76,14 +77,14 @@ void SkeySettingsWindow::setupUI() {
   auto *btnLayout = new QHBoxLayout();
   btnLayout->setSpacing(8);
 
-  applyButton_ = new QPushButton(QString::fromUtf8("Áp dụng"), this);
+  applyButton_ = new QPushButton(T("Áp dụng"), this);
   applyButton_->setDefault(true);
   applyButton_->setMinimumWidth(100);
 
-  defaultsButton_ = new QPushButton(QString::fromUtf8("Mặc định"), this);
+  defaultsButton_ = new QPushButton(T("Mặc định"), this);
   defaultsButton_->setMinimumWidth(100);
 
-  closeButton_ = new QPushButton(QString::fromUtf8("Đóng"), this);
+  closeButton_ = new QPushButton(T("Đóng"), this);
   closeButton_->setMinimumWidth(100);
 
   btnLayout->addWidget(applyButton_);
@@ -159,6 +160,10 @@ void SkeySettingsWindow::onApply() {
   // immediately, so Apply must not undo it).
   cfg.updateChannel = infoTab_->updateChannel();
 
+  // Phát hiện đổi ngôn ngữ GUI: combo vs giá trị đang có trên đĩa.
+  const std::string uiLang = (cfg.uiLanguage == "en") ? "en" : "vi";
+  const bool langChanged = uiLang != readSkeyConfig().uiLanguage;
+
   MacroConfig macroCfg;
   macroCfg.entries = macroData.entries;
 
@@ -170,19 +175,26 @@ void SkeySettingsWindow::onApply() {
 
   if (ok1 && ok2 && ok3 && ok4 && ok5) {
     reloadFcitx5();
+    if (langChanged) {
+      // Tái tạo cửa sổ CHÍNH LÀ phản hồi — bỏ hộp thoại để tránh dialog
+      // chết theo parent sắp bị hủy.
+      Q_EMIT languageChanged(QString::fromStdString(uiLang));
+      close();
+      return;
+    }
     QMessageBox::information(
-        this, QString::fromUtf8("Đã áp dụng"),
-        QString::fromUtf8("Cấu hình đã được lưu và áp dụng."));
+        this, T("Đã áp dụng"),
+        T("Cấu hình đã được lưu và áp dụng."));
   } else {
-    QMessageBox::warning(this, QString::fromUtf8("Lỗi"),
-                         QString::fromUtf8("Không thể ghi file cấu hình."));
+    QMessageBox::warning(this, T("Lỗi"),
+                         T("Không thể ghi file cấu hình."));
   }
 }
 
 void SkeySettingsWindow::onDefaults() {
   auto answer = QMessageBox::question(
-      this, QString::fromUtf8("Khôi phục mặc định"),
-      QString::fromUtf8("Đặt lại tất cả cấu hình về mặc định?"),
+      this, T("Khôi phục mặc định"),
+      T("Đặt lại tất cả cấu hình về mặc định?"),
       QMessageBox::Yes | QMessageBox::No);
 
   if (answer == QMessageBox::Yes) {
