@@ -8,6 +8,7 @@
  */
 
 #include "dict_view_dialog.h"
+#include "tr.h"
 
 #include <QComboBox>
 #include <QHBoxLayout>
@@ -67,7 +68,7 @@ QVariant DictTableModel::data(const QModelIndex &index, int role) const {
 
 DictViewDialog::DictViewDialog(const QStringList &words, QWidget *parent)
     : QDialog(parent) {
-  setWindowTitle(QString::fromUtf8("Toàn bộ từ điển tiếng Việt"));
+  setWindowTitle(T("Toàn bộ từ điển tiếng Việt"));
   resize(880, 640);
 
   auto *layout = new QVBoxLayout(this);
@@ -78,10 +79,10 @@ DictViewDialog::DictViewDialog(const QStringList &words, QWidget *parent)
   auto *filterLayout = new QHBoxLayout();
   filterLayout->setSpacing(6);
   searchEdit_ = new QLineEdit(this);
-  searchEdit_->setPlaceholderText(QString::fromUtf8("Tìm từ…"));
+  searchEdit_->setPlaceholderText(T("Tìm từ…"));
   filterCombo_ = new QComboBox(this);
-  filterCombo_->addItem(QString::fromUtf8("Tất cả từ"));
-  filterCombo_->addItem(QString::fromUtf8("Chỉ từ cá nhân (✦)"));
+  filterCombo_->addItem(T("Tất cả từ"));
+  filterCombo_->addItem(T("Chỉ từ cá nhân (✦)"));
   filterLayout->addWidget(searchEdit_, 1);
   filterLayout->addWidget(filterCombo_);
   layout->addLayout(filterLayout);
@@ -107,7 +108,7 @@ DictViewDialog::DictViewDialog(const QStringList &words, QWidget *parent)
 
   auto updateCount = [this]() {
     countLabel_->setText(
-        QString::fromUtf8("%1 từ (✦ = từ cá nhân)").arg(model_->totalCount()));
+        T("%1 từ (✦ = từ cá nhân)").arg(model_->totalCount()));
   };
   updateCount();
   connect(model_, &QAbstractItemModel::modelReset, this,

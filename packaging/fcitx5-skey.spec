@@ -276,6 +276,7 @@ fi
 %{_datadir}/pixmaps/fcitx-skey-v-*.svg
 %{_datadir}/pixmaps/fcitx-skey-vn-flag.svg
 %{_datadir}/applications/fcitx5-skey-settings.desktop
+%{_datadir}/locale/*/LC_MESSAGES/fcitx5-skey.mo
 /lib/systemd/system/fcitx5-skey-uinput-server@.service
 %config(noreplace) /etc/polkit-1/rules.d/60-fcitx5-skey-uinput.rules
 %{_prefix}/lib/udev/rules.d/99-skey-uinput.rules

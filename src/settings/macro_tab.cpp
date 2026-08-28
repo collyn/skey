@@ -1,4 +1,5 @@
 #include "macro_tab.h"
+#include "tr.h"
 
 #include <QCheckBox>
 #include <QGroupBox>
@@ -33,27 +34,27 @@ void MacroTab::setupUI() {
     mainLayout->setSpacing(8);
 
     // ── Checkboxes ──
-    auto *checkFrame = new QGroupBox(QString::fromUtf8("Tùy chọn"), this);
+    auto *checkFrame = new QGroupBox(T("Tùy chọn"), this);
     auto *checkLayout = new QHBoxLayout(checkFrame);
     checkLayout->setContentsMargins(12, 8, 12, 8);
     checkLayout->setSpacing(16);
 
-    enableCheck_ = new QCheckBox(QString::fromUtf8("Bật gõ tắt"), checkFrame);
+    enableCheck_ = new QCheckBox(T("Bật gõ tắt"), checkFrame);
     enableCheck_->setToolTip(
-        QString::fromUtf8("Bật/tắt toàn bộ tính năng gõ tắt."));
+        T("Bật/tắt toàn bộ tính năng gõ tắt."));
     checkLayout->addWidget(enableCheck_);
 
     capitalizeCheck_ = new QCheckBox(
-        QString::fromUtf8("Viết hoa macro"), checkFrame);
+        T("Viết hoa macro"), checkFrame);
     capitalizeCheck_->setToolTip(
-        QString::fromUtf8("Nếu từ viết tắt có chữ cái đầu viết hoa,\n"
+        T("Nếu từ viết tắt có chữ cái đầu viết hoa,\n"
                           "kết quả cũng sẽ được viết hoa chữ cái đầu."));
     checkLayout->addWidget(capitalizeCheck_);
 
     offModeCheck_ = new QCheckBox(
-        QString::fromUtf8("Gõ tắt khi VN off"), checkFrame);
+        T("Gõ tắt khi VN off"), checkFrame);
     offModeCheck_->setToolTip(
-        QString::fromUtf8("Khi bật, gõ tắt vẫn hoạt động ngay cả\n"
+        T("Khi bật, gõ tắt vẫn hoạt động ngay cả\n"
                           "khi chế độ gõ tiếng Việt đang tắt."));
     checkLayout->addWidget(offModeCheck_);
 
@@ -62,9 +63,9 @@ void MacroTab::setupUI() {
     // ── Table ──
     table_ = new QTableWidget(0, 3, this);
     table_->setHorizontalHeaderLabels({
-        QString::fromUtf8("Từ viết tắt"),
-        QString::fromUtf8("Thành"),
-        QString::fromUtf8("Xóa"),
+        T("Từ viết tắt"),
+        T("Thành"),
+        T("Xóa"),
     });
     table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
@@ -80,24 +81,24 @@ void MacroTab::setupUI() {
     auto *inputRow = new QHBoxLayout();
     inputRow->setSpacing(6);
 
-    inputRow->addWidget(new QLabel(QString::fromUtf8("Từ vt:"), this));
+    inputRow->addWidget(new QLabel(T("Từ vt:"), this));
     keyEdit_ = new QLineEdit(this);
-    keyEdit_->setPlaceholderText(QString::fromUtf8("vd: dc"));
+    keyEdit_->setPlaceholderText(T("vd: dc"));
     keyEdit_->setMaxLength(static_cast<int>(kMaxMacroKeyLen));
     inputRow->addWidget(keyEdit_);
 
-    inputRow->addWidget(new QLabel(QString::fromUtf8("Thành:"), this));
+    inputRow->addWidget(new QLabel(T("Thành:"), this));
     valueEdit_ = new QLineEdit(this);
-    valueEdit_->setPlaceholderText(QString::fromUtf8("vd: được"));
+    valueEdit_->setPlaceholderText(T("vd: được"));
     valueEdit_->setMaxLength(static_cast<int>(kMaxMacroValueLen));
     inputRow->addWidget(valueEdit_);
 
-    addButton_ = new QPushButton(QString::fromUtf8("Thêm"), this);
+    addButton_ = new QPushButton(T("Thêm"), this);
     addButton_->setMinimumWidth(80);
     connect(addButton_, &QPushButton::clicked, this, &MacroTab::onAdd);
     inputRow->addWidget(addButton_);
 
-    editButton_ = new QPushButton(QString::fromUtf8("Sửa"), this);
+    editButton_ = new QPushButton(T("Sửa"), this);
     editButton_->setMinimumWidth(60);
     editButton_->setEnabled(false);
     connect(editButton_, &QPushButton::clicked, this, &MacroTab::onEdit);
@@ -123,9 +124,9 @@ void MacroTab::addRow(const std::string &key, const std::string &value) {
     valItem->setFlags(valItem->flags() & ~Qt::ItemIsEditable);
     table_->setItem(row, 1, valItem);
 
-    auto *delBtn = new QPushButton(QString::fromUtf8("✕"), this);
+    auto *delBtn = new QPushButton(T("✕"), this);
     delBtn->setFixedSize(28, 28);
-    delBtn->setToolTip(QString::fromUtf8("Xóa macro này"));
+    delBtn->setToolTip(T("Xóa macro này"));
     delBtn->setStyleSheet(
         "QPushButton { color: #c0392b; border: none; font-weight: bold; }"
         "QPushButton:hover { background: #c0392b; color: white; border-radius: 3px; }");
@@ -139,28 +140,28 @@ void MacroTab::onAdd() {
 
     if (key.empty() || value.empty()) {
         QMessageBox::warning(this,
-            QString::fromUtf8("Thiếu thông tin"),
-            QString::fromUtf8("Vui lòng nhập cả từ viết tắt và kết quả."));
+            T("Thiếu thông tin"),
+            T("Vui lòng nhập cả từ viết tắt và kết quả."));
         return;
     }
     if (key.size() > kMaxMacroKeyLen) {
         QMessageBox::warning(this,
-            QString::fromUtf8("Từ viết tắt quá dài"),
-            QString::fromUtf8("Từ viết tắt tối đa %1 ký tự.")
+            T("Từ viết tắt quá dài"),
+            T("Từ viết tắt tối đa %1 ký tự.")
                 .arg(static_cast<int>(kMaxMacroKeyLen)));
         return;
     }
     if (!isValidMacroKey(key)) {
         QMessageBox::warning(this,
-            QString::fromUtf8("Ký tự không hợp lệ"),
-            QString::fromUtf8("Từ viết tắt chỉ được chứa chữ cái và số.\n"
+            T("Ký tự không hợp lệ"),
+            T("Từ viết tắt chỉ được chứa chữ cái và số.\n"
                               "Không được dùng ký tự đặc biệt hoặc khoảng trắng."));
         return;
     }
     if (value.size() > kMaxMacroValueLen) {
         QMessageBox::warning(this,
-            QString::fromUtf8("Kết quả quá dài"),
-            QString::fromUtf8("Kết quả tối đa %1 ký tự.")
+            T("Kết quả quá dài"),
+            T("Kết quả tối đa %1 ký tự.")
                 .arg(static_cast<int>(kMaxMacroValueLen)));
         return;
     }
@@ -168,8 +169,8 @@ void MacroTab::onAdd() {
     for (int row = 0; row < table_->rowCount(); ++row) {
         if (table_->item(row, 0)->text().toStdString() == key) {
             QMessageBox::warning(this,
-                QString::fromUtf8("Đã tồn tại"),
-                QString::fromUtf8("Từ viết tắt '%1' đã có trong danh sách.\n"
+                T("Đã tồn tại"),
+                T("Từ viết tắt '%1' đã có trong danh sách.\n"
                                   "Hãy xóa entry cũ trước khi thêm lại.")
                     .arg(QString::fromStdString(key)));
             return;
@@ -187,13 +188,13 @@ void MacroTab::onSelectionChanged() {
     if (selected.isEmpty()) {
         editingRow_ = -1;
         editButton_->setEnabled(false);
-        addButton_->setText(QString::fromUtf8("Thêm"));
+        addButton_->setText(T("Thêm"));
         return;
     }
     int row = selected.first().row();
     editingRow_ = row;
     editButton_->setEnabled(true);
-    addButton_->setText(QString::fromUtf8("Thêm"));
+    addButton_->setText(T("Thêm"));
 
     // Populate input fields from selected row
     keyEdit_->setText(table_->item(row, 0)->text());
@@ -208,27 +209,27 @@ void MacroTab::onEdit() {
 
     if (key.empty() || value.empty()) {
         QMessageBox::warning(this,
-            QString::fromUtf8("Thiếu thông tin"),
-            QString::fromUtf8("Vui lòng nhập cả từ viết tắt và kết quả."));
+            T("Thiếu thông tin"),
+            T("Vui lòng nhập cả từ viết tắt và kết quả."));
         return;
     }
     if (key.size() > kMaxMacroKeyLen) {
         QMessageBox::warning(this,
-            QString::fromUtf8("Từ viết tắt quá dài"),
-            QString::fromUtf8("Từ viết tắt tối đa %1 ký tự.")
+            T("Từ viết tắt quá dài"),
+            T("Từ viết tắt tối đa %1 ký tự.")
                 .arg(static_cast<int>(kMaxMacroKeyLen)));
         return;
     }
     if (!isValidMacroKey(key)) {
         QMessageBox::warning(this,
-            QString::fromUtf8("Ký tự không hợp lệ"),
-            QString::fromUtf8("Từ viết tắt chỉ được chứa chữ cái và số."));
+            T("Ký tự không hợp lệ"),
+            T("Từ viết tắt chỉ được chứa chữ cái và số."));
         return;
     }
     if (value.size() > kMaxMacroValueLen) {
         QMessageBox::warning(this,
-            QString::fromUtf8("Kết quả quá dài"),
-            QString::fromUtf8("Kết quả tối đa %1 ký tự.")
+            T("Kết quả quá dài"),
+            T("Kết quả tối đa %1 ký tự.")
                 .arg(static_cast<int>(kMaxMacroValueLen)));
         return;
     }
@@ -237,8 +238,8 @@ void MacroTab::onEdit() {
         if (r != editingRow_ &&
             table_->item(r, 0)->text().toStdString() == key) {
             QMessageBox::warning(this,
-                QString::fromUtf8("Đã tồn tại"),
-                QString::fromUtf8("Từ viết tắt '%1' đã có trong danh sách.")
+                T("Đã tồn tại"),
+                T("Từ viết tắt '%1' đã có trong danh sách.")
                     .arg(QString::fromStdString(key)));
             return;
         }
@@ -251,7 +252,7 @@ void MacroTab::onEdit() {
     // Clear editing state
     editingRow_ = -1;
     editButton_->setEnabled(false);
-    addButton_->setText(QString::fromUtf8("Thêm"));
+    addButton_->setText(T("Thêm"));
     keyEdit_->clear();
     valueEdit_->clear();
     keyEdit_->setFocus();
@@ -275,7 +276,7 @@ void MacroTab::onDelete() {
     if (row == editingRow_) {
         editingRow_ = -1;
         editButton_->setEnabled(false);
-        addButton_->setText(QString::fromUtf8("Thêm"));
+        addButton_->setText(T("Thêm"));
         keyEdit_->clear();
         valueEdit_->clear();
     }

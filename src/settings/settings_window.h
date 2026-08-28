@@ -17,6 +17,11 @@ class SkeySettingsWindow : public QWidget {
 public:
     explicit SkeySettingsWindow(QWidget *parent = nullptr);
 
+signals:
+    /// Emitted sau Apply khi ngôn ngữ GUI đổi; main.cpp tái tạo cửa sổ
+    /// để mọi chuỗi đọc lại theo ngôn ngữ mới.
+    void languageChanged(const QString &lang);
+
 protected:
     void showEvent(QShowEvent *event) override;
 

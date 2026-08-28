@@ -105,6 +105,8 @@ SKeyConfig readSkeyConfig() {
         else if (key == "UpdateChannel")
             cfg.updateChannel = (val == "Dev") ? UpdateChannel::Dev
                                                : UpdateChannel::Stable;
+        else if (key == "UILanguage")
+            cfg.uiLanguage = (val == "en") ? "en" : "vi";
     }
 
     // Migration: the old "Telex W" input method is now Telex + ShortW.
@@ -156,6 +158,8 @@ bool writeSkeyConfig(const SKeyConfig &cfg) {
     out << "CustomIconPath=" << maybeQuote(cfg.customIconPath)  << "\n";
     out << "# Update channel (Stable / Dev)"    << "\n";
     out << "UpdateChannel=" << (cfg.updateChannel == UpdateChannel::Dev ? "Dev" : "Stable") << "\n";
+    out << "# Settings GUI language (vi / en)" << "\n";
+    out << "UILanguage=" << cfg.uiLanguage << "\n";
     out << "MacroEditor=fcitx://config/addon/skey/skey-macro" << "\n";
 
     return out.good();

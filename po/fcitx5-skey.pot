@@ -1,0 +1,855 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR Skey contributors
+# This file is distributed under the same license as the fcitx5-skey package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: fcitx5-skey 0.7.9\n"
+"Report-Msgid-Bugs-To: https://github.com/collyn/skey/issues\n"
+"POT-Creation-Date: 2026-08-28 18:51+0700\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#: src/settings/app_modes_tab.cpp:32
+msgid ""
+"Cấu hình chế độ xuất riêng cho từng ứng dụng.\n"
+"Tên ứng dụng là tên file thực thi (vd: firefox, tabby, code)."
+msgstr ""
+
+#: src/settings/app_modes_tab.cpp:41
+msgid "Tên ứng dụng"
+msgstr ""
+
+#: src/settings/app_modes_tab.cpp:42
+msgid "Chế độ xuất"
+msgstr ""
+
+#: src/settings/app_modes_tab.cpp:43 src/settings/app_modes_tab.cpp:110
+#: src/settings/dict_tab.cpp:190 src/settings/macro_tab.cpp:68
+msgid "Xóa"
+msgstr ""
+
+#: src/settings/app_modes_tab.cpp:55
+msgid "Thêm ứng dụng"
+msgstr ""
+
+#: src/settings/app_modes_tab.cpp:66
+msgid "Thanh địa chỉ Chromium:"
+msgstr ""
+
+#: src/settings/app_modes_tab.cpp:68
+msgid ""
+"Chế độ gõ cho thanh địa chỉ Chrome/Edge/Brave.\n"
+"Không ảnh hưởng đến nội dung trang web."
+msgstr ""
+
+#: src/settings/app_modes_tab.cpp:77
+msgid "Không gõ tiếng Việt"
+msgstr ""
+
+#: src/settings/app_modes_tab.cpp:93
+msgid "(IBus app)"
+msgstr ""
+
+#: src/settings/app_modes_tab.cpp:153
+msgid "Thêm ứng dụng mới"
+msgstr ""
+
+#: src/settings/app_modes_tab.cpp:161
+msgid "vd: firefox, tabby, code"
+msgstr ""
+
+#: src/settings/app_modes_tab.cpp:162
+msgid "Tên ứng dụng:"
+msgstr ""
+
+#: src/settings/app_modes_tab.cpp:169 src/settings/general_tab.cpp:41
+msgid "Chế độ xuất:"
+msgstr ""
+
+#: src/settings/app_modes_tab.cpp:172 src/settings/dict_tab.cpp:49
+#: src/settings/dict_tab.cpp:114 src/settings/dict_tab.cpp:124
+#: src/settings/dict_tab.cpp:248 src/settings/dict_tab.cpp:269
+#: src/settings/dict_tab.cpp:283 src/settings/macro_tab.cpp:96
+#: src/settings/macro_tab.cpp:191 src/settings/macro_tab.cpp:197
+#: src/settings/macro_tab.cpp:255 src/settings/macro_tab.cpp:279
+msgid "Thêm"
+msgstr ""
+
+#: src/settings/app_modes_tab.cpp:173
+msgid "Hủy"
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:143 src/settings/appearance_tab.cpp:331
+msgid "Chọn biểu tượng"
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:163
+msgid ""
+"Biểu tượng hiển thị ở khay hệ thống,\n"
+"cửa sổ cài đặt và trang Info."
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:209
+msgid "Xóa biểu tượng này"
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:224
+msgid "Thêm biểu tượng tùy chỉnh"
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:258
+msgid ""
+"Mặc định\n"
+"Vi trên nền xanh"
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:260
+msgid "Chữ V trên nền xanh"
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:262
+msgid ""
+"Chữ V trắng trong suốt\n"
+"Phù hợp dark theme"
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:264
+msgid ""
+"Chữ V đen trong suốt\n"
+"Phù hợp light theme"
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:266
+msgid "Chữ V trên nền đỏ"
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:268
+msgid ""
+"Ngôi sao vàng trên nền đỏ\n"
+"Quốc kỳ Việt Nam"
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:273
+msgid "Tùy chỉnh: %1"
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:333
+msgid "Hình ảnh (*.png *.svg)"
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:347 src/settings/info_tab.cpp:540
+#: src/settings/info_tab.cpp:581 src/settings/info_tab.cpp:615
+#: src/settings/info_tab.cpp:625 src/settings/settings_window.cpp:189
+msgid "Lỗi"
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:348
+msgid ""
+"Không thể lưu biểu tượng.\n"
+"Vui lòng kiểm tra quyền ghi."
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:361
+msgid "Xóa biểu tượng"
+msgstr ""
+
+#: src/settings/appearance_tab.cpp:362
+msgid "Xóa biểu tượng \"%1\"?"
+msgstr ""
+
+#: src/settings/dict_tab.cpp:38
+msgid "Từ điển cá nhân"
+msgstr ""
+
+#: src/settings/dict_tab.cpp:48
+msgid "Thêm từ mới (ví dụ: phược)"
+msgstr ""
+
+#: src/settings/dict_tab.cpp:56
+msgid "Tìm từ cá nhân…"
+msgstr ""
+
+#: src/settings/dict_tab.cpp:68 src/settings/dict_tab.cpp:223
+msgid "Chọn tất cả"
+msgstr ""
+
+#: src/settings/dict_tab.cpp:70 src/settings/dict_tab.cpp:220
+msgid "Xóa từ đã chọn"
+msgstr ""
+
+#: src/settings/dict_tab.cpp:72
+msgid "Xem từ điển"
+msgstr ""
+
+#: src/settings/dict_tab.cpp:83
+msgid ""
+"Các từ này được thêm vào từ điển tiếng Việt khi bật\n"
+"\"Dùng từ điển\" ở tab Chung — những từ không có trong\n"
+"từ điển gốc sẽ không bị tự động khôi phục khi gõ.\n"
+"Nhấn Áp dụng để lưu."
+msgstr ""
+
+#: src/settings/dict_tab.cpp:186 src/settings/macro_tab.cpp:101
+msgid "Sửa"
+msgstr ""
+
+#: src/settings/dict_tab.cpp:219
+msgid "Xóa từ đã chọn (%1)"
+msgstr ""
+
+#: src/settings/dict_tab.cpp:222
+msgid "Bỏ chọn tất cả"
+msgstr ""
+
+#: src/settings/dict_tab.cpp:259
+msgid "Cập nhật"
+msgstr ""
+
+#: src/settings/dict_view_dialog.cpp:71
+msgid "Toàn bộ từ điển tiếng Việt"
+msgstr ""
+
+#: src/settings/dict_view_dialog.cpp:82
+msgid "Tìm từ…"
+msgstr ""
+
+#: src/settings/dict_view_dialog.cpp:84
+msgid "Tất cả từ"
+msgstr ""
+
+#: src/settings/dict_view_dialog.cpp:85
+msgid "Chỉ từ cá nhân (✦)"
+msgstr ""
+
+#: src/settings/dict_view_dialog.cpp:111
+msgid "%1 từ (✦ = từ cá nhân)"
+msgstr ""
+
+#: src/settings/general_tab.cpp:34
+msgid "Kiểu gõ:"
+msgstr ""
+
+#: src/settings/general_tab.cpp:58
+msgid "Bảng mã:"
+msgstr ""
+
+#: src/settings/general_tab.cpp:61
+msgid "Tiếng Việt"
+msgstr ""
+
+#: src/settings/general_tab.cpp:62
+msgid "English"
+msgstr ""
+
+#: src/settings/general_tab.cpp:63
+msgid "Ngôn ngữ:"
+msgstr ""
+
+#: src/settings/general_tab.cpp:67
+msgid "Nhấn tổ hợp phím để thay đổi"
+msgstr ""
+
+#: src/settings/general_tab.cpp:68
+msgid "Phím chuyển bộ gõ:"
+msgstr ""
+
+#: src/settings/general_tab.cpp:72
+msgid "Phím tắt để mở menu chế độ (mặc định: `)"
+msgstr ""
+
+#: src/settings/general_tab.cpp:73
+msgid "Phím menu chế độ:"
+msgstr ""
+
+#: src/settings/general_tab.cpp:89
+msgid "Gõ w thành ư"
+msgstr ""
+
+#: src/settings/general_tab.cpp:91
+msgid "Chỉ Telex: gõ phím w đơn lẻ sẽ ra chữ ư."
+msgstr ""
+
+#: src/settings/general_tab.cpp:95
+msgid "Gõ ][ thành ư ơ"
+msgstr ""
+
+#: src/settings/general_tab.cpp:97
+msgid "Chỉ Telex: gõ [ ra ơ và ] ra ư (giống UniKey)."
+msgstr ""
+
+#: src/settings/general_tab.cpp:101
+msgid "Đánh dấu tự do"
+msgstr ""
+
+#: src/settings/general_tab.cpp:105
+msgid "Tự động khôi phục"
+msgstr ""
+
+#: src/settings/general_tab.cpp:108
+msgid "Dùng từ điển"
+msgstr ""
+
+#: src/settings/general_tab.cpp:110
+msgid ""
+"Tự động khôi phục kiểm tra từ thật trong từ điển tiếng Việt thay vì luật âm "
+"tiết (khôi phục cả những âm tiết hợp lệ nhưng không phải từ, ví dụ \"lước\")."
+msgstr ""
+
+#: src/settings/general_tab.cpp:116
+msgid "Hiện preedit"
+msgstr ""
+
+#: src/settings/general_tab.cpp:119
+msgid "Ghi log debug"
+msgstr ""
+
+#: src/settings/hotkey_edit.cpp:9
+msgid "Nhấn tổ hợp phím..."
+msgstr ""
+
+#: src/settings/hotkey_edit.cpp:114 src/settings/hotkey_edit.cpp:126
+msgid "⌨ Nhấn phím mới..."
+msgstr ""
+
+#: src/settings/info_tab.cpp:100
+msgid "SKey - Phiên bản: "
+msgstr ""
+
+#: src/settings/info_tab.cpp:114
+msgid "<a href=\"%1\">%1</a>"
+msgstr ""
+
+#: src/settings/info_tab.cpp:126
+msgid "Kênh cập nhật:"
+msgstr ""
+
+#: src/settings/info_tab.cpp:128
+msgid "Ổn định (Stable)"
+msgstr ""
+
+#: src/settings/info_tab.cpp:130
+msgid "Thử nghiệm (Dev)"
+msgstr ""
+
+#: src/settings/info_tab.cpp:146
+msgid "Check Update"
+msgstr ""
+
+#: src/settings/info_tab.cpp:149
+msgid "Restart Fcitx5"
+msgstr ""
+
+#: src/settings/info_tab.cpp:180
+msgid "Liên hệ"
+msgstr ""
+
+#: src/settings/info_tab.cpp:185
+msgid "Nguyễn Tiến Huy"
+msgstr ""
+
+#: src/settings/info_tab.cpp:191
+msgid "<a href=\"https://t.me/+irlw1EnOtAkxNDc1\">Telegram Group</a>"
+msgstr ""
+
+#: src/settings/info_tab.cpp:211
+msgid "Backup / Restore:"
+msgstr ""
+
+#: src/settings/info_tab.cpp:215
+msgid "Sao lưu"
+msgstr ""
+
+#: src/settings/info_tab.cpp:220
+msgid "Khôi phục"
+msgstr ""
+
+#: src/settings/info_tab.cpp:234
+msgid "Đang kiểm tra..."
+msgstr ""
+
+#: src/settings/info_tab.cpp:235
+msgid "Đang kết nối tới GitHub..."
+msgstr ""
+
+#: src/settings/info_tab.cpp:268
+msgid "Đang khởi động lại..."
+msgstr ""
+
+#: src/settings/info_tab.cpp:269
+msgid "Đang khởi động lại Fcitx5..."
+msgstr ""
+
+#: src/settings/info_tab.cpp:279
+msgid "Khởi động lại Fcitx5"
+msgstr ""
+
+#: src/settings/info_tab.cpp:280
+msgid "✓ Fcitx5 đã được khởi động lại"
+msgstr ""
+
+#: src/settings/info_tab.cpp:290 src/settings/info_tab.cpp:342
+#: src/settings/info_tab.cpp:364 src/settings/info_tab.cpp:385
+#: src/settings/info_tab.cpp:406 src/settings/info_tab.cpp:436
+#: src/settings/info_tab.cpp:476
+msgid "Kiểm tra cập nhật"
+msgstr ""
+
+#: src/settings/info_tab.cpp:296
+msgid ""
+"Có phiên bản mới: v%1\n"
+"(Phiên bản hiện tại: %2)\n"
+msgstr ""
+
+#: src/settings/info_tab.cpp:301
+msgid ""
+"\n"
+"Ghi chú:\n"
+"%1"
+msgstr ""
+
+#: src/settings/info_tab.cpp:308
+msgid ""
+"\n"
+"\n"
+"Bạn đang dùng NixOS: bản cập nhật sẽ được cài qua nixos-rebuild (không tải "
+"file từ GitHub)."
+msgstr ""
+
+#: src/settings/info_tab.cpp:312
+msgid ""
+"\n"
+"Bản Dev sẽ pin flake input vào tag v%1 và ghi services.fcitx5-"
+"skey.devVersion vào configuration.nix."
+msgstr ""
+
+#: src/settings/info_tab.cpp:317
+msgid ""
+"\n"
+"\n"
+"Không tìm thấy file cài đặt phù hợp. Vui lòng tải thủ công từ GitHub."
+msgstr ""
+
+#: src/settings/info_tab.cpp:319 src/settings/info_tab.cpp:325
+msgid "Có bản cập nhật"
+msgstr ""
+
+#: src/settings/info_tab.cpp:328
+msgid "Cập nhật ngay"
+msgstr ""
+
+#: src/settings/info_tab.cpp:330
+msgid "Bỏ qua"
+msgstr ""
+
+#: src/settings/info_tab.cpp:336
+msgid "Đang cập nhật..."
+msgstr ""
+
+#: src/settings/info_tab.cpp:352
+msgid "Đang tải bản cập nhật..."
+msgstr ""
+
+#: src/settings/info_tab.cpp:371
+msgid "✓ Bạn đang dùng bản Dev mới hơn hoặc bằng bản Stable hiện tại."
+msgstr ""
+
+#: src/settings/info_tab.cpp:378
+msgid "✓ Bạn đang dùng phiên bản mới nhất."
+msgstr ""
+
+#: src/settings/info_tab.cpp:387
+msgid "✗ Lỗi kiểm tra: %1"
+msgstr ""
+
+#: src/settings/info_tab.cpp:396
+msgid "Đang tải... %1%"
+msgstr ""
+
+#: src/settings/info_tab.cpp:401
+msgid "Tải xong. Đang cài đặt..."
+msgstr ""
+
+#: src/settings/info_tab.cpp:408
+msgid "✗ Lỗi tải: %1"
+msgstr ""
+
+#: src/settings/info_tab.cpp:419
+msgid ""
+"Đang pin bản Dev và build lại hệ thống bằng nixos-rebuild... (cần quyền root)"
+msgstr ""
+
+#: src/settings/info_tab.cpp:423
+msgid "Đang build lại hệ thống bằng nixos-rebuild... (cần quyền root)"
+msgstr ""
+
+#: src/settings/info_tab.cpp:429
+msgid "Đang cài đặt... (cần quyền root)"
+msgstr ""
+
+#: src/settings/info_tab.cpp:447
+msgid "✓ %1"
+msgstr ""
+
+#: src/settings/info_tab.cpp:450
+msgid "SKey - Phiên bản: %1"
+msgstr ""
+
+#: src/settings/info_tab.cpp:468
+msgid "✗ %1"
+msgstr ""
+
+#: src/settings/info_tab.cpp:480
+msgid "Không thể cập nhật tự động — xem hướng dẫn."
+msgstr ""
+
+#: src/settings/info_tab.cpp:488
+msgid ""
+"Không thể tự động cập nhật SKey trên NixOS.\n"
+"\n"
+"Hệ thống cần dùng flake với input tên là \"skey\".\n"
+"Thêm vào /etc/nixos/flake.nix:\n"
+"\n"
+"  inputs.skey = {\n"
+"    url = \"github:collyn/skey\";\n"
+"    inputs.nixpkgs.follows = \"nixpkgs\";\n"
+"  };\n"
+"\n"
+"Rồi chạy (cần quyền root):\n"
+"\n"
+"  cd /etc/nixos\n"
+msgstr ""
+
+#: src/settings/info_tab.cpp:501
+msgid ""
+"  # thêm vào configuration.nix:\n"
+"  # services.fcitx5-skey.devVersion = \"%1\";\n"
+"  sudo nix flake lock --override-input skey github:collyn/skey/v%1\n"
+"  sudo nixos-rebuild switch --flake /etc/nixos\n"
+"  fcitx5 -r -d\n"
+"\n"
+msgstr ""
+
+#: src/settings/info_tab.cpp:510
+msgid ""
+"  sudo nix flake update skey\n"
+"  sudo nixos-rebuild switch --flake /etc/nixos\n"
+"  fcitx5 -r -d\n"
+"\n"
+msgstr ""
+
+#: src/settings/info_tab.cpp:515
+msgid ""
+"Xem chi tiết: https://github.com/collyn/skey/blob/main/packaging/nixos/"
+"README.md"
+msgstr ""
+
+#: src/settings/info_tab.cpp:519
+msgid "Cần cập nhật thủ công"
+msgstr ""
+
+#: src/settings/info_tab.cpp:530
+msgid "Lưu bản sao lưu cấu hình"
+msgstr ""
+
+#: src/settings/info_tab.cpp:532 src/settings/info_tab.cpp:609
+msgid "Tarball (*.tar.gz)"
+msgstr ""
+
+#: src/settings/info_tab.cpp:541 src/settings/info_tab.cpp:616
+msgid "Không thể tạo thư mục tạm."
+msgstr ""
+
+#: src/settings/info_tab.cpp:582
+msgid ""
+"Không thể tạo tệp sao lưu:\n"
+"%1"
+msgstr ""
+
+#: src/settings/info_tab.cpp:587
+msgid ""
+"Cấu hình đã được lưu vào:\n"
+"%1"
+msgstr ""
+
+#: src/settings/info_tab.cpp:590
+msgid "Đã sao lưu (thiếu tệp)"
+msgstr ""
+
+#: src/settings/info_tab.cpp:591
+msgid ""
+"\n"
+"\n"
+"Không tìm thấy (bỏ qua): %1"
+msgstr ""
+
+#: src/settings/info_tab.cpp:594
+msgid "Đã sao lưu"
+msgstr ""
+
+#: src/settings/info_tab.cpp:600
+msgid "Khôi phục cấu hình"
+msgstr ""
+
+#: src/settings/info_tab.cpp:601
+msgid ""
+"Khôi phục sẽ ghi đè toàn bộ cấu hình hiện tại.\n"
+"Bạn có chắc muốn tiếp tục?"
+msgstr ""
+
+#: src/settings/info_tab.cpp:608
+msgid "Chọn tệp sao lưu để khôi phục"
+msgstr ""
+
+#: src/settings/info_tab.cpp:626
+msgid ""
+"Không thể giải nén tệp sao lưu:\n"
+"%1"
+msgstr ""
+
+#: src/settings/info_tab.cpp:674
+msgid "Cảnh báo"
+msgstr ""
+
+#: src/settings/info_tab.cpp:675
+msgid ""
+"Một số tệp không thể khôi phục.\n"
+"Kiểm tra lại tệp sao lưu."
+msgstr ""
+
+#: src/settings/info_tab.cpp:682
+msgid "Đã khôi phục"
+msgstr ""
+
+#: src/settings/info_tab.cpp:683
+msgid "Cấu hình đã được khôi phục và áp dụng."
+msgstr ""
+
+#: src/settings/macro_tab.cpp:37
+msgid "Tùy chọn"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:42
+msgid "Bật gõ tắt"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:44
+msgid "Bật/tắt toàn bộ tính năng gõ tắt."
+msgstr ""
+
+#: src/settings/macro_tab.cpp:48
+msgid "Viết hoa macro"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:50
+msgid ""
+"Nếu từ viết tắt có chữ cái đầu viết hoa,\n"
+"kết quả cũng sẽ được viết hoa chữ cái đầu."
+msgstr ""
+
+#: src/settings/macro_tab.cpp:55
+msgid "Gõ tắt khi VN off"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:57
+msgid ""
+"Khi bật, gõ tắt vẫn hoạt động ngay cả\n"
+"khi chế độ gõ tiếng Việt đang tắt."
+msgstr ""
+
+#: src/settings/macro_tab.cpp:66
+msgid "Từ viết tắt"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:67
+msgid "Thành"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:84
+msgid "Từ vt:"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:86
+msgid "vd: dc"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:90
+msgid "Thành:"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:92
+msgid "vd: được"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:127
+msgid "✕"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:129
+msgid "Xóa macro này"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:143 src/settings/macro_tab.cpp:212
+msgid "Thiếu thông tin"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:144 src/settings/macro_tab.cpp:213
+msgid "Vui lòng nhập cả từ viết tắt và kết quả."
+msgstr ""
+
+#: src/settings/macro_tab.cpp:149 src/settings/macro_tab.cpp:218
+msgid "Từ viết tắt quá dài"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:150 src/settings/macro_tab.cpp:219
+msgid "Từ viết tắt tối đa %1 ký tự."
+msgstr ""
+
+#: src/settings/macro_tab.cpp:156 src/settings/macro_tab.cpp:225
+msgid "Ký tự không hợp lệ"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:157
+msgid ""
+"Từ viết tắt chỉ được chứa chữ cái và số.\n"
+"Không được dùng ký tự đặc biệt hoặc khoảng trắng."
+msgstr ""
+
+#: src/settings/macro_tab.cpp:163 src/settings/macro_tab.cpp:231
+msgid "Kết quả quá dài"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:164 src/settings/macro_tab.cpp:232
+msgid "Kết quả tối đa %1 ký tự."
+msgstr ""
+
+#: src/settings/macro_tab.cpp:172 src/settings/macro_tab.cpp:241
+msgid "Đã tồn tại"
+msgstr ""
+
+#: src/settings/macro_tab.cpp:173
+msgid ""
+"Từ viết tắt '%1' đã có trong danh sách.\n"
+"Hãy xóa entry cũ trước khi thêm lại."
+msgstr ""
+
+#: src/settings/macro_tab.cpp:226
+msgid "Từ viết tắt chỉ được chứa chữ cái và số."
+msgstr ""
+
+#: src/settings/macro_tab.cpp:242
+msgid "Từ viết tắt '%1' đã có trong danh sách."
+msgstr ""
+
+#: src/settings/main.cpp:59 src/settings/settings_window.cpp:35
+msgid "Skey - Tùy chỉnh"
+msgstr ""
+
+#: src/settings/settings_window.cpp:55
+msgid "Chung"
+msgstr ""
+
+#: src/settings/settings_window.cpp:56
+msgid "Apps"
+msgstr ""
+
+#: src/settings/settings_window.cpp:57
+msgid "Gõ tắt"
+msgstr ""
+
+#: src/settings/settings_window.cpp:58
+msgid "Từ điển"
+msgstr ""
+
+#: src/settings/settings_window.cpp:59
+msgid "Icons"
+msgstr ""
+
+#: src/settings/settings_window.cpp:60
+msgid "Info"
+msgstr ""
+
+#: src/settings/settings_window.cpp:70
+msgid ""
+"Nhấn Áp dụng để thay đổi có hiệu lực (kênh cập nhật ở tab Info có hiệu lực "
+"ngay)"
+msgstr ""
+
+#: src/settings/settings_window.cpp:80
+msgid "Áp dụng"
+msgstr ""
+
+#: src/settings/settings_window.cpp:84
+msgid "Mặc định"
+msgstr ""
+
+#: src/settings/settings_window.cpp:87
+msgid "Đóng"
+msgstr ""
+
+#: src/settings/settings_window.cpp:186
+msgid "Đã áp dụng"
+msgstr ""
+
+#: src/settings/settings_window.cpp:187
+msgid "Cấu hình đã được lưu và áp dụng."
+msgstr ""
+
+#: src/settings/settings_window.cpp:190
+msgid "Không thể ghi file cấu hình."
+msgstr ""
+
+#: src/settings/settings_window.cpp:196
+msgid "Khôi phục mặc định"
+msgstr ""
+
+#: src/settings/settings_window.cpp:197
+msgid "Đặt lại tất cả cấu hình về mặc định?"
+msgstr ""
+
+#: src/settings/updater.cpp:221
+msgid "Lỗi phân tích JSON: %1"
+msgstr ""
+
+#: src/settings/updater.cpp:232
+msgid "Phản hồi không hợp lệ từ máy chủ."
+msgstr ""
+
+#: src/settings/updater.cpp:326
+msgid "Không tìm thấy file cài đặt phù hợp cho %1."
+msgstr ""
+
+#: src/settings/updater.cpp:334
+msgid "NixOS không dùng file cài đặt; dùng nixos-rebuild."
+msgstr ""
+
+#: src/settings/updater.cpp:378
+msgid "Không thể ghi file: %1"
+msgstr ""
+
+#: src/settings/updater.cpp:435
+msgid "Cập nhật thành công! Fcitx5 đã được khởi động lại."
+msgstr ""
+
+#: src/settings/updater.cpp:440
+msgid "Cài đặt thất bại (mã %1): %2"
+msgstr ""
+
+#: src/settings/updater.cpp:443 src/settings/updater.cpp:566
+msgid "Người dùng đã hủy hoặc lỗi quyền."
+msgstr ""
+
+#: src/settings/updater.cpp:556
+msgid "Cập nhật thành công! Hệ thống đã được build lại bằng nixos-rebuild."
+msgstr ""
+
+#: src/settings/updater.cpp:563
+msgid "Cập nhật thất bại (mã %1): %2"
+msgstr ""

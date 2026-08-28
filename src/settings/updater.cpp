@@ -1,5 +1,6 @@
 #include "updater.h"
 #include "config_io.h"
+#include "tr.h"
 
 #include <QFile>
 #include <QJsonArray>
@@ -217,7 +218,7 @@ void Updater::onCheckReplyFinished() {
     QJsonDocument doc = QJsonDocument::fromJson(data, &parseErr);
 
     if (doc.isNull()) {
-        emit checkFailed(QString::fromUtf8("Lỗi phân tích JSON: %1")
+        emit checkFailed(T("Lỗi phân tích JSON: %1")
                              .arg(parseErr.errorString()));
         return;
     }
@@ -228,7 +229,7 @@ void Updater::onCheckReplyFinished() {
         // prereleases) for the newest published dev build.
         if (!doc.isArray()) {
             emit checkFailed(
-                QString::fromUtf8("Phản hồi không hợp lệ từ máy chủ."));
+                T("Phản hồi không hợp lệ từ máy chủ."));
             return;
         }
         const QJsonArray releases = doc.array();
@@ -322,14 +323,14 @@ void Updater::downloadAndInstall(const QString &downloadUrl,
 
     if (downloadUrl.isEmpty()) {
         emit downloadFailed(
-            QString::fromUtf8("Không tìm thấy file cài đặt phù hợp cho %1.")
+            T("Không tìm thấy file cài đặt phù hợp cho %1.")
                 .arg(distroName(distro_)));
         return;
     }
 
     if (distro_ == Distro::NixOS) {
         // Never called: InfoTab routes NixOS through rebuildNixos().
-        emit downloadFailed(QString::fromUtf8(
+        emit downloadFailed(T(
             "NixOS không dùng file cài đặt; dùng nixos-rebuild."));
         return;
     }
@@ -374,7 +375,7 @@ void Updater::onDownloadFinished() {
     QFile file(pendingPackagePath_);
     if (!file.open(QIODevice::WriteOnly)) {
         emit downloadFailed(
-            QString::fromUtf8("Không thể ghi file: %1").arg(pendingPackagePath_));
+            T("Không thể ghi file: %1").arg(pendingPackagePath_));
         return;
     }
     file.write(reply->readAll());
@@ -430,16 +431,16 @@ void Updater::onDownloadFinished() {
                     // down app text-input connections a second time.
                     emit installFinished(
                         true,
-                        QString::fromUtf8(
+                        T(
                             "Cập nhật thành công! Fcitx5 đã được "
                             "khởi động lại."));
                 } else {
                     emit installFinished(
                         false,
-                        QString::fromUtf8("Cài đặt thất bại (mã %1): %2")
+                        T("Cài đặt thất bại (mã %1): %2")
                             .arg(exitCode)
                             .arg(errOutput.isEmpty()
-                                     ? QString::fromUtf8("Người dùng đã hủy "
+                                     ? T("Người dùng đã hủy "
                                                          "hoặc lỗi quyền.")
                                      : errOutput));
                 }
@@ -551,7 +552,7 @@ void Updater::rebuildNixos(const QString &version) {
                 if (exitCode == 0) {
                     emit installFinished(
                         true,
-                        QString::fromUtf8(
+                        T(
                             "Cập nhật thành công! Hệ thống đã được build "
                             "lại bằng nixos-rebuild."));
                 } else if (exitCode == 42) {
@@ -559,10 +560,10 @@ void Updater::rebuildNixos(const QString &version) {
                 } else {
                     emit installFinished(
                         false,
-                        QString::fromUtf8("Cập nhật thất bại (mã %1): %2")
+                        T("Cập nhật thất bại (mã %1): %2")
                             .arg(exitCode)
                             .arg(errOutput.isEmpty()
-                                     ? QString::fromUtf8("Người dùng đã hủy "
+                                     ? T("Người dùng đã hủy "
                                                          "hoặc lỗi quyền.")
                                      : errOutput));
                 }

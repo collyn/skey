@@ -1,11 +1,12 @@
 #include "hotkey_edit.h"
+#include "tr.h"
 
 #include <QKeyEvent>
 #include <QKeySequence>
 
 HotkeyEdit::HotkeyEdit(QWidget *parent) : QLineEdit(parent) {
     setReadOnly(true);
-    setPlaceholderText(QString::fromUtf8("Nhấn tổ hợp phím..."));
+    setPlaceholderText(T("Nhấn tổ hợp phím..."));
     setFcitx5Value("Control+space");
 }
 
@@ -110,7 +111,7 @@ void HotkeyEdit::keyPressEvent(QKeyEvent *event) {
 void HotkeyEdit::focusInEvent(QFocusEvent *event) {
     QLineEdit::focusInEvent(event);
     // Replace text with instruction — much more visible than placeholder
-    setText(QString::fromUtf8("⌨ Nhấn phím mới..."));
+    setText(T("⌨ Nhấn phím mới..."));
     // Blue highlight: clearly distinct from normal state, good contrast with text
     setStyleSheet(
         "QLineEdit { background: #bbdefb; color: #0d47a1; font-weight: bold;"
@@ -122,7 +123,7 @@ void HotkeyEdit::focusInEvent(QFocusEvent *event) {
 void HotkeyEdit::focusOutEvent(QFocusEvent *event) {
     QLineEdit::focusOutEvent(event);
     // If user clicked away without capturing a key, restore the original value
-    if (text() == QString::fromUtf8("⌨ Nhấn phím mới...") || text().isEmpty()) {
+    if (text() == T("⌨ Nhấn phím mới...") || text().isEmpty()) {
         setText(toDisplayString(QString::fromStdString(fcitx5Value_)));
     }
     // Also restore if the text is still the instruction (edge case)

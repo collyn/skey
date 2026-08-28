@@ -1,5 +1,6 @@
 #include "app_modes_tab.h"
 #include "config_io.h"
+#include "tr.h"
 
 #include <QComboBox>
 #include <QDialog>
@@ -28,7 +29,7 @@ void AppModesTab::setupUI() {
 
     // ── Label ──
     auto *label = new QLabel(
-        QString::fromUtf8("Cấu hình chế độ xuất riêng cho từng ứng dụng.\n"
+        T("Cấu hình chế độ xuất riêng cho từng ứng dụng.\n"
                           "Tên ứng dụng là tên file thực thi (vd: firefox, tabby, code)."),
         this);
     label->setWordWrap(true);
@@ -37,9 +38,9 @@ void AppModesTab::setupUI() {
     // ── Table ──
     table_ = new QTableWidget(0, 3, this);
     table_->setHorizontalHeaderLabels({
-        QString::fromUtf8("Tên ứng dụng"),
-        QString::fromUtf8("Chế độ xuất"),
-        QString::fromUtf8("Xóa")});
+        T("Tên ứng dụng"),
+        T("Chế độ xuất"),
+        T("Xóa")});
     table_->horizontalHeader()->setStretchLastSection(false);
     table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
@@ -51,7 +52,7 @@ void AppModesTab::setupUI() {
 
     // ── Buttons row ──
     auto *btnRow = new QHBoxLayout();
-    addButton_ = new QPushButton(QString::fromUtf8("Thêm ứng dụng"), this);
+    addButton_ = new QPushButton(T("Thêm ứng dụng"), this);
     btnRow->addWidget(addButton_);
     btnRow->addStretch();
     mainLayout->addLayout(btnRow);
@@ -62,9 +63,9 @@ void AppModesTab::setupUI() {
     auto *addrBarRow = new QHBoxLayout();
     addrBarRow->setSpacing(6);
     auto *addrBarLabel = new QLabel(
-        QString::fromUtf8("Thanh địa chỉ Chromium:"), this);
+        T("Thanh địa chỉ Chromium:"), this);
     addrBarLabel->setToolTip(
-        QString::fromUtf8("Chế độ gõ cho thanh địa chỉ Chrome/Edge/Brave.\n"
+        T("Chế độ gõ cho thanh địa chỉ Chrome/Edge/Brave.\n"
                           "Không ảnh hưởng đến nội dung trang web."));
     addrBarRow->addWidget(addrBarLabel);
 
@@ -73,7 +74,7 @@ void AppModesTab::setupUI() {
     addrBarModeCombo_->addItem("Uinput", "Uinput");
     addrBarModeCombo_->addItem("Surrounding Text", "Surrounding Text");
     addrBarModeCombo_->addItem("Preedit", "Preedit");
-    addrBarModeCombo_->addItem(QString::fromUtf8("Không gõ tiếng Việt"),
+    addrBarModeCombo_->addItem(T("Không gõ tiếng Việt"),
                                "No Vietnamese");
     addrBarRow->addWidget(addrBarModeCombo_);
 
@@ -89,7 +90,7 @@ void AppModesTab::addRow(const std::string &name, const std::string &mode) {
     // IBus frontend reports empty program name (AppImages like Viber).
     // Display a readable label but keep the real key for save/load.
     QString displayName = name.empty()
-        ? QString::fromUtf8("(IBus app)")
+        ? T("(IBus app)")
         : QString::fromStdString(name);
     auto *nameItem = new QTableWidgetItem(displayName);
     nameItem->setData(Qt::UserRole, QString::fromStdString(name)); // real key
@@ -106,7 +107,7 @@ void AppModesTab::addRow(const std::string &name, const std::string &mode) {
     table_->setCellWidget(row, 1, combo);
 
     // Column 2 — delete button
-    auto *delBtn = new QPushButton(QString::fromUtf8("Xóa"), table_);
+    auto *delBtn = new QPushButton(T("Xóa"), table_);
     connect(delBtn, &QPushButton::clicked, this, &AppModesTab::onDeleteApp);
     table_->setCellWidget(row, 2, delBtn);
 }
@@ -149,7 +150,7 @@ void AppModesTab::setDefaults() {
 // ── Add app dialog ──────────────────────────────────────────────────────
 void AppModesTab::onAddApp() {
     QDialog dlg(this);
-    dlg.setWindowTitle(QString::fromUtf8("Thêm ứng dụng mới"));
+    dlg.setWindowTitle(T("Thêm ứng dụng mới"));
     dlg.setFixedSize(340, 150);
 
     auto *layout = new QFormLayout(&dlg);
@@ -157,19 +158,19 @@ void AppModesTab::onAddApp() {
     layout->setSpacing(8);
 
     auto *nameEdit = new QLineEdit(&dlg);
-    nameEdit->setPlaceholderText(QString::fromUtf8("vd: firefox, tabby, code"));
-    layout->addRow(QString::fromUtf8("Tên ứng dụng:"), nameEdit);
+    nameEdit->setPlaceholderText(T("vd: firefox, tabby, code"));
+    layout->addRow(T("Tên ứng dụng:"), nameEdit);
 
     auto *modeCombo = new QComboBox(&dlg);
     for (int i = 0; kAppModeValues[i]; ++i) {
         modeCombo->addItem(kAppModeValues[i], kAppModeValues[i]);
     }
     modeCombo->setCurrentIndex(0); // default Uinput
-    layout->addRow(QString::fromUtf8("Chế độ xuất:"), modeCombo);
+    layout->addRow(T("Chế độ xuất:"), modeCombo);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    buttons->button(QDialogButtonBox::Ok)->setText(QString::fromUtf8("Thêm"));
-    buttons->button(QDialogButtonBox::Cancel)->setText(QString::fromUtf8("Hủy"));
+    buttons->button(QDialogButtonBox::Ok)->setText(T("Thêm"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(T("Hủy"));
     layout->addRow(buttons);
 
     connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);

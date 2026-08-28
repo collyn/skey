@@ -1,6 +1,7 @@
 #include "appearance_tab.h"
 #include "config_io.h"
 #include "../icon_resolver.h"
+#include "tr.h"
 
 #include <QAction>
 #include <QApplication>
@@ -139,7 +140,7 @@ void AppearanceTab::setupUI() {
     mainLayout_->setSpacing(10);
 
     // Section label
-    auto *header = new QLabel(QString::fromUtf8("Chọn biểu tượng"), this);
+    auto *header = new QLabel(T("Chọn biểu tượng"), this);
     QFont hf = header->font();
     hf.setBold(true);
     header->setFont(hf);
@@ -159,7 +160,7 @@ void AppearanceTab::setupUI() {
 
     // Hint
     auto *hint = new QLabel(
-        QString::fromUtf8("Biểu tượng hiển thị ở khay hệ thống,\n"
+        T("Biểu tượng hiển thị ở khay hệ thống,\n"
                           "cửa sổ cài đặt và trang Info."),
         this);
     hint->setWordWrap(true);
@@ -205,7 +206,7 @@ QPushButton *AppearanceTab::makeTile(const QString &iconPath,
     // Context menu for custom tiles: delete
     if (!isPreset) {
         btn->setContextMenuPolicy(Qt::ActionsContextMenu);
-        auto *delAction = new QAction(QString::fromUtf8("Xóa biểu tượng này"), btn);
+        auto *delAction = new QAction(T("Xóa biểu tượng này"), btn);
         QString filename = themeKey;
         connect(delAction, &QAction::triggered, this, [this, filename]() {
             onDeleteCustom(filename);
@@ -220,7 +221,7 @@ QPushButton *AppearanceTab::makeTile(const QString &iconPath,
 QPushButton *AppearanceTab::makeAddTile() {
     auto *btn = new QPushButton("+", this);
     btn->setFixedSize(kTileBtnSize, kTileBtnSize);
-    btn->setToolTip(QString::fromUtf8("Thêm biểu tượng tùy chỉnh"));
+    btn->setToolTip(T("Thêm biểu tượng tùy chỉnh"));
     btn->setCursor(Qt::PointingHandCursor);
     QString style = QString(kStyleAddTile).arg(kTileRadius);
     btn->setStyleSheet(style);
@@ -254,22 +255,22 @@ void AppearanceTab::rebuildGrid() {
     std::vector<TileSpec> specs;
 
     specs.push_back({QString::fromUtf8(skey::kIconThemeDefault),
-                     QString::fromUtf8("Mặc định\nVi trên nền xanh"), true});
+                     T("Mặc định\nVi trên nền xanh"), true});
     specs.push_back({QString::fromUtf8(skey::kIconThemeVBlue),
-                     QString::fromUtf8("Chữ V trên nền xanh"), true});
+                     T("Chữ V trên nền xanh"), true});
     specs.push_back({QString::fromUtf8(skey::kIconThemeVDark),
-                     QString::fromUtf8("Chữ V trắng trong suốt\nPhù hợp dark theme"), true});
+                     T("Chữ V trắng trong suốt\nPhù hợp dark theme"), true});
     specs.push_back({QString::fromUtf8(skey::kIconThemeVLight),
-                     QString::fromUtf8("Chữ V đen trong suốt\nPhù hợp light theme"), true});
+                     T("Chữ V đen trong suốt\nPhù hợp light theme"), true});
     specs.push_back({QString::fromUtf8(skey::kIconThemeVRed),
-                     QString::fromUtf8("Chữ V trên nền đỏ"), true});
+                     T("Chữ V trên nền đỏ"), true});
     specs.push_back({QString::fromUtf8(skey::kIconThemeVnFlag),
-                     QString::fromUtf8("Ngôi sao vàng trên nền đỏ\nQuốc kỳ Việt Nam"), true});
+                     T("Ngôi sao vàng trên nền đỏ\nQuốc kỳ Việt Nam"), true});
 
     for (const auto &fn : customIcons_) {
         QString fname = QString::fromStdString(fn);
         specs.push_back({fname,
-                         QString::fromUtf8("Tùy chỉnh: %1").arg(fname), false});
+                         T("Tùy chỉnh: %1").arg(fname), false});
     }
 
     int cols = 3;
@@ -327,9 +328,9 @@ void AppearanceTab::onTileClicked() {
 void AppearanceTab::onAddCustom() {
     QString path = QFileDialog::getOpenFileName(
         this,
-        QString::fromUtf8("Chọn biểu tượng"),
+        T("Chọn biểu tượng"),
         QDir::homePath(),
-        QString::fromUtf8("Hình ảnh (*.png *.svg)"));
+        T("Hình ảnh (*.png *.svg)"));
     if (path.isEmpty()) return;
 
     // Ask for a short name for this icon
@@ -343,8 +344,8 @@ void AppearanceTab::onAddCustom() {
     std::string stored = importCustomIcon(path, name);
     if (stored.empty()) {
         QMessageBox::warning(this,
-            QString::fromUtf8("Lỗi"),
-            QString::fromUtf8("Không thể lưu biểu tượng.\n"
+            T("Lỗi"),
+            T("Không thể lưu biểu tượng.\n"
                               "Vui lòng kiểm tra quyền ghi."));
         return;
     }
@@ -357,8 +358,8 @@ void AppearanceTab::onAddCustom() {
 void AppearanceTab::onDeleteCustom(const QString &filename) {
     // Confirm
     auto answer = QMessageBox::question(
-        this, QString::fromUtf8("Xóa biểu tượng"),
-        QString::fromUtf8("Xóa biểu tượng \"%1\"?").arg(filename),
+        this, T("Xóa biểu tượng"),
+        T("Xóa biểu tượng \"%1\"?").arg(filename),
         QMessageBox::Yes | QMessageBox::No);
     if (answer != QMessageBox::Yes) return;
 

@@ -1,5 +1,6 @@
 #include "info_tab.h"
 #include "config_io.h"
+#include "tr.h"
 #include "updater.h"
 
 #include <QApplication>
@@ -96,7 +97,7 @@ void InfoTab::setupUI() {
 
   // ── Version ──
   versionLabel_ =
-      new QLabel(QString::fromUtf8("SKey - Phiên bản: ") + SKEY_VERSION, this);
+      new QLabel(T("SKey - Phiên bản: ") + SKEY_VERSION, this);
   versionLabel_->setAlignment(Qt::AlignCenter);
   versionLabel_->setStyleSheet("font-size: 13px;");
   mainLayout->addWidget(versionLabel_);
@@ -110,7 +111,7 @@ void InfoTab::setupUI() {
   // ── GitHub link ──
   auto *linkLabel = new QLabel(this);
   linkLabel->setText(
-      QString::fromUtf8("<a href=\"%1\">%1</a>").arg(kGitHubUrl));
+      T("<a href=\"%1\">%1</a>").arg(kGitHubUrl));
   linkLabel->setTextFormat(Qt::RichText);
   linkLabel->setOpenExternalLinks(true);
   linkLabel->setAlignment(Qt::AlignCenter);
@@ -122,11 +123,11 @@ void InfoTab::setupUI() {
   // queries the selected channel.
   auto *channelRow = new QHBoxLayout();
   channelRow->setSpacing(8);
-  auto *channelLabel = new QLabel(QString::fromUtf8("Kênh cập nhật:"), this);
+  auto *channelLabel = new QLabel(T("Kênh cập nhật:"), this);
   channelCombo_ = new QComboBox(this);
-  channelCombo_->addItem(QString::fromUtf8("Ổn định (Stable)"),
+  channelCombo_->addItem(T("Ổn định (Stable)"),
                          static_cast<int>(UpdateChannel::Stable));
-  channelCombo_->addItem(QString::fromUtf8("Thử nghiệm (Dev)"),
+  channelCombo_->addItem(T("Thử nghiệm (Dev)"),
                          static_cast<int>(UpdateChannel::Dev));
   channelCombo_->setCurrentIndex(
       readSkeyConfig().updateChannel == UpdateChannel::Dev ? 1 : 0);
@@ -142,10 +143,10 @@ void InfoTab::setupUI() {
   auto *btnRow = new QHBoxLayout();
   btnRow->setSpacing(8);
 
-  updateBtn_ = new QPushButton(QString::fromUtf8("Check Update"), this);
+  updateBtn_ = new QPushButton(T("Check Update"), this);
   connect(updateBtn_, &QPushButton::clicked, this, &InfoTab::onCheckUpdate);
 
-  restartBtn_ = new QPushButton(QString::fromUtf8("Restart Fcitx5"), this);
+  restartBtn_ = new QPushButton(T("Restart Fcitx5"), this);
   connect(restartBtn_, &QPushButton::clicked, this, &InfoTab::onRestartFcitx5);
 
   btnRow->addStretch();
@@ -176,17 +177,17 @@ void InfoTab::setupUI() {
   mainLayout->addWidget(sep2);
 
   // ── Contact info ──
-  auto *contactTitle = new QLabel(QString::fromUtf8("Liên hệ"), this);
+  auto *contactTitle = new QLabel(T("Liên hệ"), this);
   contactTitle->setAlignment(Qt::AlignCenter);
   contactTitle->setStyleSheet("font-weight: bold; font-size: 13px;");
   mainLayout->addWidget(contactTitle);
 
-  auto *authorLabel = new QLabel(QString::fromUtf8("Nguyễn Tiến Huy"), this);
+  auto *authorLabel = new QLabel(T("Nguyễn Tiến Huy"), this);
   authorLabel->setAlignment(Qt::AlignCenter);
   mainLayout->addWidget(authorLabel);
 
   auto *telegramLabel = new QLabel(this);
-  telegramLabel->setText(QString::fromUtf8(
+  telegramLabel->setText(T(
       "<a href=\"https://t.me/+irlw1EnOtAkxNDc1\">Telegram Group</a>"));
   telegramLabel->setTextFormat(Qt::RichText);
   telegramLabel->setOpenExternalLinks(true);
@@ -207,16 +208,16 @@ void InfoTab::setupUI() {
   backupLayout->setSpacing(8);
 
   auto *backupLabel =
-      new QLabel(QString::fromUtf8("Backup / Restore:"), backupFrame);
+      new QLabel(T("Backup / Restore:"), backupFrame);
   backupLayout->addWidget(backupLabel);
   backupLayout->addStretch();
 
-  backupButton_ = new QPushButton(QString::fromUtf8("Sao lưu"), backupFrame);
+  backupButton_ = new QPushButton(T("Sao lưu"), backupFrame);
   backupButton_->setMinimumWidth(90);
   connect(backupButton_, &QPushButton::clicked, this, &InfoTab::onBackup);
   backupLayout->addWidget(backupButton_);
 
-  restoreButton_ = new QPushButton(QString::fromUtf8("Khôi phục"), backupFrame);
+  restoreButton_ = new QPushButton(T("Khôi phục"), backupFrame);
   restoreButton_->setMinimumWidth(90);
   connect(restoreButton_, &QPushButton::clicked, this, &InfoTab::onRestore);
   backupLayout->addWidget(restoreButton_);
@@ -230,8 +231,8 @@ void InfoTab::setupUI() {
 
 void InfoTab::onCheckUpdate() {
   updateBtn_->setEnabled(false);
-  updateBtn_->setText(QString::fromUtf8("Đang kiểm tra..."));
-  statusLabel_->setText(QString::fromUtf8("Đang kết nối tới GitHub..."));
+  updateBtn_->setText(T("Đang kiểm tra..."));
+  statusLabel_->setText(T("Đang kết nối tới GitHub..."));
   statusLabel_->setStyleSheet("font-size: 12px; color: #666;");
   statusLabel_->show();
   progressBar_->hide();
@@ -264,8 +265,8 @@ void InfoTab::onChannelChanged(int /*index*/) {
 
 void InfoTab::onRestartFcitx5() {
   restartBtn_->setEnabled(false);
-  restartBtn_->setText(QString::fromUtf8("Đang khởi động lại..."));
-  statusLabel_->setText(QString::fromUtf8("Đang khởi động lại Fcitx5..."));
+  restartBtn_->setText(T("Đang khởi động lại..."));
+  statusLabel_->setText(T("Đang khởi động lại Fcitx5..."));
   statusLabel_->setStyleSheet("font-size: 12px; color: #666;");
   statusLabel_->show();
 
@@ -275,8 +276,8 @@ void InfoTab::onRestartFcitx5() {
   restartFcitx5();
 
   restartBtn_->setEnabled(true);
-  restartBtn_->setText(QString::fromUtf8("Khởi động lại Fcitx5"));
-  statusLabel_->setText(QString::fromUtf8("✓ Fcitx5 đã được khởi động lại"));
+  restartBtn_->setText(T("Khởi động lại Fcitx5"));
+  statusLabel_->setText(T("✓ Fcitx5 đã được khởi động lại"));
   statusLabel_->setStyleSheet("font-size: 12px; color: green;");
 }
 
@@ -286,59 +287,59 @@ void InfoTab::onUpdateAvailable(const QString &newVersion,
                                 const QString &downloadUrl,
                                 const QString &releaseNotes) {
   updateBtn_->setEnabled(true);
-  updateBtn_->setText(QString::fromUtf8("Kiểm tra cập nhật"));
+  updateBtn_->setText(T("Kiểm tra cập nhật"));
   statusLabel_->hide();
 
   pendingDownloadUrl_ = downloadUrl;
   pendingVersion_ = newVersion;
 
-  QString msg = QString::fromUtf8("Có phiên bản mới: v%1\n"
+  QString msg = T("Có phiên bản mới: v%1\n"
                                   "(Phiên bản hiện tại: %2)\n")
                     .arg(newVersion, SKEY_VERSION);
 
   if (!releaseNotes.isEmpty()) {
-    msg += QString::fromUtf8("\nGhi chú:\n%1").arg(releaseNotes);
+    msg += T("\nGhi chú:\n%1").arg(releaseNotes);
   }
 
   if (downloadUrl.isEmpty()) {
     if (updater_->distro() == Distro::NixOS) {
       // No asset expected on NixOS: the update is a system rebuild.
-      msg += QString::fromUtf8(
+      msg += T(
           "\n\nBạn đang dùng NixOS: bản cập nhật sẽ được cài qua "
           "nixos-rebuild (không tải file từ GitHub).");
       if (updateChannel() == UpdateChannel::Dev) {
-        msg += QString::fromUtf8(
+        msg += T(
             "\nBản Dev sẽ pin flake input vào tag v%1 và ghi "
             "services.fcitx5-skey.devVersion vào configuration.nix.")
                    .arg(newVersion);
       }
     } else {
-      msg += QString::fromUtf8("\n\nKhông tìm thấy file cài đặt phù hợp. "
+      msg += T("\n\nKhông tìm thấy file cài đặt phù hợp. "
                                "Vui lòng tải thủ công từ GitHub.");
-      QMessageBox::information(this, QString::fromUtf8("Có bản cập nhật"), msg);
+      QMessageBox::information(this, T("Có bản cập nhật"), msg);
       return;
     }
   }
 
   QMessageBox msgBox(this);
-  msgBox.setWindowTitle(QString::fromUtf8("Có bản cập nhật"));
+  msgBox.setWindowTitle(T("Có bản cập nhật"));
   msgBox.setText(msg);
   msgBox.setIcon(QMessageBox::Information);
-  auto *yesBtn = msgBox.addButton(QString::fromUtf8("Cập nhật ngay"),
+  auto *yesBtn = msgBox.addButton(T("Cập nhật ngay"),
                                   QMessageBox::AcceptRole);
-  msgBox.addButton(QString::fromUtf8("Bỏ qua"), QMessageBox::RejectRole);
+  msgBox.addButton(T("Bỏ qua"), QMessageBox::RejectRole);
   msgBox.exec();
 
   if (msgBox.clickedButton() == yesBtn) {
     // User chose "Cập nhật ngay"
     updateBtn_->setEnabled(false);
-    updateBtn_->setText(QString::fromUtf8("Đang cập nhật..."));
+    updateBtn_->setText(T("Đang cập nhật..."));
 
     if (updater_->distro() == Distro::NixOS) {
       if (!QFile::exists("/etc/nixos/flake.nix")) {
         showNixosManualInstructions();
         updateBtn_->setEnabled(true);
-        updateBtn_->setText(QString::fromUtf8("Kiểm tra cập nhật"));
+        updateBtn_->setText(T("Kiểm tra cập nhật"));
         return;
       }
       progressBar_->setValue(0);
@@ -348,7 +349,7 @@ void InfoTab::onUpdateAvailable(const QString &newVersion,
       return;
     }
 
-    statusLabel_->setText(QString::fromUtf8("Đang tải bản cập nhật..."));
+    statusLabel_->setText(T("Đang tải bản cập nhật..."));
     statusLabel_->setStyleSheet("font-size: 12px; color: #666;");
     statusLabel_->show();
     progressBar_->setValue(0);
@@ -360,13 +361,13 @@ void InfoTab::onUpdateAvailable(const QString &newVersion,
 
 void InfoTab::onNoUpdate() {
   updateBtn_->setEnabled(true);
-  updateBtn_->setText(QString::fromUtf8("Kiểm tra cập nhật"));
+  updateBtn_->setText(T("Kiểm tra cập nhật"));
 #if SKEY_DEV_BUILD > 0
   // This build is a dev build checking the stable channel: "no update"
   // usually means stable is at the same or lower version than this dev
   // build (no same-base downgrade is ever offered).  Say so honestly.
   if (channelCombo_->currentIndex() == 0) {
-    statusLabel_->setText(QString::fromUtf8(
+    statusLabel_->setText(T(
         "✓ Bạn đang dùng bản Dev mới hơn hoặc bằng bản Stable hiện tại."));
     statusLabel_->setStyleSheet("font-size: 12px; color: green;");
     statusLabel_->show();
@@ -374,16 +375,16 @@ void InfoTab::onNoUpdate() {
   }
 #endif
   statusLabel_->setText(
-      QString::fromUtf8("✓ Bạn đang dùng phiên bản mới nhất."));
+      T("✓ Bạn đang dùng phiên bản mới nhất."));
   statusLabel_->setStyleSheet("font-size: 12px; color: green;");
   statusLabel_->show();
 }
 
 void InfoTab::onCheckFailed(const QString &errorMessage) {
   updateBtn_->setEnabled(true);
-  updateBtn_->setText(QString::fromUtf8("Kiểm tra cập nhật"));
+  updateBtn_->setText(T("Kiểm tra cập nhật"));
   statusLabel_->setText(
-      QString::fromUtf8("✗ Lỗi kiểm tra: %1").arg(errorMessage));
+      T("✗ Lỗi kiểm tra: %1").arg(errorMessage));
   statusLabel_->setStyleSheet("font-size: 12px; color: red;");
   statusLabel_->show();
 }
@@ -392,19 +393,19 @@ void InfoTab::onCheckFailed(const QString &errorMessage) {
 
 void InfoTab::onDownloadProgress(int percent) {
   progressBar_->setValue(percent);
-  statusLabel_->setText(QString::fromUtf8("Đang tải... %1%").arg(percent));
+  statusLabel_->setText(T("Đang tải... %1%").arg(percent));
 }
 
 void InfoTab::onDownloadFinished(const QString & /*packagePath*/) {
   progressBar_->setValue(100);
-  statusLabel_->setText(QString::fromUtf8("Tải xong. Đang cài đặt..."));
+  statusLabel_->setText(T("Tải xong. Đang cài đặt..."));
 }
 
 void InfoTab::onDownloadFailed(const QString &errorMessage) {
   updateBtn_->setEnabled(true);
-  updateBtn_->setText(QString::fromUtf8("Kiểm tra cập nhật"));
+  updateBtn_->setText(T("Kiểm tra cập nhật"));
   progressBar_->hide();
-  statusLabel_->setText(QString::fromUtf8("✗ Lỗi tải: %1").arg(errorMessage));
+  statusLabel_->setText(T("✗ Lỗi tải: %1").arg(errorMessage));
   statusLabel_->setStyleSheet("font-size: 12px; color: red;");
   statusLabel_->show();
 }
@@ -414,25 +415,25 @@ void InfoTab::onDownloadFailed(const QString &errorMessage) {
 void InfoTab::onInstallStarted() {
   if (updater_->distro() == Distro::NixOS) {
     if (updateChannel() == UpdateChannel::Dev) {
-      statusLabel_->setText(QString::fromUtf8(
+      statusLabel_->setText(T(
           "Đang pin bản Dev và build lại hệ thống bằng nixos-rebuild... "
           "(cần quyền root)"));
     } else {
-      statusLabel_->setText(QString::fromUtf8(
+      statusLabel_->setText(T(
           "Đang build lại hệ thống bằng nixos-rebuild... (cần quyền root)"));
     }
     statusLabel_->setStyleSheet("font-size: 12px; color: #666;");
     statusLabel_->show();
   } else {
     statusLabel_->setText(
-        QString::fromUtf8("Đang cài đặt... (cần quyền root)"));
+        T("Đang cài đặt... (cần quyền root)"));
   }
   progressBar_->setRange(0, 0); // indeterminate
 }
 
 void InfoTab::onInstallFinished(bool success, const QString &message) {
   updateBtn_->setEnabled(true);
-  updateBtn_->setText(QString::fromUtf8("Kiểm tra cập nhật"));
+  updateBtn_->setText(T("Kiểm tra cập nhật"));
   progressBar_->setRange(0, 100);
   progressBar_->hide();
 
@@ -443,10 +444,10 @@ void InfoTab::onInstallFinished(bool success, const QString &message) {
       // password) so the newly-built skey.so takes effect.
       restartFcitx5();
     }
-    statusLabel_->setText(QString::fromUtf8("✓ %1").arg(message));
+    statusLabel_->setText(T("✓ %1").arg(message));
     statusLabel_->setStyleSheet("font-size: 12px; color: green;");
     versionLabel_->setText(
-        QString::fromUtf8("SKey - Phiên bản: %1").arg(pendingVersion_));
+        T("SKey - Phiên bản: %1").arg(pendingVersion_));
 
     // Close and reopen the settings GUI so the user is running
     // the freshly-installed version.  Brief delay lets the user
@@ -464,7 +465,7 @@ void InfoTab::onInstallFinished(bool success, const QString &message) {
         win->close();
     });
   } else {
-    statusLabel_->setText(QString::fromUtf8("✗ %1").arg(message));
+    statusLabel_->setText(T("✗ %1").arg(message));
     statusLabel_->setStyleSheet("font-size: 12px; color: red;");
   }
   statusLabel_->show();
@@ -472,18 +473,18 @@ void InfoTab::onInstallFinished(bool success, const QString &message) {
 
 void InfoTab::onNixosManualUpdateRequired() {
   updateBtn_->setEnabled(true);
-  updateBtn_->setText(QString::fromUtf8("Kiểm tra cập nhật"));
+  updateBtn_->setText(T("Kiểm tra cập nhật"));
   progressBar_->setRange(0, 100);
   progressBar_->hide();
   statusLabel_->setText(
-      QString::fromUtf8("Không thể cập nhật tự động — xem hướng dẫn."));
+      T("Không thể cập nhật tự động — xem hướng dẫn."));
   statusLabel_->setStyleSheet("font-size: 12px; color: #666;");
   showNixosManualInstructions();
 }
 
 void InfoTab::showNixosManualInstructions() {
   const bool dev = updateChannel() == UpdateChannel::Dev;
-  QString instructions = QString::fromUtf8(
+  QString instructions = T(
       "Không thể tự động cập nhật SKey trên NixOS.\n\n"
       "Hệ thống cần dùng flake với input tên là \"skey\".\n"
       "Thêm vào /etc/nixos/flake.nix:\n\n"
@@ -496,7 +497,7 @@ void InfoTab::showNixosManualInstructions() {
   if (dev && !pendingVersion_.isEmpty()) {
     // Dev channel: pin the input to the dev tag and record the dev
     // version so the build carries the "-dev.N" suffix.
-    instructions += QString::fromUtf8(
+    instructions += T(
         "  # thêm vào configuration.nix:\n"
         "  # services.fcitx5-skey.devVersion = \"%1\";\n"
         "  sudo nix flake lock --override-input skey "
@@ -505,17 +506,17 @@ void InfoTab::showNixosManualInstructions() {
         "  fcitx5 -r -d\n\n")
         .arg(pendingVersion_);
   } else {
-    instructions += QString::fromUtf8(
+    instructions += T(
         "  sudo nix flake update skey\n"
         "  sudo nixos-rebuild switch --flake /etc/nixos\n"
         "  fcitx5 -r -d\n\n");
   }
-  instructions += QString::fromUtf8(
+  instructions += T(
       "Xem chi tiết: https://github.com/collyn/skey/blob/main/"
       "packaging/nixos/README.md");
 
   QMessageBox::information(this,
-                           QString::fromUtf8("Cần cập nhật thủ công"),
+                           T("Cần cập nhật thủ công"),
                            instructions);
 }
 
@@ -526,9 +527,9 @@ void InfoTab::onBackup() {
       QString::fromUtf8("skey-backup-%1.tar.gz")
           .arg(QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss"));
   QString savePath = QFileDialog::getSaveFileName(
-      this, QString::fromUtf8("Lưu bản sao lưu cấu hình"),
+      this, T("Lưu bản sao lưu cấu hình"),
       QDir::homePath() + "/" + defaultName,
-      QString::fromUtf8("Tarball (*.tar.gz)"));
+      T("Tarball (*.tar.gz)"));
   if (savePath.isEmpty())
     return;
 
@@ -536,8 +537,8 @@ void InfoTab::onBackup() {
   // This avoids path complexity — all files land as flat names in the archive.
   QTemporaryDir tmpDir;
   if (!tmpDir.isValid()) {
-    QMessageBox::warning(this, QString::fromUtf8("Lỗi"),
-                         QString::fromUtf8("Không thể tạo thư mục tạm."));
+    QMessageBox::warning(this, T("Lỗi"),
+                         T("Không thể tạo thư mục tạm."));
     return;
   }
 
@@ -577,42 +578,42 @@ void InfoTab::onBackup() {
   tar.waitForFinished(10000);
   if (tar.exitCode() != 0) {
     QMessageBox::warning(
-        this, QString::fromUtf8("Lỗi"),
-        QString::fromUtf8("Không thể tạo tệp sao lưu:\n%1").arg(savePath));
+        this, T("Lỗi"),
+        T("Không thể tạo tệp sao lưu:\n%1").arg(savePath));
     return;
   }
 
   QString msg =
-      QString::fromUtf8("Cấu hình đã được lưu vào:\n%1").arg(savePath);
+      T("Cấu hình đã được lưu vào:\n%1").arg(savePath);
   if (!missing.isEmpty()) {
     QMessageBox::warning(
-        this, QString::fromUtf8("Đã sao lưu (thiếu tệp)"),
-        msg + QString::fromUtf8("\n\nKhông tìm thấy (bỏ qua): %1")
+        this, T("Đã sao lưu (thiếu tệp)"),
+        msg + T("\n\nKhông tìm thấy (bỏ qua): %1")
                   .arg(missing.join(", ")));
   } else {
-    QMessageBox::information(this, QString::fromUtf8("Đã sao lưu"), msg);
+    QMessageBox::information(this, T("Đã sao lưu"), msg);
   }
 }
 
 void InfoTab::onRestore() {
   auto answer = QMessageBox::question(
-      this, QString::fromUtf8("Khôi phục cấu hình"),
-      QString::fromUtf8("Khôi phục sẽ ghi đè toàn bộ cấu hình hiện tại.\n"
+      this, T("Khôi phục cấu hình"),
+      T("Khôi phục sẽ ghi đè toàn bộ cấu hình hiện tại.\n"
                         "Bạn có chắc muốn tiếp tục?"),
       QMessageBox::Yes | QMessageBox::No);
   if (answer != QMessageBox::Yes)
     return;
 
   QString openPath = QFileDialog::getOpenFileName(
-      this, QString::fromUtf8("Chọn tệp sao lưu để khôi phục"),
-      QDir::homePath(), QString::fromUtf8("Tarball (*.tar.gz)"));
+      this, T("Chọn tệp sao lưu để khôi phục"),
+      QDir::homePath(), T("Tarball (*.tar.gz)"));
   if (openPath.isEmpty())
     return;
 
   QTemporaryDir tmpDir;
   if (!tmpDir.isValid()) {
-    QMessageBox::warning(this, QString::fromUtf8("Lỗi"),
-                         QString::fromUtf8("Không thể tạo thư mục tạm."));
+    QMessageBox::warning(this, T("Lỗi"),
+                         T("Không thể tạo thư mục tạm."));
     return;
   }
 
@@ -621,8 +622,8 @@ void InfoTab::onRestore() {
   tar.waitForFinished(10000);
   if (tar.exitCode() != 0) {
     QMessageBox::warning(
-        this, QString::fromUtf8("Lỗi"),
-        QString::fromUtf8("Không thể giải nén tệp sao lưu:\n%1").arg(openPath));
+        this, T("Lỗi"),
+        T("Không thể giải nén tệp sao lưu:\n%1").arg(openPath));
     return;
   }
 
@@ -670,14 +671,14 @@ void InfoTab::onRestore() {
   }
 
   if (!allOk) {
-    QMessageBox::warning(this, QString::fromUtf8("Cảnh báo"),
-                         QString::fromUtf8("Một số tệp không thể khôi phục.\n"
+    QMessageBox::warning(this, T("Cảnh báo"),
+                         T("Một số tệp không thể khôi phục.\n"
                                            "Kiểm tra lại tệp sao lưu."));
   }
 
   reloadFcitx5();
   emit configRestored();
   QMessageBox::information(
-      this, QString::fromUtf8("Đã khôi phục"),
-      QString::fromUtf8("Cấu hình đã được khôi phục và áp dụng."));
+      this, T("Đã khôi phục"),
+      T("Cấu hình đã được khôi phục và áp dụng."));
 }

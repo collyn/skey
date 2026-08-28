@@ -76,6 +76,27 @@ Các biến môi trường (`GTK_IM_MODULE`, `QT_IM_MODULE`, …) do module
 Sau `nixos-rebuild switch`, chạy `fcitx5 -r -d` (hoặc logout/login), rồi
 bật SKey trong `fcitx5-configtool`.
 
+## Cập nhật lên bản mới (từ GitHub)
+
+```bash
+# Lấy commit mới nhất của skey.  Nhớ sudo: /etc/nixos thuộc root nên
+# `nix flake update` không có sudo sẽ fail "Permission denied" khi ghi
+# flake.lock.  --extra-experimental-features cho máy chưa bật
+# nix-command/flakes trong /etc/nix/nix.conf.
+sudo nix --extra-experimental-features 'nix-command flakes' flake update
+sudo nixos-rebuild switch --flake /etc/nixos
+
+# Kiểm tra uinput server.  `systemctl status` dùng pager (less) nên có thể
+# "kẹt" ở màn hình kết quả — bấm q để thoát, hoặc dùng --no-pager:
+systemctl --no-pager status fcitx5-skey-uinput-server@$USER
+# Nếu unit cũ đang ở trạng thái failed thì reset rồi start lại:
+#   sudo systemctl reset-failed fcitx5-skey-uinput-server@$USER
+#   systemctl --no-pager start fcitx5-skey-uinput-server@$USER
+```
+
+Lưu ý: `flake update` chỉ lấy được các thay đổi đã **commit + push** lên
+GitHub — thay đổi local chưa push sẽ không xuất hiện.
+
 ## Kênh Dev
 
 Settings GUI (tab Thông tin → Kênh cập nhật: Thử nghiệm) hoạt động trên

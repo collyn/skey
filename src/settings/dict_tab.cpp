@@ -12,6 +12,7 @@
 #include "dict_tab.h"
 #include "config_io.h"
 #include "dict_view_dialog.h"
+#include "tr.h"
 
 #include <QCheckBox>
 #include <QGroupBox>
@@ -34,7 +35,7 @@ void DictTab::setupUI() {
   mainLayout->setContentsMargins(8, 8, 8, 8);
   mainLayout->setSpacing(8);
 
-  auto *frame = new QGroupBox(QString::fromUtf8("Từ điển cá nhân"), this);
+  auto *frame = new QGroupBox(T("Từ điển cá nhân"), this);
   auto *layout = new QVBoxLayout(frame);
   layout->setContentsMargins(12, 12, 12, 12);
   layout->setSpacing(8);
@@ -44,15 +45,15 @@ void DictTab::setupUI() {
   addLayout->setSpacing(6);
   wordEdit_ = new QLineEdit(frame);
   wordEdit_->setPlaceholderText(
-      QString::fromUtf8("Thêm từ mới (ví dụ: phược)"));
-  addButton_ = new QPushButton(QString::fromUtf8("Thêm"), frame);
+      T("Thêm từ mới (ví dụ: phược)"));
+  addButton_ = new QPushButton(T("Thêm"), frame);
   addLayout->addWidget(wordEdit_, 1);
   addLayout->addWidget(addButton_);
   layout->addLayout(addLayout);
 
   // ── Personal search ──
   searchEdit_ = new QLineEdit(frame);
-  searchEdit_->setPlaceholderText(QString::fromUtf8("Tìm từ cá nhân…"));
+  searchEdit_->setPlaceholderText(T("Tìm từ cá nhân…"));
   layout->addWidget(searchEdit_);
 
   // ── Word list (per-row edit/delete buttons + checkboxes) ──
@@ -64,11 +65,11 @@ void DictTab::setupUI() {
   // ── Multi-select delete + view full dictionary ──
   auto *bottomLayout = new QHBoxLayout();
   bottomLayout->setSpacing(6);
-  selectAllButton_ = new QPushButton(QString::fromUtf8("Chọn tất cả"), frame);
+  selectAllButton_ = new QPushButton(T("Chọn tất cả"), frame);
   deleteSelectedButton_ =
-      new QPushButton(QString::fromUtf8("Xóa từ đã chọn"), frame);
+      new QPushButton(T("Xóa từ đã chọn"), frame);
   deleteSelectedButton_->setEnabled(false);
-  viewAllButton_ = new QPushButton(QString::fromUtf8("Xem từ điển"), frame);
+  viewAllButton_ = new QPushButton(T("Xem từ điển"), frame);
   bottomLayout->addWidget(selectAllButton_);
   bottomLayout->addWidget(deleteSelectedButton_);
   bottomLayout->addWidget(viewAllButton_, 1);
@@ -78,7 +79,7 @@ void DictTab::setupUI() {
 
   // ── Hint ──
   hintLabel_ =
-      new QLabel(QString::fromUtf8(
+      new QLabel(T(
                      "Các từ này được thêm vào từ điển tiếng Việt khi bật\n"
                      "\"Dùng từ điển\" ở tab Chung — những từ không có trong\n"
                      "từ điển gốc sẽ không bị tự động khôi phục khi gõ.\n"
@@ -110,7 +111,7 @@ void DictTab::loadFromConfig(const std::vector<std::string> &words) {
   rebuildList();
   wordEdit_->clear();
   editingWord_.clear();
-  addButton_->setText(QString::fromUtf8("Thêm"));
+  addButton_->setText(T("Thêm"));
 }
 
 std::vector<std::string> DictTab::collectConfig() const { return words_; }
@@ -120,7 +121,7 @@ void DictTab::setDefaults() {
   rebuildList();
   wordEdit_->clear();
   editingWord_.clear();
-  addButton_->setText(QString::fromUtf8("Thêm"));
+  addButton_->setText(T("Thêm"));
 }
 
 // ── Row management ────────────────────────────────────────────────────────
@@ -182,11 +183,11 @@ void DictTab::addRow(const std::string &word) {
   label->setTextInteractionFlags(Qt::TextSelectableByMouse);
   rowLayout->addWidget(label, 1);
 
-  auto *editBtn = new QPushButton(QString::fromUtf8("Sửa"), row);
+  auto *editBtn = new QPushButton(T("Sửa"), row);
   editBtn->setFixedSize(56, 28);
   // Multi-select mode disables editing.
   editBtn->setEnabled(checkedWords_.isEmpty());
-  auto *delBtn = new QPushButton(QString::fromUtf8("Xóa"), row);
+  auto *delBtn = new QPushButton(T("Xóa"), row);
   delBtn->setFixedSize(56, 28);
   rowLayout->addWidget(editBtn);
   rowLayout->addWidget(delBtn);
@@ -215,11 +216,11 @@ void DictTab::updateDeleteSelected() {
   }
   deleteSelectedButton_->setEnabled(n > 0);
   deleteSelectedButton_->setText(
-      n > 0 ? QString::fromUtf8("Xóa từ đã chọn (%1)").arg(n)
-            : QString::fromUtf8("Xóa từ đã chọn"));
+      n > 0 ? T("Xóa từ đã chọn (%1)").arg(n)
+            : T("Xóa từ đã chọn"));
   selectAllButton_->setText(visible > 0 && n == visible
-                                ? QString::fromUtf8("Bỏ chọn tất cả")
-                                : QString::fromUtf8("Chọn tất cả"));
+                                ? T("Bỏ chọn tất cả")
+                                : T("Chọn tất cả"));
 }
 
 // ── Slots ─────────────────────────────────────────────────────────────────
@@ -244,7 +245,7 @@ void DictTab::onAdd() {
     std::replace(words_.begin(), words_.end(), editingWord_,
                  word.toStdString());
     editingWord_.clear();
-    addButton_->setText(QString::fromUtf8("Thêm"));
+    addButton_->setText(T("Thêm"));
   } else {
     words_.push_back(word.toStdString());
   }
@@ -255,7 +256,7 @@ void DictTab::onAdd() {
 void DictTab::onEditWord(const std::string &word) {
   wordEdit_->setText(QString::fromStdString(word));
   editingWord_ = word;
-  addButton_->setText(QString::fromUtf8("Cập nhật"));
+  addButton_->setText(T("Cập nhật"));
   wordEdit_->setFocus();
 }
 
@@ -265,7 +266,7 @@ void DictTab::onDeleteWord(const std::string &word) {
   // If the word being edited was removed, leave edit mode.
   if (editingWord_ == word) {
     editingWord_.clear();
-    addButton_->setText(QString::fromUtf8("Thêm"));
+    addButton_->setText(T("Thêm"));
     wordEdit_->clear();
   }
   rebuildList();
@@ -279,7 +280,7 @@ void DictTab::onDeleteSelected() {
     words_.erase(std::remove(words_.begin(), words_.end(), w), words_.end());
     if (editingWord_ == w) {
       editingWord_.clear();
-      addButton_->setText(QString::fromUtf8("Thêm"));
+      addButton_->setText(T("Thêm"));
       wordEdit_->clear();
     }
   }

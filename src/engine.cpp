@@ -2923,6 +2923,38 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     else if (sym == FcitxKey_5 || sym == FcitxKey_KP_5)
       choice = 5;
 
+    // Arrow keys move the highlight, Enter selects the highlighted item.
+    // prevCandidate/nextCandidate wrap around at the edges.
+    if (auto candList = ic_->inputPanel().candidateList()) {
+      auto *cursorList = candList->toCursorMovable();
+      if (cursorList &&
+          (sym == FcitxKey_Up || sym == FcitxKey_KP_Up)) {
+        cursorList->prevCandidate();
+        SKEY_DEBUG() << "Menu: cursor up (" << candList->cursorIndex() << ")";
+        ic_->updateUserInterface(UserInterfaceComponent::InputPanel);
+        keyEvent.filterAndAccept();
+        return;
+      }
+      if (cursorList &&
+          (sym == FcitxKey_Down || sym == FcitxKey_KP_Down)) {
+        cursorList->nextCandidate();
+        SKEY_DEBUG() << "Menu: cursor down (" << candList->cursorIndex()
+                     << ")";
+        ic_->updateUserInterface(UserInterfaceComponent::InputPanel);
+        keyEvent.filterAndAccept();
+        return;
+      }
+      if (sym == FcitxKey_Return || sym == FcitxKey_KP_Enter) {
+        int idx = candList->cursorIndex();
+        if (idx >= 0 && idx < candList->size()) {
+          SKEY_DEBUG() << "Menu: selected by Enter (idx=" << idx << ")";
+          candList->candidate(idx).select(ic_);
+          keyEvent.filterAndAccept();
+          return;
+        }
+      }
+    }
+
     if (modeMenuForAddressBar_) {
       SKeyChromiumAddressBarMode newMode;
       switch (choice) {
