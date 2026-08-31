@@ -12,4 +12,24 @@ if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
     fi
 fi
 
+# ── Remove per-user config on removal (not upgrade/deconfigure) ──
+# skey-setup -u strips the env-var blocks from shell rc files, removes
+# skey-im from the fcitx5 profile and cleans the live session.  It must
+# run as the USER (HOME + session D-Bus resolve correctly) and while
+# /usr/bin/skey-setup still exists — prerm is the right hook.  Purge also
+# runs prerm with $1="remove".
+if [ "$1" = "remove" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] \
+   && command -v skey-setup >/dev/null 2>&1; then
+    if command -v systemd-run >/dev/null 2>&1 && \
+       systemd-run --user --machine="${SUDO_USER}@.host" \
+           --wait --pipe true 2>/dev/null; then
+        # KillMode=none: skey-setup -u restarts fcitx5 -d, which
+        # daemonizes inside the transient unit.
+        systemd-run --user --machine="${SUDO_USER}@.host" \
+            --wait --pipe -p KillMode=none skey-setup -u 2>/dev/null || true
+    else
+        su - "$SUDO_USER" -c "skey-setup -u" 2>/dev/null || true
+    fi
+fi
+
 #DEBHELPER#

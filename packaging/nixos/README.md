@@ -71,7 +71,9 @@ Module `services.fcitx5-skey` xử lý những việc mà trên Fedora/Debian do
 - Đưa `fcitx5-skey-settings`, `skey-setup`, `skey-restart-fcitx5` vào PATH
 
 Các biến môi trường (`GTK_IM_MODULE`, `QT_IM_MODULE`, …) do module
-`i18n.inputMethod` của NixOS quản lý — không cần `profile.d/fcitx5-skey.sh`.
+`i18n.inputMethod` của NixOS quản lý — package không còn ship
+`profile.d/fcitx5-skey.sh` (đã bỏ từ 0.7.x; skey-setup ghi đúng 1 file
+user-level theo ngữ cảnh session).
 
 Sau `nixos-rebuild switch`, chạy `fcitx5 -r -d` (hoặc logout/login), rồi
 bật SKey trong `fcitx5-configtool`.
@@ -156,11 +158,11 @@ pkgs.callPackage (builtins.fetchTarball "https://github.com/collyn/skey/archive/
   `buildRustPackage` (vì bước cargo trong CMake cần network, bị cấm trong
   sandbox nix); hash crate lấy từ `Cargo.lock` của skey-engine nên không
   cần `cargoHash`.
-- **Path distro-specific** (`/lib/systemd/system`, `/etc/polkit-1/rules.d`,
-  `/etc/profile.d`) được override qua cache vars `SKEY_SYSTEMD_UNIT_DIR`,
-  `SKEY_POLKIT_RULES_DIR`, `SKEY_UDEV_RULES_DIR`, `SKEY_SYSUSERS_DIR`,
-  `SKEY_PROFILE_D_DIR` (định nghĩa trong `data/CMakeLists.txt`) để trỏ vào
-  `$out` — mặc định giữ nguyên như cũ cho Fedora/Debian/Arch.
+- **Path distro-specific** (`/lib/systemd/system`, `/etc/polkit-1/rules.d`)
+  được override qua cache vars `SKEY_SYSTEMD_UNIT_DIR`,
+  `SKEY_POLKIT_RULES_DIR`, `SKEY_UDEV_RULES_DIR`, `SKEY_SYSUSERS_DIR`
+  (định nghĩa trong `data/CMakeLists.txt`) để trỏ vào `$out` — mặc định
+  giữ nguyên như cũ cho Fedora/Debian/Arch.
 - **Udev rule của package KHÔNG ship qua `services.udev.packages`**:
   nixpkgs có guard quét udev rules còn reference `/usr/bin` và fail build
   (`exit 1`) — rule `99-skey-uinput.rules` gọi `/usr/bin/setfacl` nên sẽ

@@ -64,12 +64,12 @@ void GeneralTab::setupUI() {
 
   triggerKeyEdit_ = new HotkeyEdit(enumFrame);
   triggerKeyEdit_->setToolTip(
-      T("Nhấn tổ hợp phím để thay đổi"));
+      T("Nhấn tổ hợp phím để thay đổi, Backspace để gỡ bỏ"));
   enumLayout->addRow(T("Phím chuyển bộ gõ:"), triggerKeyEdit_);
 
   modeMenuKeyEdit_ = new HotkeyEdit(enumFrame);
   modeMenuKeyEdit_->setToolTip(
-      T("Phím tắt để mở menu chế độ (mặc định: `)"));
+      T("Phím tắt để mở menu chế độ (mặc định: `), Backspace để gỡ bỏ"));
   enumLayout->addRow(T("Phím menu chế độ:"), modeMenuKeyEdit_);
 
   mainLayout->addWidget(enumFrame);

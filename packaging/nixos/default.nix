@@ -143,7 +143,6 @@ stdenv.mkDerivation (finalAttrs: {
     "-DSKEY_POLKIT_RULES_DIR=${placeholder "out"}/etc/polkit-1/rules.d"
     "-DSKEY_UDEV_RULES_DIR=${placeholder "out"}/lib/udev/rules.d"
     "-DSKEY_SYSUSERS_DIR=${placeholder "out"}/lib/sysusers.d"
-    "-DSKEY_PROFILE_D_DIR=${placeholder "out"}/etc/profile.d"
   ] ++ lib.optionals (devVersion != null) [
     # Dev channel: make the GUI/updater report the dev prerelease version
     # (the "-dev.N" suffix is what the updater parses to compare counters)

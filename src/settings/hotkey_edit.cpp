@@ -4,6 +4,29 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 
+namespace {
+// Flash styles used while the field has focus.  The :focus rule mirrors the
+// base rule so the style stays stable instead of flickering on focus loss.
+QString captureStyle() {
+    return "QLineEdit { background: #c8e6c9; color: #1b5e20; font-weight: bold;"
+           "  border: 2px solid #4caf50; border-radius: 3px; }"
+           "QLineEdit:focus { background: #c8e6c9; color: #1b5e20; font-weight: bold;"
+           "  border: 2px solid #4caf50; border-radius: 3px; }";
+}
+QString focusStyle() {
+    return "QLineEdit { background: #bbdefb; color: #0d47a1; font-weight: bold;"
+           "  border: 2px solid #2196f3; border-radius: 3px; }"
+           "QLineEdit:focus { background: #bbdefb; color: #0d47a1; font-weight: bold;"
+           "  border: 2px solid #2196f3; border-radius: 3px; }";
+}
+QString clearStyle() {
+    return "QLineEdit { background: #eeeeee; color: #424242; font-weight: bold;"
+           "  border: 2px solid #9e9e9e; border-radius: 3px; }"
+           "QLineEdit:focus { background: #eeeeee; color: #424242; font-weight: bold;"
+           "  border: 2px solid #9e9e9e; border-radius: 3px; }";
+}
+}  // namespace
+
 HotkeyEdit::HotkeyEdit(QWidget *parent) : QLineEdit(parent) {
     setReadOnly(true);
     setPlaceholderText(T("Nhấn tổ hợp phím..."));
@@ -90,6 +113,23 @@ QString HotkeyEdit::formatModifiers(Qt::KeyboardModifiers mods, int keyCode) {
 void HotkeyEdit::keyPressEvent(QKeyEvent *event) {
     int keyCode = event->key();
     Qt::KeyboardModifiers mods = event->modifiers();
+    bool bareKey = (mods == Qt::NoModifier);
+
+    // Backspace alone unbinds; Esc alone cancels and restores the previous
+    // value.  Both remain capturable WITH a modifier (e.g. Ctrl+Backspace).
+    if (bareKey && keyCode == Qt::Key_Backspace) {
+        fcitx5Value_ = "";
+        refreshDisplay();
+        setStyleSheet(clearStyle());  // gray flash: binding removed
+        event->accept();
+        return;
+    }
+    if (bareKey && keyCode == Qt::Key_Escape) {
+        refreshDisplay();  // keep the old value
+        setStyleSheet(focusStyle());
+        event->accept();
+        return;
+    }
 
     QString combo = formatModifiers(mods, keyCode);
 
@@ -97,12 +137,7 @@ void HotkeyEdit::keyPressEvent(QKeyEvent *event) {
         fcitx5Value_ = combo.toStdString();
         // Convert fcitx5 format to display format: "Control+grave" → "Ctrl+`"
         setText(toDisplayString(combo));
-        // Green flash to confirm capture, uses the same bg for :focus to avoid flicker
-        setStyleSheet(
-            "QLineEdit { background: #c8e6c9; color: #1b5e20; font-weight: bold;"
-            "  border: 2px solid #4caf50; border-radius: 3px; }"
-            "QLineEdit:focus { background: #c8e6c9; color: #1b5e20; font-weight: bold;"
-            "  border: 2px solid #4caf50; border-radius: 3px; }");
+        setStyleSheet(captureStyle());  // green flash to confirm capture
     }
 
     event->accept();
@@ -111,22 +146,17 @@ void HotkeyEdit::keyPressEvent(QKeyEvent *event) {
 void HotkeyEdit::focusInEvent(QFocusEvent *event) {
     QLineEdit::focusInEvent(event);
     // Replace text with instruction — much more visible than placeholder
-    setText(T("⌨ Nhấn phím mới..."));
-    // Blue highlight: clearly distinct from normal state, good contrast with text
-    setStyleSheet(
-        "QLineEdit { background: #bbdefb; color: #0d47a1; font-weight: bold;"
-        "  border: 2px solid #2196f3; border-radius: 3px; }"
-        "QLineEdit:focus { background: #bbdefb; color: #0d47a1; font-weight: bold;"
-        "  border: 2px solid #2196f3; border-radius: 3px; }");
+    setText(T("⌨ Nhấn phím mới... (Backspace: gỡ, Esc: hủy)"));
+    setStyleSheet(focusStyle());  // blue highlight, clearly distinct
 }
 
 void HotkeyEdit::focusOutEvent(QFocusEvent *event) {
     QLineEdit::focusOutEvent(event);
     // If user clicked away without capturing a key, restore the original value
-    if (text() == T("⌨ Nhấn phím mới...") || text().isEmpty()) {
-        setText(toDisplayString(QString::fromStdString(fcitx5Value_)));
+    if (text() == T("⌨ Nhấn phím mới... (Backspace: gỡ, Esc: hủy)") ||
+        text().isEmpty()) {
+        refreshDisplay();
     }
-    // Also restore if the text is still the instruction (edge case)
     setStyleSheet("");  // reset to default QLineEdit appearance
 }
 
@@ -136,7 +166,14 @@ std::string HotkeyEdit::fcitx5Value() const {
 
 void HotkeyEdit::setFcitx5Value(const std::string &val) {
     fcitx5Value_ = val;
-    setText(toDisplayString(QString::fromStdString(val)));
+    refreshDisplay();
+}
+
+void HotkeyEdit::refreshDisplay() {
+    if (fcitx5Value_.empty())
+        setText(T("(không có)"));
+    else
+        setText(toDisplayString(QString::fromStdString(fcitx5Value_)));
 }
 
 QString HotkeyEdit::toDisplayString(const QString &fcitx5Combo) const {

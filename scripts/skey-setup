@@ -1,103 +1,58 @@
 #!/bin/bash
 # skey-setup: Configure fcitx5 to use skey as the default Vietnamese input method.
 # Run this after installing skey: sudo make install && skey-setup
+#
+# Environment variables are only written when missing or wrong, and only
+# after asking on a terminal (the files to modify are listed first).
+# Non-interactive runs (package postinst, settings-app update flow) write
+# only when needed.  Options:
+#   -y, --yes       write environment variables without prompting
+#   --no-env        skip all environment-variable setup (files and session)
+#   -u, --uninstall remove skey configuration (env vars, fcitx5 profile
+#                   entry, uinput server) — only skey-guarded content is
+#                   touched, the rest of each file is preserved
 
 set -e
+
+# CLI options
+WRITE_ENV=""    # empty = decide from run context (see env section below)
+UNINSTALL=0
+FORCE_RESTART=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -y|--yes) WRITE_ENV=1 ;;
+        --no-env) WRITE_ENV=0 ;;
+        -u|--uninstall) UNINSTALL=1 ;;
+        -r|--restart) FORCE_RESTART=1 ;;
+        -h|--help)
+            echo "Usage: skey-setup [-y|--yes] [--no-env] [-r|--restart] [-u|--uninstall]"
+            echo "  -y, --yes       Write environment variables without prompting."
+            echo "  --no-env        Skip all environment-variable setup."
+            echo "  -r, --restart   Always restart fcitx5 (default: only when something"
+            echo "                  changed — a running fcitx5 is left alone, which"
+            echo "                  also avoids the Wayland reconnect delay)."
+            echo "  -u, --uninstall Remove skey configuration: environment variables,"
+            echo "                  the fcitx5 profile entry, and the uinput server."
+            exit 0
+            ;;
+        *)
+            echo "skey-setup: unknown option: $1" >&2
+            echo "Usage: skey-setup [-y|--yes] [--no-env] [-r|--restart] [-u|--uninstall]" >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/fcitx5"
 PROFILE="$CONFIG_DIR/profile"
 CONFIG="$CONFIG_DIR/config"
 
-mkdir -p "$CONFIG_DIR"
-
-# ── Write profile: skey-im as default (non-destructive) ──
-# Preserve existing profile if it already has skey-im configured.
-# Only create a fresh profile when the file is missing or doesn't
-# contain skey-im at all.  This prevents nuking other IMs (lotus,
-# bamboo, etc.) the user may have configured.
-if [ -f "$PROFILE" ] && grep -q "skey-im" "$PROFILE" 2>/dev/null; then
-    echo "✓ Profile already has skey-im, keeping existing config"
-else
-    if [ -f "$PROFILE" ]; then
-        # Profile exists but has no skey-im — add it as a new item
-        # while preserving existing groups and items.
-        echo "ℹ Adding skey-im to existing profile..."
-        # Find the highest Items/N index and add after it
-        MAX_ITEM=$(grep -oP '\[Groups/0/Items/\K\d+' "$PROFILE" | sort -n | tail -1)
-        NEXT_ITEM=$((MAX_ITEM + 1))
-        cat >> "$PROFILE" << ITEMEOF
-
-[Groups/0/Items/$NEXT_ITEM]
-# Name
-Name=skey-im
-# Layout
-Layout=
-ITEMEOF
-        # Set as default IM
-        if grep -q "^DefaultIM=" "$PROFILE"; then
-            sed -i 's/^DefaultIM=.*/DefaultIM=skey-im/' "$PROFILE"
-        else
-            sed -i '/^Default Layout=/a DefaultIM=skey-im' "$PROFILE"
-        fi
-        echo "✓ skey-im added to existing profile"
-    else
-        # No profile exists — create a fresh one
-        cat > "$PROFILE" << 'EOF'
-[Groups/0]
-# Group Name
-Name=Default
-# Layout
-Default Layout=us
-# Default Input Method
-DefaultIM=skey-im
-
-[Groups/0/Items/0]
-# Name
-Name=keyboard-us
-# Layout
-Layout=
-
-[Groups/0/Items/1]
-# Name
-Name=skey-im
-# Layout
-Layout=
-
-[GroupOrder]
-0=Default
-EOF
-        echo "✓ Profile created with skey-im as default IM"
-    fi
-fi
-
-# ── Patch config: ActiveByDefault + ShareInputState ──
-if [ -f "$CONFIG" ]; then
-    # Update existing config
-    sed -i 's/^ActiveByDefault=.*/ActiveByDefault=True/' "$CONFIG"
-    sed -i 's/^ShareInputState=.*/ShareInputState=All/' "$CONFIG"
-    echo "✓ Config updated: ActiveByDefault=True, ShareInputState=All"
-else
-    # Create minimal config
-    cat > "$CONFIG" << 'EOF'
-[Hotkey]
-EnumerateWithTriggerKeys=True
-EnumerateSkipFirst=False
-
-[Hotkey/TriggerKeys]
-0=Control+space
-
-[Hotkey/AltTriggerKeys]
-0=Shift_L
-
-[Behavior]
-ActiveByDefault=True
-ShareInputState=All
-PreeditEnabledByDefault=True
-ShowInputMethodInformation=True
-PreloadInputMethod=True
-EOF
-    echo "✓ Config created with skey defaults"
-fi
+# Tracked so the fcitx5 restart can be skipped when nothing changed:
+# a no-op run must not pay the Wayland reconnect delay (KWin can take
+# many seconds to re-establish its input context).
+PROFILE_WRITTEN=0
+CONFIG_WRITTEN=0
 
 # ── Auto-detect environment ──
 detect_shell() {
@@ -142,18 +97,405 @@ DISTRO=$(detect_distro)
 
 echo "  Shell: $USER_SHELL  DE: $USER_DE  Session: $SESSION_TYPE  Distro: $DISTRO"
 
+BEGIN_MARKER="# >>> fcitx5-skey >>>"
+END_MARKER="# <<< fcitx5-skey <<<"
+
+# ── Helper: strip all skey blocks from a shell config file ──
+# Only skey-guarded blocks are removed; the rest of the file is kept.
+# A file left empty was created by skey-setup and is deleted.
+remove_shell_env() {
+    local file="$1"
+    [ -f "$file" ] || return 0
+    local tmpfile
+    tmpfile=$(mktemp)
+    awk -v begin="$BEGIN_MARKER" -v end="$END_MARKER" '
+        $0 == begin { skip=1; next }
+        index($0, end) > 0 { skip=0; next }
+        !skip { print }
+    ' "$file" > "$tmpfile"
+    # Strip trailing blank lines left behind by the removed block
+    sed -i -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' "$tmpfile" 2>/dev/null || true
+    if cmp -s "$file" "$tmpfile"; then
+        rm -f "$tmpfile"
+        return 0
+    fi
+    if [ -s "$tmpfile" ]; then
+        mv "$tmpfile" "$file"
+        echo "✓ Removed skey env block from: $file"
+    else
+        rm -f "$tmpfile" "$file"
+        echo "✓ Removed skey-created file: $file"
+    fi
+}
+
+# ── Helper: remove the obsolete system-wide profile.d script ──
+# Old package versions shipped /etc/profile.d/fcitx5-skey.sh, sourced by
+# every login shell and DM chain.  Under the current single-user-file
+# policy it is not only redundant — it re-injects the old variable set
+# into the session and the systemd user manager at every login, so the
+# state detection below would report pollution on every run.  Needs root;
+# try cached sudo, otherwise say exactly what to run.
+remove_stale_profile_d() {
+    [ -f /etc/profile.d/fcitx5-skey.sh ] || return 0
+    if [ "$(id -u)" -eq 0 ]; then
+        rm -f /etc/profile.d/fcitx5-skey.sh
+    elif command -v sudo >/dev/null 2>&1 && \
+         sudo -n rm -f /etc/profile.d/fcitx5-skey.sh 2>/dev/null; then
+        echo "✓ Removed obsolete system file: /etc/profile.d/fcitx5-skey.sh (via sudo)"
+        return 0
+    else
+        echo "⚠ Obsolete system file still present: /etc/profile.d/fcitx5-skey.sh"
+        echo "  It re-adds old env vars at every login."
+        echo "  Remove it once with: sudo rm /etc/profile.d/fcitx5-skey.sh"
+        return 0
+    fi
+    echo "✓ Removed obsolete system file: /etc/profile.d/fcitx5-skey.sh"
+}
+
+# ── Helper: remove stale IM variables from /etc/environment ──
+# pam_env applies /etc/environment to EVERY login session.  A very old
+# skey-setup (the pre-0.5 "cần quyền admin" path) wrote its variable set
+# there with root, and those values become the base environment of the
+# systemd user manager — outranking every override and re-polluting each
+# session.  Only lines whose values match what skey-setup / im-config
+# historically wrote are removed; everything else in the file is kept.
+# Needs root; try cached sudo, otherwise say exactly what to run.
+remove_stale_system_env() {
+    local file=/etc/environment
+    [ -f "$file" ] || return 0
+    local pattern='^(GTK_IM_MODULE|QT_IM_MODULE|XMODIFIERS|SDL_IM_MODULE|GLFW_IM_MODULE)=(fcitx5|fcitx|ibus|@im=fcitx)$'
+    grep -qE "$pattern" "$file" || return 0
+    if [ "$(id -u)" -eq 0 ]; then
+        sed -i -E "/$pattern/d" "$file"
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        sudo sed -i -E "/$pattern/d" "$file"
+    else
+        echo "⚠ /etc/environment still contains IM variables from an old skey-setup:"
+        grep -E "$pattern" "$file" | sed 's/^/    /'
+        echo "  Remove them once with:"
+        echo "  sudo sed -i -E '/^(GTK_IM_MODULE|QT_IM_MODULE|XMODIFIERS|SDL_IM_MODULE|GLFW_IM_MODULE)=/d' /etc/environment"
+        return 0
+    fi
+    echo "✓ Removed stale IM variables from: /etc/environment"
+}
+
+# ── Helper: restore the active IM after the compositor reconnect ──
+# When KWin/Mutter recreates the input context after the reconnect
+# toggle, fcitx5 activates the FIRST item of the group (keyboard-us)
+# instead of DefaultIM — the user would be left typing English after
+# every skey-setup run.  Restore the IM that was active before the
+# restart.  The new context can take a moment to appear, hence retries.
+restore_im() {
+    local target="${1:-skey-im}"
+    local DBUS=""
+    if command -v qdbus6 >/dev/null 2>&1; then DBUS="qdbus6"
+    elif command -v qdbus >/dev/null 2>&1; then DBUS="qdbus"
+    elif command -v gdbus >/dev/null 2>&1; then DBUS="gdbus"
+    else return 0
+    fi
+    for _ in $(seq 1 20); do
+        local cur=""
+        if [ "$DBUS" = "gdbus" ]; then
+            cur=$(gdbus call --session --dest org.fcitx.Fcitx5 \
+                --object-path /controller \
+                --method org.freedesktop.DBus.Properties.Get \
+                org.fcitx.Fcitx.Controller1 CurrentInputMethod 2>/dev/null || true)
+        else
+            cur=$($DBUS org.fcitx.Fcitx5 /controller \
+                org.fcitx.Fcitx.Controller1.CurrentInputMethod 2>/dev/null || true)
+        fi
+        case "$cur" in
+            *"$target"*)
+                echo "✓ Input method restored to $target"
+                return 0
+                ;;
+        esac
+        if [ "$DBUS" = "gdbus" ]; then
+            gdbus call --session --dest org.fcitx.Fcitx5 --object-path /controller \
+                --method org.fcitx.Fcitx.Controller1.SetCurrentIM "$target" 2>/dev/null || true
+        else
+            $DBUS org.fcitx.Fcitx5 /controller \
+                org.fcitx.Fcitx.Controller1.SetCurrentIM "$target" 2>/dev/null || true
+        fi
+        sleep 0.2
+    done
+    echo "⚠ Could not restore input method to $target"
+    echo "  Select it manually in the fcitx5 tray menu if needed."
+    return 0
+}
+
+# ── Uninstall mode ──
+if [ "$UNINSTALL" = "1" ]; then
+    echo "Uninstalling skey configuration..."
+
+    remove_stale_profile_d
+    remove_stale_system_env
+
+    # Remove env var blocks from shell config files
+    case "$USER_SHELL" in
+        bash)
+            remove_shell_env "$HOME/.bash_profile"
+            remove_shell_env "$HOME/.bashrc"
+            ;;
+        zsh)
+            remove_shell_env "$HOME/.zprofile"
+            remove_shell_env "$HOME/.zshrc"
+            ;;
+        fish)
+            remove_shell_env "$HOME/.config/fish/config.fish"
+            ;;
+    esac
+    remove_shell_env "$HOME/.profile"
+    remove_shell_env "$HOME/.xprofile"
+
+    # skey-owned env files (safe to delete outright)
+    for f in "$HOME/.config/environment.d/fcitx5-skey.conf" \
+             "$HOME/.config/plasma-workspace/env/fcitx5-skey.sh" \
+             "$HOME/.config/plasma-workspace/env/skey.sh"; do
+        if [ -f "$f" ]; then
+            rm -f "$f"
+            echo "✓ Removed: $f"
+        fi
+    done
+
+    # Remove skey-im items from the fcitx5 profile and restore the
+    # default IM to the first remaining item (keyboard-us fallback).
+    if [ -f "$PROFILE" ]; then
+        TMPPROF=$(mktemp)
+        awk '
+            BEGIN { in_item = 0; drop = 0; buf = "" }
+            /^\[Groups\/0\/Items\// {
+                if (in_item && !drop) printf "%s", buf
+                in_item = 1; drop = 0; buf = $0 "\n"
+                next
+            }
+            in_item && /^\[/ {
+                if (!drop) printf "%s", buf
+                in_item = 0; buf = ""
+                print
+                next
+            }
+            in_item {
+                if ($0 == "Name=skey-im") drop = 1
+                buf = buf $0 "\n"
+                next
+            }
+            { print }
+            END { if (in_item && !drop) printf "%s", buf }
+        ' "$PROFILE" > "$TMPPROF"
+        if cmp -s "$PROFILE" "$TMPPROF"; then
+            rm -f "$TMPPROF"
+            echo "ℹ Profile has no skey-im entry"
+        else
+            mv "$TMPPROF" "$PROFILE"
+            if grep -q '^DefaultIM=skey-im' "$PROFILE"; then
+                FIRST_ITEM=$(awk -F= '/^\[Groups\/0\/Items\// { in_item=1; next }
+                    in_item && /^Name=/ { print $2; exit }' "$PROFILE")
+                sed -i "s/^DefaultIM=skey-im/DefaultIM=${FIRST_ITEM:-keyboard-us}/" "$PROFILE"
+            fi
+            echo "✓ Removed skey-im from: $PROFILE"
+        fi
+    fi
+
+    # Remove the ActiveByDefault/ShareInputState lines skey-setup patched
+    if [ -f "$CONFIG" ] && grep -qE '^(ActiveByDefault|ShareInputState)=' "$CONFIG"; then
+        sed -i '/^ActiveByDefault=/d; /^ShareInputState=/d' "$CONFIG"
+        echo "✓ Removed skey-setup patches from: $CONFIG"
+    fi
+
+    # Remove skey's env vars from the live systemd session + D-Bus
+    # activation environment so newly launched apps stop inheriting them.
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+        if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+            dbus-update-activation-environment --systemd -- \
+                GTK_IM_MODULE= QT_IM_MODULE= XMODIFIERS= SDL_IM_MODULE= GLFW_IM_MODULE= \
+                2>/dev/null || true
+        fi
+        systemctl --user unset-environment \
+            GTK_IM_MODULE QT_IM_MODULE XMODIFIERS SDL_IM_MODULE GLFW_IM_MODULE \
+            2>/dev/null || true
+        echo "✓ Removed skey env vars from the live session"
+    fi
+
+    # Stop and disable the uinput server instance (best effort — the
+    # disable needs root; package managers do this themselves on removal).
+    REAL_USER="${SUDO_USER:-}"
+    if [ -z "$REAL_USER" ] && [ -n "${PKEXEC_UID:-}" ]; then
+        REAL_USER=$(id -un "$PKEXEC_UID" 2>/dev/null || true)
+    fi
+    REAL_USER="${REAL_USER:-$(logname 2>/dev/null || true)}"
+    REAL_USER="${REAL_USER:-$USER}"
+
+    if command -v systemctl >/dev/null 2>&1; then
+        UINPUT_SERVICE="fcitx5-skey-uinput-server@${REAL_USER}.service"
+        if systemctl is-enabled "$UINPUT_SERVICE" >/dev/null 2>&1 || \
+           systemctl is-active "$UINPUT_SERVICE" >/dev/null 2>&1; then
+            if [ "$(id -u)" -eq 0 ]; then
+                systemctl disable --now "$UINPUT_SERVICE" 2>/dev/null || true
+                echo "✓ Uinput server stopped + disabled"
+            elif command -v sudo >/dev/null 2>&1 && \
+                 sudo -n systemctl disable --now "$UINPUT_SERVICE" 2>/dev/null; then
+                echo "✓ Uinput server stopped + disabled (via sudo)"
+            else
+                echo "⚠ Uinput server still enabled: $UINPUT_SERVICE"
+                echo "  Run: sudo systemctl disable --now $UINPUT_SERVICE"
+            fi
+        fi
+    fi
+
+    # Restart fcitx5 so the default IM reverts (only when it was running)
+    if pidof fcitx5 >/dev/null 2>&1; then
+        echo "→ Restarting fcitx5 (default IM is no longer skey)..."
+        OLD_PID=$(pgrep -u "$(id -u)" -x fcitx5 2>/dev/null || true)
+        [ -n "$OLD_PID" ] && kill $OLD_PID 2>/dev/null || true
+        for p in $OLD_PID; do
+            for i in $(seq 1 50); do
+                kill -0 "$p" 2>/dev/null || break
+                sleep 0.1
+            done
+        done
+        sudo -n pkill -u root -x fcitx5 2>/dev/null || true
+        rm -f /tmp/fcitx-socket-* 2>/dev/null || true
+        fcitx5 -d >/dev/null 2>&1 || true
+        echo "✓ fcitx5 restarted"
+    fi
+
+    echo ""
+    echo "Done! skey configuration removed."
+    echo "The skey package itself is still installed — remove it with your"
+    echo "package manager if desired."
+    exit 0
+fi
+
+mkdir -p "$CONFIG_DIR"
+
+# ── Write profile: skey-im as default (non-destructive) ──
+# Preserve existing profile if it already has skey-im configured.
+# Only create a fresh profile when the file is missing or doesn't
+# contain skey-im at all.  This prevents nuking other IMs (lotus,
+# bamboo, etc.) the user may have configured.
+if [ -f "$PROFILE" ] && grep -q "skey-im" "$PROFILE" 2>/dev/null; then
+    echo "✓ Profile already has skey-im, keeping existing config"
+else
+    if [ -f "$PROFILE" ]; then
+        # Profile exists but has no skey-im — add it as a new item
+        # while preserving existing groups and items.
+        echo "ℹ Adding skey-im to existing profile..."
+        # Find the highest Items/N index and add after it
+        MAX_ITEM=$(grep -oP '\[Groups/0/Items/\K\d+' "$PROFILE" | sort -n | tail -1)
+        NEXT_ITEM=$((MAX_ITEM + 1))
+        cat >> "$PROFILE" << ITEMEOF
+
+[Groups/0/Items/$NEXT_ITEM]
+# Name
+Name=skey-im
+# Layout
+Layout=
+ITEMEOF
+        # Set as default IM
+        if grep -q "^DefaultIM=" "$PROFILE"; then
+            sed -i 's/^DefaultIM=.*/DefaultIM=skey-im/' "$PROFILE"
+        else
+            sed -i '/^Default Layout=/a DefaultIM=skey-im' "$PROFILE"
+        fi
+        echo "✓ skey-im added to existing profile"
+        PROFILE_WRITTEN=1
+    else
+        # No profile exists — create a fresh one
+        cat > "$PROFILE" << 'EOF'
+[Groups/0]
+# Group Name
+Name=Default
+# Layout
+Default Layout=us
+# Default Input Method
+DefaultIM=skey-im
+
+[Groups/0/Items/0]
+# Name
+Name=keyboard-us
+# Layout
+Layout=
+
+[Groups/0/Items/1]
+# Name
+Name=skey-im
+# Layout
+Layout=
+
+[GroupOrder]
+0=Default
+EOF
+        echo "✓ Profile created with skey-im as default IM"
+        PROFILE_WRITTEN=1
+    fi
+fi
+
+# ── Patch config: ActiveByDefault + ShareInputState ──
+if [ -f "$CONFIG" ]; then
+    # Update existing config — only rewrite when the values differ, so
+    # an up-to-date config doesn't trigger a needless fcitx5 restart.
+    if grep -q '^ActiveByDefault=True$' "$CONFIG" && \
+       grep -q '^ShareInputState=All$' "$CONFIG"; then
+        echo "✓ Config already has ActiveByDefault=True, ShareInputState=All"
+    else
+        sed -i 's/^ActiveByDefault=.*/ActiveByDefault=True/' "$CONFIG"
+        sed -i 's/^ShareInputState=.*/ShareInputState=All/' "$CONFIG"
+        # Lines missing entirely (not just wrong values)? Add them
+        # under [Behavior].
+        if ! grep -q '^ActiveByDefault=' "$CONFIG"; then
+            sed -i '/^\[Behavior\]/a ActiveByDefault=True' "$CONFIG"
+        fi
+        if ! grep -q '^ShareInputState=' "$CONFIG"; then
+            sed -i '/^\[Behavior\]/a ShareInputState=All' "$CONFIG"
+        fi
+        CONFIG_WRITTEN=1
+        echo "✓ Config updated: ActiveByDefault=True, ShareInputState=All"
+    fi
+else
+    # Create minimal config
+    cat > "$CONFIG" << 'EOF'
+[Hotkey]
+EnumerateWithTriggerKeys=True
+EnumerateSkipFirst=False
+
+[Hotkey/TriggerKeys]
+0=Control+space
+
+[Hotkey/AltTriggerKeys]
+0=Shift_L
+
+[Behavior]
+ActiveByDefault=True
+ShareInputState=All
+PreeditEnabledByDefault=True
+ShowInputMethodInformation=True
+PreloadInputMethod=True
+EOF
+    CONFIG_WRITTEN=1
+    echo "✓ Config created with skey defaults"
+fi
+
 # ── Determine required environment variables ──
-# QT_IM_MODULES is deliberately NOT set. Setting it to "wayland;fcitx"
-# breaks Vietnamese input in Qt apps immediately after skey-setup
-# because the wayland IM module overrides the fcitx5 module.
+# On KDE Plasma Wayland, the fcitx5 wiki's recommended setup is to set
+# NONE of GTK_IM_MODULE / QT_IM_MODULE / SDL_IM_MODULE: KWin implements
+# text-input-v2/v3 and serves GTK, Qt and SDL apps natively through
+# zwp_input_method_v2.  Forcing any of these makes the toolkit connect
+# through a second fcitx5 frontend while KWin already serves it — the two
+# input contexts fight over focus and surrounding-text updates land on
+# the wrong one (Telegram lost tone marks / got downgraded to Uinput).
+# Only XWayland apps (XMODIFIERS) and GLFW apps need a variable there.
 #
-# On KDE Plasma Wayland, QT_IM_MODULE is also omitted — KWin handles
-# Qt input natively via zwp_input_method_v2, and forcing QT_IM_MODULE=fcitx5
-# bypasses KWin's IM handling, breaking Vietnamese input entirely.
+# Other Wayland compositors (GNOME/Mutter, Sway) only speak text-input-v3,
+# which Qt < 6.7 cannot use, so QT_IM_MODULE stays set there.
+#
+# QT_IM_MODULES is deliberately NOT set anywhere. Setting it to
+# "wayland;fcitx" breaks Vietnamese input in Qt apps immediately after
+# skey-setup because the wayland IM module overrides the fcitx5 module.
 if [ "$SESSION_TYPE" = "wayland" ]; then
     case "$USER_DE" in
         "KDE Plasma")
-            ENV_VARS="GTK_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx5 GLFW_IM_MODULE=ibus"
+            ENV_VARS="XMODIFIERS=@im=fcitx GLFW_IM_MODULE=ibus"
             ;;
         *)
             ENV_VARS="GTK_IM_MODULE=fcitx5 QT_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx SDL_IM_MODULE=fcitx5 GLFW_IM_MODULE=ibus"
@@ -171,8 +513,6 @@ fi
 upsert_shell_env() {
     local file="$1"
     local content="$2"
-    local begin_marker="# >>> fcitx5-skey >>>"
-    local end_marker="# <<< fcitx5-skey <<<"
 
     # The end marker must land on its own line.  The fish block ends with
     # `end` and no trailing newline — appending the marker directly produced
@@ -190,7 +530,7 @@ upsert_shell_env() {
         # (`end# <<< fcitx5-skey <<<`).  A whole-line match would never see
         # it, so skip would stay 1 and everything after the begin marker —
         # the rest of the user's config — would be deleted on re-run.
-        awk -v begin="$begin_marker" -v end="$end_marker" '
+        awk -v begin="$BEGIN_MARKER" -v end="$END_MARKER" '
             $0 == begin     { skip=1; next }
             index($0, end) > 0 { skip=0; next }
             !skip { print }
@@ -201,32 +541,36 @@ upsert_shell_env() {
         if [ -s "$tmpfile" ]; then
             echo "" >> "$tmpfile"
         fi
-        echo "$begin_marker" >> "$tmpfile"
+        echo "$BEGIN_MARKER" >> "$tmpfile"
         printf '%s\n' "$content" >> "$tmpfile"
-        echo "$end_marker" >> "$tmpfile"
+        echo "$END_MARKER" >> "$tmpfile"
         mv "$tmpfile" "$file"
     else
         # Create new file with just the block.
         {
-            echo "$begin_marker"
+            echo "$BEGIN_MARKER"
             printf '%s\n' "$content"
-            echo "$end_marker"
+            echo "$END_MARKER"
         } > "$file"
     fi
 }
 
-# ── Write environment files ──
-ENVDIR="$HOME/.config/environment.d"
-ENVFILE="$ENVDIR/fcitx5-skey.conf"
+# ── Environment variables: detect current state first ──
+# Never touch a file that already has the correct values.  When anything
+# is missing or wrong, ask before writing and list every file that would
+# be modified.  Non-interactive runs (package postinst via systemd-run /
+# su, or the settings app's update flow) write only when needed —
+# installing the package is the consent there.  -y / --no-env override.
 
 # systemd environment.d (KEY=VALUE format, no export).
 # Respected by KDE, GNOME, Sway, and most systemd-based Wayland compositors.
-mkdir -p "$ENVDIR"
-{
-    echo "# fcitx5-skey"
-    for var in $ENV_VARS; do echo "$var"; done
-} > "$ENVFILE"
-echo "✓ systemd environment.d: $ENVFILE"
+ENVDIR="$HOME/.config/environment.d"
+ENVFILE="$ENVDIR/fcitx5-skey.conf"
+ENVD_CONTENT="# fcitx5-skey"
+for var in $ENV_VARS; do
+    ENVD_CONTENT="${ENVD_CONTENT}
+$var"
+done
 
 # Build export lines for shell configs
 # Quote values containing shell metacharacters (e.g. QT_IM_MODULES=wayland;fcitx)
@@ -238,75 +582,275 @@ for var in $ENV_VARS; do
     EXPORT_LINES="${EXPORT_LINES}export $name=\"$value\"
 "
 done
-
-# Shell config and .profile — use upsert to preserve existing content
-case "$USER_SHELL" in
-    bash)
-        upsert_shell_env "$HOME/.bash_profile" "$EXPORT_LINES"
-        upsert_shell_env "$HOME/.bashrc" "$EXPORT_LINES"
-        echo "✓ Shell config: $HOME/.bash_profile + .bashrc"
-        ;;
-    zsh)
-        upsert_shell_env "$HOME/.zprofile" "$EXPORT_LINES"
-        upsert_shell_env "$HOME/.zshrc" "$EXPORT_LINES"
-        echo "✓ Shell config: $HOME/.zprofile + .zshrc"
-        ;;
-    fish)
-        FISH_CONF="$HOME/.config/fish/config.fish"
-        mkdir -p "$(dirname "$FISH_CONF")"
-        FISH_LINES="if status is-login"
-        for var in $ENV_VARS; do
-            name="${var%%=*}"
-            value="${var#*=}"
-            FISH_LINES="${FISH_LINES}
-    set -Ux $name $value"
-        done
-        FISH_LINES="${FISH_LINES}
-end"
-        upsert_shell_env "$FISH_CONF" "$FISH_LINES"
-        echo "✓ Shell config: $FISH_CONF"
-        ;;
-esac
-
-# ~/.profile — sourced by most display managers (SDDM, GDM, LightDM) and
-# login shells.  Shell-specific configs (.bash_profile, .zprofile) take
-# precedence for interactive shells, but DMs often only read .profile.
-upsert_shell_env "$HOME/.profile" "$EXPORT_LINES"
-echo "✓ Login profile: $HOME/.profile"
+# Block content as stored between the markers (trailing newline stripped).
+EXPORT_BLOCK="${EXPORT_LINES%$'\n'}"
 
 # KDE Plasma: session startup scripts — the canonical place for per-session
 # env vars on KDE.  Sourced by startplasma before launching kwin and apps.
 # This is a dedicated file owned by skey — safe to overwrite.
-if [ "$USER_DE" = "KDE Plasma" ]; then
-    KDE_ENVDIR="$HOME/.config/plasma-workspace/env"
-    mkdir -p "$KDE_ENVDIR"
-    KDE_ENVFILE="$KDE_ENVDIR/fcitx5-skey.sh"
-    {
-        echo "# fcitx5-skey"
-        for var in $ENV_VARS; do
-            name="${var%%=*}"
-            value="${var#*=}"
-            echo "export $name=\"$value\""
-        done
-        if [ "$SESSION_TYPE" = "wayland" ]; then
-            # KWin serves Qt apps natively via zwp_input_method_v2 — purge
-            # any QT_IM_MODULE injected earlier in the login chain (Ubuntu's
-            # im-config default sets ibus).  Sourced by startplasma AFTER the
-            # Xsession/profile scripts, so the unset wins.  Without it Qt
-            # apps connect through a second fcitx5 frontend and the two
-            # input contexts fight over surrounding text.
-            echo 'unset QT_IM_MODULE'
-        fi
-    } > "$KDE_ENVFILE"
-    chmod +x "$KDE_ENVFILE"
-    # Remove stale file from older skey-setup versions
-    rm -f "$KDE_ENVDIR/skey.sh"
-    echo "✓ KDE session env: $KDE_ENVFILE"
+KDE_ENVDIR="$HOME/.config/plasma-workspace/env"
+KDE_ENVFILE="$KDE_ENVDIR/fcitx5-skey.sh"
+KDE_CONTENT="# fcitx5-skey"
+for var in $ENV_VARS; do
+    name="${var%%=*}"
+    value="${var#*=}"
+    KDE_CONTENT="${KDE_CONTENT}
+export $name=\"$value\""
+done
+if [ "$SESSION_TYPE" = "wayland" ]; then
+    # KWin serves GTK, Qt and SDL apps natively via text-input-v2/v3 —
+    # purge any *_IM_MODULE injected earlier in the login chain
+    # (Ubuntu's im-config default sets ibus).  Sourced by startplasma
+    # AFTER the Xsession/profile scripts, so the unset wins.  Without it
+    # Qt apps connect through a second fcitx5 frontend and the two
+    # input contexts fight over surrounding text.
+    #
+    # The systemd user manager's BASE environment keeps whatever
+    # pam_systemd imported at login (the DM sources /etc/profile before
+    # the PAM session opens, so distro defaults land there and survive
+    # unset-environment, which only clears the override layer).  Set
+    # EMPTY overrides so the merged view stays clean — skey-setup's state
+    # detection only flags non-empty values.
+    KDE_CONTENT="${KDE_CONTENT}
+unset GTK_IM_MODULE
+unset QT_IM_MODULE
+unset SDL_IM_MODULE
+if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+    dbus-update-activation-environment --systemd -- GTK_IM_MODULE= QT_IM_MODULE= SDL_IM_MODULE= 2>/dev/null || true
+fi
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user set-environment GTK_IM_MODULE= QT_IM_MODULE= SDL_IM_MODULE= 2>/dev/null || true
+fi"
 fi
 
-# Also write .xprofile for X11 display managers and legacy support
-upsert_shell_env "$HOME/.xprofile" "$EXPORT_LINES"
-echo "✓ X11 fallback: $HOME/.xprofile"
+# ── Check which files actually need writing ──
+ENV_NEEDS_FIX=0
+ENV_FILES_TO_WRITE=""
+
+# guarded_block_ok: file contains exactly <content> between the markers.
+guarded_block_ok() {
+    local file="$1" content="$2" existing
+    [ -f "$file" ] || return 1
+    existing=$(awk -v begin="$BEGIN_MARKER" -v end="$END_MARKER" '
+        $0 == begin { inblock=1; next }
+        index($0, end) > 0 { inblock=0; next }
+        inblock { print }
+    ' "$file")
+    [ "$existing" = "$content" ]
+}
+
+# owned_file_ok: skey-owned file matches the expected content exactly.
+# An exact match (not per-line presence) also catches stale entries an
+# older version left behind (e.g. QT_IM_MODULES=wayland;fcitx).
+owned_file_ok() {
+    local file="$1" content="$2" existing
+    [ -f "$file" ] || return 1
+    existing=$(cat "$file")
+    existing="${existing%$'\n'}"
+    content="${content%$'\n'}"
+    [ "$existing" = "$content" ]
+}
+
+# register_env_file: record a file that needs writing (if any).
+register_env_file() {  # $1=path $2=expected content $3=guarded|owned
+    if [ "$3" = "guarded" ]; then
+        guarded_block_ok "$1" "$2" && return 0
+    else
+        owned_file_ok "$1" "$2" && return 0
+    fi
+    ENV_NEEDS_FIX=1
+    ENV_FILES_TO_WRITE="${ENV_FILES_TO_WRITE}    • $1
+"
+}
+
+# Exactly ONE file per session context — the canonical mechanism for
+# that context, nothing else.  Shell rc files are deliberately NOT
+# written: apps launched from terminals inherit the session environment,
+# and the apply block below pushes the variables into the live session.
+#
+#   KDE Plasma (X11 + Wayland) → ~/.config/plasma-workspace/env/*.sh
+#     (sourced by startplasma before any app starts; also the only place
+#     that can run the IM_MODULE unsets on Wayland)
+#   Wayland (GNOME, Sway, ...) → systemd environment.d (canonical)
+#   X11 (GNOME, XFCE, ...)     → ~/.profile (sourced by every DM)
+if [ "$USER_DE" = "KDE Plasma" ]; then
+    register_env_file "$KDE_ENVFILE" "$KDE_CONTENT" owned
+elif [ "$SESSION_TYPE" = "wayland" ]; then
+    if command -v systemctl >/dev/null 2>&1 && \
+       systemctl --user show-environment >/dev/null 2>&1; then
+        register_env_file "$ENVFILE" "$ENVD_CONTENT" owned
+    else
+        # Non-systemd session (OpenRC/runit/…): environment.d is a
+        # systemd mechanism and would be inert — fall back to .profile
+        # so the display manager / login shell still picks the vars up.
+        register_env_file "$HOME/.profile" "$EXPORT_BLOCK" guarded
+    fi
+else
+    register_env_file "$HOME/.profile" "$EXPORT_BLOCK" guarded
+fi
+
+# KDE Plasma Wayland: the live systemd session must not carry
+# GTK_IM_MODULE / QT_IM_MODULE / SDL_IM_MODULE (see the ENV_VARS
+# comment).  The files can be correct while the running session is still
+# polluted by an older login or a previous skey-setup version.
+# Only a NON-EMPTY value counts as polluted: `VAR=` (empty) is the
+# residue of the unset in the apply block below and is exactly the
+# desired end state — matching it made the consent prompt appear on
+# every run for nothing.
+if [ "$USER_DE" = "KDE Plasma" ] && [ "$SESSION_TYPE" = "wayland" ] \
+   && command -v systemctl >/dev/null 2>&1 \
+   && systemctl --user show-environment >/dev/null 2>&1; then
+    if systemctl --user show-environment 2>/dev/null \
+        | grep -qE '^(GTK_IM_MODULE|QT_IM_MODULE|SDL_IM_MODULE)=.'; then
+        ENV_NEEDS_FIX=1
+    fi
+fi
+
+# Stale system-wide pollution from old package/script versions: clean it
+# on every run (root/sudo best-effort) so it cannot re-pollute the
+# session at the next login.
+remove_stale_profile_d
+remove_stale_system_env
+
+# ── Decide: ask for consent, or act on flags / run context ──
+if [ "$ENV_NEEDS_FIX" = "0" ]; then
+    echo "✓ Environment variables already configured correctly — no changes"
+    # Correct state needs no touching — overrides -y as well.  The
+    # session-env apply below is also skipped (there is nothing to apply).
+    WRITE_ENV=0
+elif [ -z "$WRITE_ENV" ]; then
+    echo ""
+    echo "ℹ Environment variables for fcitx5 are missing or outdated on this system."
+    echo "  (Outdated = an older skey-setup wrote extra variables this version"
+    echo "  no longer sets, e.g. GTK_IM_MODULE / QT_IM_MODULE / SDL_IM_MODULE"
+    echo "  on KDE Plasma Wayland.)"
+    if [ -n "$ENV_FILES_TO_WRITE" ]; then
+        echo "  skey-setup would write them to:"
+        printf '%s' "$ENV_FILES_TO_WRITE"
+    else
+        echo "  No files need changing — only the live session would be updated"
+        echo "  (unset GTK_IM_MODULE / QT_IM_MODULE / SDL_IM_MODULE from the"
+        echo "  systemd user environment — KWin handles these toolkits natively)."
+    fi
+    if [ -t 0 ]; then
+        read -r -p "  Write environment variables now? [y/N] " ANSWER || true
+        case "$ANSWER" in
+            y|Y|yes|YES|Yes) WRITE_ENV=1 ;;
+            *) WRITE_ENV=0 ;;
+        esac
+    else
+        # Non-interactive run (package postinst via systemd-run/su, or the
+        # settings app's update flow): installing the package is the
+        # consent.  This branch only runs when something is wrong —
+        # repeated runs on a correct machine never write anything.
+        WRITE_ENV=1
+        echo "  (non-interactive run — writing; pass --no-env to skip)"
+    fi
+fi
+
+# ── Write environment files (only with consent / flags) ──
+# File writes additionally require that at least one file actually needs
+# it: when only the live session is polluted (KDE Plasma Wayland), the
+# files are left untouched and only the session is fixed further down.
+if [ "$WRITE_ENV" = "1" ] && [ -n "$ENV_FILES_TO_WRITE" ]; then
+    ENV_FILES_WRITTEN=""
+
+    if [ "$USER_DE" = "KDE Plasma" ]; then
+        mkdir -p "$KDE_ENVDIR"
+        printf '%s\n' "$KDE_CONTENT" > "$KDE_ENVFILE"
+        chmod +x "$KDE_ENVFILE"
+        # Remove stale file from older skey-setup versions
+        rm -f "$KDE_ENVDIR/skey.sh"
+        ENV_FILES_WRITTEN="    • $KDE_ENVFILE
+"
+        echo "✓ KDE session env: $KDE_ENVFILE"
+    elif [ "$SESSION_TYPE" = "wayland" ]; then
+        if command -v systemctl >/dev/null 2>&1 && \
+           systemctl --user show-environment >/dev/null 2>&1; then
+            mkdir -p "$ENVDIR"
+            printf '%s\n' "$ENVD_CONTENT" > "$ENVFILE"
+            ENV_FILES_WRITTEN="    • $ENVFILE
+"
+            echo "✓ systemd environment.d: $ENVFILE"
+        else
+            # Non-systemd session: environment.d is inert, use .profile.
+            upsert_shell_env "$HOME/.profile" "$EXPORT_LINES"
+            ENV_FILES_WRITTEN="    • $HOME/.profile
+"
+            echo "✓ Login profile: $HOME/.profile (no systemd user session)"
+        fi
+    else
+        upsert_shell_env "$HOME/.profile" "$EXPORT_LINES"
+        ENV_FILES_WRITTEN="    • $HOME/.profile
+"
+        echo "✓ Login profile: $HOME/.profile"
+    fi
+
+    # ── Strip blocks this version no longer manages ──
+    # Older versions wrote env vars into many files (shell rc files,
+    # .profile, .xprofile, environment.d, plasma-workspace/env).  Only
+    # skey-guarded content is removed; the rest of each file is kept.
+    case "$USER_SHELL" in
+        bash) remove_shell_env "$HOME/.bashrc" ;;
+        zsh)  remove_shell_env "$HOME/.zshrc" ;;
+        fish) remove_shell_env "$HOME/.config/fish/config.fish" ;;
+    esac
+    if [ "$USER_DE" = "KDE Plasma" ]; then
+        remove_shell_env "$HOME/.profile"
+        remove_shell_env "$HOME/.xprofile"
+        rm -f "$ENVFILE"
+    else
+        rm -f "$KDE_ENVFILE" "$KDE_ENVDIR/skey.sh"
+        if [ "$SESSION_TYPE" = "x11" ]; then
+            remove_shell_env "$HOME/.xprofile"
+            rm -f "$ENVFILE"
+        else
+            remove_shell_env "$HOME/.xprofile"
+            if command -v systemctl >/dev/null 2>&1 && \
+               systemctl --user show-environment >/dev/null 2>&1; then
+                # env.d is the managed file — .profile is legacy here.
+                remove_shell_env "$HOME/.profile"
+            fi
+        fi
+    fi
+    remove_shell_env "$HOME/.zprofile"
+    remove_shell_env "$HOME/.bash_profile"
+
+    echo ""
+    echo "✓ Environment variables were written to:"
+    printf '%s' "$ENV_FILES_WRITTEN"
+elif [ "$WRITE_ENV" != "1" ] && [ "$ENV_NEEDS_FIX" = "1" ]; then
+    # Declined (prompt or --no-env) while something actually needs fixing.
+    # Show exactly how to do it by hand for this session context.
+    echo "ℹ Skipping environment variable setup — Vietnamese input may not"
+    echo "  work in some apps until the variables are configured."
+    if [ -n "$ENV_FILES_TO_WRITE" ]; then
+        echo ""
+        echo "  To set them yourself:"
+        if [ "$USER_DE" = "KDE Plasma" ]; then
+            echo "    1. Create $KDE_ENVFILE with:"
+            printf '%s\n' "$KDE_CONTENT" | sed 's/^/         /'
+            echo "    2. chmod +x $KDE_ENVFILE"
+        elif [ "$SESSION_TYPE" = "wayland" ] && \
+             command -v systemctl >/dev/null 2>&1 && \
+             systemctl --user show-environment >/dev/null 2>&1; then
+            echo "    1. mkdir -p ${ENVFILE%/*}"
+            echo "    2. Create $ENVFILE with:"
+            printf '%s\n' "$ENVD_CONTENT" | sed 's/^/         /'
+        else
+            echo "    1. Append to $HOME/.profile:"
+            printf '%s\n' "$EXPORT_LINES" | sed 's/^/         /'
+        fi
+        echo "    3. Log out and back in."
+    else
+        echo ""
+        echo "  No files need changing — only the live session. To fix it now:"
+        echo "    systemctl --user set-environment \\"
+        echo "        GTK_IM_MODULE= QT_IM_MODULE= SDL_IM_MODULE="
+    fi
+    echo ""
+    echo "  Or re-run skey-setup and accept the prompt to configure them."
+fi
 
 # ── Stop ibus if it's running ──
 # On Ubuntu and many distros, ibus is the default IM and conflicts with
@@ -375,47 +919,83 @@ fi
 # systemd set-environment and dbus-update-activation-environment can
 # briefly disrupt D-Bus service registration.  Restart fcitx5 while
 # the session environment is stable, then update env vars afterwards.
+#
+# A restart only happens when something actually changed (profile,
+# config) or with -r: restarting an up-to-date daemon forces the
+# Wayland compositor reconnect, which can take many seconds — a no-op
+# run should stay fast.
+DID_RESTART=0
+NEED_RESTART=0
 if pidof fcitx5 > /dev/null 2>&1; then
-    echo "→ Stopping fcitx5..."
-    # Only the CURRENT user's processes: a root-owned fcitx5 (left over
-    # from a packaging context that started it via sudo) can't be killed
-    # by us and would make the wait loop below burn its full timeout.
-    OLD_PID=$(pgrep -u "$(id -u)" -x fcitx5)
-    kill $OLD_PID 2>/dev/null || true
+    if [ "$FORCE_RESTART" = "1" ] || [ "$PROFILE_WRITTEN" = "1" ] || [ "$CONFIG_WRITTEN" = "1" ]; then
+        NEED_RESTART=1
+        echo "→ Stopping fcitx5..."
+        # Remember the active IM — the reconnect below hands the new input
+        # context the FIRST group item (keyboard-us), and we restore this
+        # one afterwards so the user isn't left typing English.
+        PREV_IM=""
+        if command -v qdbus6 >/dev/null 2>&1; then
+            PREV_IM=$(qdbus6 org.fcitx.Fcitx5 /controller org.fcitx.Fcitx.Controller1.CurrentInputMethod 2>/dev/null || true)
+        elif command -v qdbus >/dev/null 2>&1; then
+            PREV_IM=$(qdbus org.fcitx.Fcitx5 /controller org.fcitx.Fcitx.Controller1.CurrentInputMethod 2>/dev/null || true)
+        fi
+        [ -n "$PREV_IM" ] || PREV_IM="skey-im"
+        # Only the CURRENT user's processes: a root-owned fcitx5 (left over
+        # from a packaging context that started it via sudo) can't be killed
+        # by us and would make the wait loop below burn its full timeout.
+        OLD_PID=$(pgrep -u "$(id -u)" -x fcitx5)
+        kill $OLD_PID 2>/dev/null || true
 
-    # Wait for old processes to fully exit (up to 5s each; kill -0 with
-    # several pids reports failure as soon as ONE is gone, so loop per pid)
-    for p in $OLD_PID; do
-        for i in $(seq 1 50); do
-            if ! kill -0 "$p" 2>/dev/null; then
-                break
-            fi
-            sleep 0.1
+        # Wait for old processes to fully exit (up to 5s each; kill -0 with
+        # several pids reports failure as soon as ONE is gone, so loop per pid)
+        for p in $OLD_PID; do
+            for i in $(seq 1 50); do
+                if ! kill -0 "$p" 2>/dev/null; then
+                    break
+                fi
+                sleep 0.1
+            done
         done
-    done
 
-    # Evict a root-owned fcitx5 too, best-effort via cached sudo (the
-    # package postinst does the same unconditionally as root).
-    sudo -n pkill -u root -x fcitx5 2>/dev/null || true
+        # Evict a root-owned fcitx5 too, best-effort via cached sudo (the
+        # package postinst does the same unconditionally as root).
+        sudo -n pkill -u root -x fcitx5 2>/dev/null || true
 
-    # Ensure stale socket files are cleaned up
-    rm -f /tmp/fcitx-socket-* 2>/dev/null || true
+        # Ensure stale socket files are cleaned up
+        rm -f /tmp/fcitx-socket-* 2>/dev/null || true
+    else
+        echo "✓ fcitx5 already running — configuration unchanged, skipping restart"
+    fi
+else
+    NEED_RESTART=1
 fi
 
-echo "→ Starting fcitx5 daemon..."
-# Redirect both streams: the daemon keeps stdio open across the fork —
-# under `systemd-run --wait --pipe` (package postinst) an open pipe FD
-# makes --pipe never see EOF.
-fcitx5 -d >/dev/null 2>&1
+if [ "$NEED_RESTART" = "1" ]; then
+    DID_RESTART=1
+    echo "→ Starting fcitx5 daemon..."
+    # Redirect both streams: the daemon keeps stdio open across the fork —
+    # under `systemd-run --wait --pipe` (package postinst) an open pipe FD
+    # makes --pipe never see EOF.
+    fcitx5 -d >/dev/null 2>&1
+fi
 
-# Poll for fcitx5 to be fully ready: D-Bus service registered + active.
-# fcitx5-remote returns 2 when active, 1 when inactive, 0 when not running.
+# Short early liveness poll only.  On Wayland, state 0 does NOT mean the
+# daemon is down: the controller reports NoState until the compositor
+# reconnects via zwp_input_method_v2, and that reconnect toggle happens
+# further down — a long poll here is pure waste.  On X11 a focused
+# window yields state 2 immediately.  The real readiness verdict is
+# given at the end of the script, after the reconnect steps.
+# fcitx5-remote returns 2 when active, 1 when inactive, 0 when no input
+# context exists (or the daemon is down).
 READY=0
-for i in $(seq 1 50); do
+EARLY_POLLS=15
+[ "$SESSION_TYPE" = "wayland" ] && EARLY_POLLS=5
+[ "$NEED_RESTART" = "1" ] || EARLY_POLLS=1
+for i in $(seq 1 $EARLY_POLLS); do
     if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
         # No session bus in this context (e.g. a `su -` packaging run):
         # fcitx5-remote cannot work at all, so liveness of our daemon is
-        # the best signal available.  Don't burn the 10s poll.
+        # the best signal available.
         if pgrep -u "$(id -u)" -x fcitx5 >/dev/null 2>&1; then
             READY=1
         fi
@@ -426,24 +1006,22 @@ for i in $(seq 1 50); do
         READY=1
         break
     fi
+    if [ "$SESSION_TYPE" = "wayland" ] && [ "$STATE" = "1" ]; then
+        # Wayland: state 2 (focused input context) cannot happen until
+        # the compositor reconnects via zwp_input_method_v2 — the
+        # reconnect toggle further down does exactly that.  State 1
+        # (daemon up and reachable on the bus) is the best early signal.
+        READY=1
+        break
+    fi
     if ! pgrep -u "$(id -u)" -x fcitx5 >/dev/null 2>&1; then
         # OUR daemon died right after start (e.g. DISPLAY lost through
         # `su -`, or a root-owned fcitx5 still holding the D-Bus name) —
-        # stop waiting, the full 10s poll just makes skey-setup look hung.
+        # stop waiting.
         break
     fi
     sleep 0.2
 done
-
-if [ "$READY" = "1" ]; then
-    echo "✓ fcitx5 started and active"
-else
-    echo "⚠ WARNING: fcitx5 may not be fully ready yet."
-    echo "  If input is not working, run: fcitx5 -r -d"
-    if ! pgrep -u "$(id -u)" -x fcitx5 >/dev/null 2>&1; then
-        echo "  (fcitx5 process exited immediately — X11 session: check DISPLAY)"
-    fi
-fi
 
 # ── Ensure fcitx5 starts automatically on login ──
 # XDG autostart is the universal mechanism respected by GNOME, KDE Plasma,
@@ -480,50 +1058,100 @@ else
     echo "✓ fcitx5 autostart already configured"
 fi
 
-# ── Now update session environment ──
-# fcitx5 is confirmed running before we touch env vars.
-
-# Source immediately for current shell session
-for var in $ENV_VARS; do
-    export "${var%%=*}=${var#*=}"
-done
-echo "✓ Env vars sourced for current session"
-
-# systemd user session — the most reliable method for systemd-based
-# compositors (KDE, GNOME, Sway).  Survives logout/login and is picked
-# up by all apps launched via the session, including flatpaks and AppImages.
-if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-    for var in $ENV_VARS; do
-        name="${var%%=*}"
-        value="${var#*=}"
-        systemctl --user set-environment "$name=$value" 2>/dev/null || true
-    done
-    # KDE Plasma Wayland: purge any stale QT_IM_MODULE injected by the
-    # distro's im-config default (Ubuntu: ibus) or an old setup.  Any
-    # QT_IM_MODULE makes Qt apps connect through a second fcitx5 frontend
-    # while KWin's zwp_input_method_v2 already serves them — the two input
-    # contexts fight over focus and surrounding-text updates land on the
-    # wrong one (Telegram lost tone marks / got downgraded to Uinput).
-    if [ "$USER_DE" = "KDE Plasma" ] && [ "$SESSION_TYPE" = "wayland" ]; then
-        systemctl --user unset-environment QT_IM_MODULE 2>/dev/null || true
-        dbus-update-activation-environment --systemd -- QT_IM_MODULE= \
-            2>/dev/null || true
+# ── Window managers: ensure fcitx5 autostart ──
+# XDG autostart doesn't apply to bare window managers (Sway, i3,
+# Hyprland, Niri) — add the launch line to the WM config instead.
+# Only APPEND the missing line; existing config content is never touched.
+WM_AUTOSTART=""
+case "$USER_DE" in
+    Sway)
+        WM_AUTOSTART="$HOME/.config/sway/config"
+        WM_LINE='exec --no-startup-id fcitx5 -d'
+        ;;
+    Hyprland)
+        WM_AUTOSTART="$HOME/.config/hypr/hyprland.conf"
+        WM_LINE='exec-once = fcitx5 -d'
+        ;;
+    Niri)
+        WM_AUTOSTART="$HOME/.config/niri/config.kdl"
+        WM_LINE='spawn-at-startup "fcitx5 -d"'
+        ;;
+esac
+# i3 has no session socket to detect — fall back to config presence.
+if [ -z "$WM_AUTOSTART" ] && [ -f "$HOME/.config/i3/config" ]; then
+    WM_AUTOSTART="$HOME/.config/i3/config"
+    WM_LINE='exec --no-startup-id fcitx5 -d'
+fi
+if [ -n "$WM_AUTOSTART" ]; then
+    if [ -f "$WM_AUTOSTART" ] && grep -qF "$WM_LINE" "$WM_AUTOSTART" 2>/dev/null; then
+        echo "✓ fcitx5 autostart already in: $WM_AUTOSTART"
+    else
+        mkdir -p "$(dirname "$WM_AUTOSTART")"
+        [ -f "$WM_AUTOSTART" ] || : > "$WM_AUTOSTART"
+        printf '\n%s\n' "$WM_LINE" >> "$WM_AUTOSTART"
+        echo "✓ fcitx5 autostart added to: $WM_AUTOSTART"
     fi
-    echo "✓ systemd user environment set"
 fi
 
-# D-Bus activation environment — pushes vars into the session D-Bus so GUI
-# apps (launched by KWin, GNOME Shell, etc.) inherit them immediately
-# without needing logout/login.  dbus-update-activation-environment is
-# part of dbus-user-session (installed by default on KDE/GNOME).
-if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+# ── Now update session environment ──
+# fcitx5 is confirmed running before we touch env vars.  Only when env
+# setup was consented to — never on a machine whose files were already
+# correct (that state needs no touching) or where the user declined.
+if [ "$WRITE_ENV" = "1" ]; then
+    # Source immediately for current shell session
     for var in $ENV_VARS; do
-        name="${var%%=*}"
-        value="${var#*=}"
-        export "$name=$value"
+        export "${var%%=*}=${var#*=}"
     done
-    dbus-update-activation-environment --systemd $ENV_VARS 2>/dev/null || true
-    echo "✓ D-Bus activation environment updated"
+    echo "✓ Env vars sourced for current session"
+
+    # systemd user session — the most reliable method for systemd-based
+    # compositors (KDE, GNOME, Sway).  Survives logout/login and is picked
+    # up by all apps launched via the session, including flatpaks and AppImages.
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+        for var in $ENV_VARS; do
+            name="${var%%=*}"
+            value="${var#*=}"
+            systemctl --user set-environment "$name=$value" 2>/dev/null || true
+        done
+        # KDE Plasma Wayland: purge any stale GTK_IM_MODULE /
+        # QT_IM_MODULE / SDL_IM_MODULE injected by the distro's im-config
+        # default (Ubuntu: ibus) or an old skey-setup version.  KWin's
+        # zwp_input_method_v2 already serves these toolkits natively — any
+        # of the variables makes the app connect through a second fcitx5
+        # frontend and the two input contexts fight over focus
+        # (Telegram lost tone marks / got downgraded to Uinput).
+        if [ "$USER_DE" = "KDE Plasma" ] && [ "$SESSION_TYPE" = "wayland" ]; then
+            # The systemd user manager's BASE environment keeps whatever
+            # pam_systemd imported at login (SDDM sources /etc/profile
+            # before the PAM session opens, so an old profile.d script or
+            # distro defaults land there).  unset-environment only clears
+            # the override layer and would re-expose those base values —
+            # the merged view must show EMPTY, so set an empty override
+            # instead.  The state-detection check above only flags
+            # non-empty values.
+            dbus-update-activation-environment --systemd -- \
+                GTK_IM_MODULE= QT_IM_MODULE= SDL_IM_MODULE= \
+                2>/dev/null || true
+            systemctl --user set-environment \
+                GTK_IM_MODULE= QT_IM_MODULE= SDL_IM_MODULE= \
+                2>/dev/null || true
+        fi
+        echo "✓ systemd user environment set"
+    fi
+
+    # D-Bus activation environment — pushes vars into the session D-Bus so GUI
+    # apps (launched by KWin, GNOME Shell, etc.) inherit them immediately
+    # without needing logout/login.  dbus-update-activation-environment is
+    # part of dbus-user-session (installed by default on KDE/GNOME).
+    if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+        for var in $ENV_VARS; do
+            name="${var%%=*}"
+            value="${var#*=}"
+            export "$name=$value"
+        done
+        dbus-update-activation-environment --systemd $ENV_VARS 2>/dev/null || true
+        echo "✓ D-Bus activation environment updated"
+    fi
 fi
 
 # ── Wayland: disable classicui (XEmbed tray broken on Wayland) ──
@@ -556,7 +1184,11 @@ fi
 # tear down and re-establish the zwp_input_method_v2 connection, but
 # short enough that most apps don't notice the IM was gone and keep
 # their text input registration intact.
-if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+#
+# Only relevant when fcitx5 was actually restarted above: on a no-op run
+# the compositor connection is untouched and must stay that way (this
+# whole dance is what made repeated runs slow).
+if [ "$DID_RESTART" = "1" ] && [ "$XDG_SESSION_TYPE" = "wayland" ]; then
         case "${XDG_CURRENT_DESKTOP:-}" in
             KDE|kde|KDE-Plasma|plasma)
                 QDBUS="qdbus6"
@@ -570,6 +1202,13 @@ if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
                 # that never re-commit (STerm, ...) stay dead until the app
                 # is restarted, while Chromium apps recover on their own and
                 # mask the race.
+                if [ -z "$($QDBUS org.fcitx.Fcitx5 /controller \
+                        org.fcitx.Fcitx.Controller1.AddonForIM skey-im 2>/dev/null)" ]; then
+                    # The skey engine is the last addon to load and can
+                    # take up to ~10s — say so, otherwise this wait looks
+                    # like a hang.
+                    echo "→ Waiting for the skey addon to load..."
+                fi
                 for _ in $(seq 1 40); do
                     if [ -n "$($QDBUS org.fcitx.Fcitx5 /controller \
                             org.fcitx.Fcitx.Controller1.AddonForIM skey-im 2>/dev/null)" ]; then
@@ -583,6 +1222,23 @@ if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
                 $QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set \
                     org.kde.kwin.VirtualKeyboard enabled true 2>/dev/null || true
                 echo "✓ KWin virtual keyboard reconnected to fcitx5"
+                # KWin re-establishes its input context asynchronously —
+                # sometimes it takes several seconds (the focused app must
+                # re-register its text input first), and occasionally the
+                # first toggle races it.  Wait for the context to actually
+                # appear, re-toggling when needed, BEFORE restoring the IM
+                # (which needs the context to exist).
+                for _ in $(seq 1 20); do
+                    [ -n "$($QDBUS org.fcitx.Fcitx5 /controller \
+                            org.fcitx.Fcitx.Controller1.CurrentInputMethod 2>/dev/null)" ] && break
+                    $QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set \
+                        org.kde.kwin.VirtualKeyboard enabled false 2>/dev/null || true
+                    sleep 0.1
+                    $QDBUS org.kde.KWin /VirtualKeyboard org.freedesktop.DBus.Properties.Set \
+                        org.kde.kwin.VirtualKeyboard enabled true 2>/dev/null || true
+                    sleep 0.5
+                done
+                restore_im "${PREV_IM:-skey-im}"
                 ;;
             GNOME|gnome|GNOME-Classic|X-Cinnamon|Cinnamon|cinnamon)
                 # GNOME Shell / Cinnamon: re-apply input sources to force
@@ -598,6 +1254,7 @@ if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
                         sleep 0.1
                         gsettings set org.gnome.desktop.input-sources sources "$CURRENT_SRC" 2>/dev/null || true
                         echo "✓ GNOME/Cinnamon input sources refreshed"
+                        restore_im "${PREV_IM:-skey-im}"
                     fi
                 fi
                 ;;
@@ -608,6 +1265,45 @@ if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
                 ;;
         esac
     fi
+
+# ── Final readiness check ──
+# Given here, after the compositor reconnect steps above: by now the
+# skey addon has had time to load and the controller is on the bus, so
+# this passes instantly on a healthy machine.  Still not ready here is
+# a real problem worth the warning.  Skipped on no-op runs — the daemon
+# was left untouched.
+if [ "$DID_RESTART" = "1" ]; then
+    if [ "$READY" != "1" ]; then
+        echo "→ Waiting for fcitx5 to be ready..."
+        for i in $(seq 1 50); do
+            if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+                if pgrep -u "$(id -u)" -x fcitx5 >/dev/null 2>&1; then
+                    READY=1
+                fi
+                break
+            fi
+            STATE=$(fcitx5-remote 2>/dev/null || echo "0")
+            if [ "$STATE" = "2" ] || { [ "$SESSION_TYPE" = "wayland" ] && [ "$STATE" = "1" ]; }; then
+                READY=1
+                break
+            fi
+            if ! pgrep -u "$(id -u)" -x fcitx5 >/dev/null 2>&1; then
+                break
+            fi
+            sleep 0.2
+        done
+    fi
+
+    if [ "$READY" = "1" ]; then
+        echo "✓ fcitx5 started and active"
+    else
+        echo "⚠ WARNING: fcitx5 may not be fully ready yet."
+        echo "  If input is not working, run: fcitx5 -r -d"
+        if ! pgrep -u "$(id -u)" -x fcitx5 >/dev/null 2>&1; then
+            echo "  (fcitx5 process exited immediately — X11 session: check DISPLAY)"
+        fi
+    fi
+fi
 
 # ── Uinput server (systemd service) ──
 # The uinput server injects BackSpace/Unicode keystrokes via /dev/uinput.
@@ -759,6 +1455,13 @@ echo ""
 echo "Done! skey is now the default Vietnamese input method."
 echo "Toggle with Ctrl+Space."
 echo ""
+
+if [ "$ENV_NEEDS_FIX" = "1" ] && [ "$WRITE_ENV" != "1" ]; then
+    echo "⚠  Environment variables were NOT configured (skipped)."
+    echo "   Vietnamese input may not work in apps until you re-run"
+    echo "   skey-setup and accept the prompt to write them."
+    echo ""
+fi
 
 # Per-distro install / update instructions
 case "$DISTRO" in

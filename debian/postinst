@@ -66,13 +66,13 @@ case "$1" in
                     # KillMode=none: skey-setup starts fcitx5 -d, which
                     # daemonizes inside the transient unit.
                     systemd-run --user --machine="${SUDO_USER}@.host" \
-                        --wait --pipe -p KillMode=none /usr/bin/skey-setup \
+                        --wait --pipe -p KillMode=none /usr/bin/skey-setup -r \
                         2>/dev/null || true
                 else
                     # Fallback: no user systemd manager.  Pass DISPLAY
                     # through — `su -` resets the env and fcitx5 dies
                     # instantly without it on X11.
-                    su - "$SUDO_USER" -c "DISPLAY='${DISPLAY:-:0}' skey-setup" 2>/dev/null || true
+                    su - "$SUDO_USER" -c "DISPLAY='${DISPLAY:-:0}' skey-setup -r" 2>/dev/null || true
                 fi
             fi
         else

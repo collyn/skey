@@ -11,8 +11,6 @@ set(SKEY_SYSUSERS_DIR "/usr/lib/sysusers.d" CACHE PATH
     "sysusers.d snippet install directory")
 set(SKEY_UINPUT_USER "skey_uinput" CACHE STRING
     "System user the uinput server runs as (sysusers.d, udev ACL rule, service unit)")
-set(SKEY_PROFILE_D_DIR "/etc/profile.d" CACHE PATH
-    "profile.d snippet install directory")
 
 # SVG icons
 # apps/ — app launcher and IM list popup
@@ -143,7 +141,3 @@ configure_file(
 )
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/fcitx5-skey-settings.desktop"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/applications")
-
-# Environment variables for X11/Wayland (sourced by login shells and display managers)
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/fcitx5-skey.sh"
-    DESTINATION "${SKEY_PROFILE_D_DIR}")
