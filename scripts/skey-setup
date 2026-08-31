@@ -174,13 +174,25 @@ upsert_shell_env() {
     local begin_marker="# >>> fcitx5-skey >>>"
     local end_marker="# <<< fcitx5-skey <<<"
 
+    # The end marker must land on its own line.  The fish block ends with
+    # `end` and no trailing newline — appending the marker directly produced
+    # `end# <<< fcitx5-skey <<<`, which fish parses as a here-string
+    # redirection and refuses to load config.fish.  Strip one trailing
+    # newline here; the printf below re-adds exactly one.
+    content="${content%$'\n'}"
+
     if [ -f "$file" ]; then
         # Remove ALL existing guarded blocks (handles duplicates from any source).
         local tmpfile
         tmpfile=$(mktemp)
+        # Match the end marker anywhere in the line (index > 0), not just on
+        # a whole line: an older version left a mangled fish block
+        # (`end# <<< fcitx5-skey <<<`).  A whole-line match would never see
+        # it, so skip would stay 1 and everything after the begin marker —
+        # the rest of the user's config — would be deleted on re-run.
         awk -v begin="$begin_marker" -v end="$end_marker" '
-            $0 == begin { skip=1; next }
-            $0 == end   { skip=0; next }
+            $0 == begin     { skip=1; next }
+            index($0, end) > 0 { skip=0; next }
             !skip { print }
         ' "$file" > "$tmpfile"
         # Strip trailing blank lines to prevent accumulation across runs,
@@ -190,14 +202,14 @@ upsert_shell_env() {
             echo "" >> "$tmpfile"
         fi
         echo "$begin_marker" >> "$tmpfile"
-        printf '%s' "$content" >> "$tmpfile"
+        printf '%s\n' "$content" >> "$tmpfile"
         echo "$end_marker" >> "$tmpfile"
         mv "$tmpfile" "$file"
     else
         # Create new file with just the block.
         {
             echo "$begin_marker"
-            printf '%s' "$content"
+            printf '%s\n' "$content"
             echo "$end_marker"
         } > "$file"
     fi
