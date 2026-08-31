@@ -821,9 +821,35 @@ if [ "$WRITE_ENV" = "1" ] && [ -n "$ENV_FILES_TO_WRITE" ]; then
     printf '%s' "$ENV_FILES_WRITTEN"
 elif [ "$WRITE_ENV" != "1" ] && [ "$ENV_NEEDS_FIX" = "1" ]; then
     # Declined (prompt or --no-env) while something actually needs fixing.
+    # Show exactly how to do it by hand for this session context.
     echo "ℹ Skipping environment variable setup — Vietnamese input may not"
     echo "  work in some apps until the variables are configured."
-    echo "  Re-run skey-setup and accept the prompt to configure them."
+    if [ -n "$ENV_FILES_TO_WRITE" ]; then
+        echo ""
+        echo "  To set them yourself:"
+        if [ "$USER_DE" = "KDE Plasma" ]; then
+            echo "    1. Create $KDE_ENVFILE with:"
+            printf '%s\n' "$KDE_CONTENT" | sed 's/^/         /'
+            echo "    2. chmod +x $KDE_ENVFILE"
+        elif [ "$SESSION_TYPE" = "wayland" ] && \
+             command -v systemctl >/dev/null 2>&1 && \
+             systemctl --user show-environment >/dev/null 2>&1; then
+            echo "    1. mkdir -p ${ENVFILE%/*}"
+            echo "    2. Create $ENVFILE with:"
+            printf '%s\n' "$ENVD_CONTENT" | sed 's/^/         /'
+        else
+            echo "    1. Append to $HOME/.profile:"
+            printf '%s\n' "$EXPORT_LINES" | sed 's/^/         /'
+        fi
+        echo "    3. Log out and back in."
+    else
+        echo ""
+        echo "  No files need changing — only the live session. To fix it now:"
+        echo "    systemctl --user set-environment \\"
+        echo "        GTK_IM_MODULE= QT_IM_MODULE= SDL_IM_MODULE="
+    fi
+    echo ""
+    echo "  Or re-run skey-setup and accept the prompt to configure them."
 fi
 
 # ── Stop ibus if it's running ──
@@ -1030,6 +1056,41 @@ AUTOSTARTEOF
     echo "✓ fcitx5 autostart enabled ($AUTOSTART_DIR/fcitx5.desktop)"
 else
     echo "✓ fcitx5 autostart already configured"
+fi
+
+# ── Window managers: ensure fcitx5 autostart ──
+# XDG autostart doesn't apply to bare window managers (Sway, i3,
+# Hyprland, Niri) — add the launch line to the WM config instead.
+# Only APPEND the missing line; existing config content is never touched.
+WM_AUTOSTART=""
+case "$USER_DE" in
+    Sway)
+        WM_AUTOSTART="$HOME/.config/sway/config"
+        WM_LINE='exec --no-startup-id fcitx5 -d'
+        ;;
+    Hyprland)
+        WM_AUTOSTART="$HOME/.config/hypr/hyprland.conf"
+        WM_LINE='exec-once = fcitx5 -d'
+        ;;
+    Niri)
+        WM_AUTOSTART="$HOME/.config/niri/config.kdl"
+        WM_LINE='spawn-at-startup "fcitx5 -d"'
+        ;;
+esac
+# i3 has no session socket to detect — fall back to config presence.
+if [ -z "$WM_AUTOSTART" ] && [ -f "$HOME/.config/i3/config" ]; then
+    WM_AUTOSTART="$HOME/.config/i3/config"
+    WM_LINE='exec --no-startup-id fcitx5 -d'
+fi
+if [ -n "$WM_AUTOSTART" ]; then
+    if [ -f "$WM_AUTOSTART" ] && grep -qF "$WM_LINE" "$WM_AUTOSTART" 2>/dev/null; then
+        echo "✓ fcitx5 autostart already in: $WM_AUTOSTART"
+    else
+        mkdir -p "$(dirname "$WM_AUTOSTART")"
+        [ -f "$WM_AUTOSTART" ] || : > "$WM_AUTOSTART"
+        printf '\n%s\n' "$WM_LINE" >> "$WM_AUTOSTART"
+        echo "✓ fcitx5 autostart added to: $WM_AUTOSTART"
+    fi
 fi
 
 # ── Now update session environment ──
