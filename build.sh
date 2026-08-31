@@ -116,10 +116,10 @@ if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
         # KillMode=none: skey-setup starts fcitx5 -d, which daemonizes
         # inside the transient unit.
         systemd-run --user --machine="${SUDO_USER}@.host" \
-            --wait --pipe -p KillMode=none skey-setup 2>/dev/null || true
+            --wait --pipe -p KillMode=none skey-setup -r 2>/dev/null || true
     else
         # Fallback: no user systemd manager — bare su with X11 passthrough.
-        su - "$SUDO_USER" -c "DISPLAY='${DISPLAY:-:0}' XAUTHORITY='${XAUTHORITY:-}' skey-setup" 2>/dev/null || true
+        su - "$SUDO_USER" -c "DISPLAY='${DISPLAY:-:0}' XAUTHORITY='${XAUTHORITY:-}' skey-setup -r" 2>/dev/null || true
     fi
 else
     # Installed from a root session (no SUDO_USER): restart any running
@@ -138,7 +138,7 @@ if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
     if command -v systemctl >/dev/null 2>&1; then
         # Stop all running instances of the service
         systemctl stop "fcitx5-skey-uinput-server@*.service" 2>/dev/null || true
-        
+
         # Disable all enabled instances
         for link in /etc/systemd/system/multi-user.target.wants/fcitx5-skey-uinput-server@*; do
             if [ -L "$link" ]; then
@@ -146,6 +146,26 @@ if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
                 systemctl disable "$instance" 2>/dev/null || true
             fi
         done
+    fi
+fi
+
+# ── Remove per-user config on removal (not upgrade/deconfigure) ──
+# Mirror of debian/prerm: skey-setup -u strips the env-var blocks from
+# shell rc files, removes skey-im from the fcitx5 profile and cleans the
+# live session.  It must run as the USER (HOME + session D-Bus resolve
+# correctly) and while /usr/bin/skey-setup still exists — prerm is the
+# right hook.  Purge also runs prerm with $1="remove".
+if [ "$1" = "remove" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] \
+   && command -v skey-setup >/dev/null 2>&1; then
+    if command -v systemd-run >/dev/null 2>&1 && \
+       systemd-run --user --machine="${SUDO_USER}@.host" \
+           --wait --pipe true 2>/dev/null; then
+        # KillMode=none: skey-setup -u restarts fcitx5 -d, which
+        # daemonizes inside the transient unit.
+        systemd-run --user --machine="${SUDO_USER}@.host" \
+            --wait --pipe -p KillMode=none skey-setup -u 2>/dev/null || true
+    else
+        su - "$SUDO_USER" -c "skey-setup -u" 2>/dev/null || true
     fi
 fi
 PRERM

@@ -98,12 +98,25 @@ post_install() {
                 systemctl enable "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
                 systemctl start "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
             fi
-            su -s /bin/bash "$CONSOLE_USER" -c skey-setup >/dev/null 2>&1 || :
+            su -s /bin/bash "$CONSOLE_USER" -c "skey-setup -r" >/dev/null 2>&1 || :
         fi
     fi
 }
 
 pre_remove() {
+    # $1 is empty on a real removal (it holds the new version on upgrade).
+    # skey-setup -u strips the env-var blocks from shell rc files, removes
+    # skey-im from the fcitx5 profile and cleans the live session.  It
+    # must run as the USER (HOME + session D-Bus resolve correctly) and
+    # while /usr/bin/skey-setup still exists — pre_remove is the hook.
+    if [ -z "$1" ] && command -v loginctl >/dev/null 2>&1 && \
+       command -v skey-setup >/dev/null 2>&1; then
+        CONSOLE_USER=$(loginctl list-sessions --no-legend 2>/dev/null | \
+            awk '$4=="seat0" {print $3}' | sort -u | head -1)
+        if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+            su -s /bin/bash "$CONSOLE_USER" -c "skey-setup -u" >/dev/null 2>&1 || :
+        fi
+    fi
     if command -v systemctl >/dev/null 2>&1; then
         systemctl stop "fcitx5-skey-uinput-server@*.service" 2>/dev/null || :
     fi

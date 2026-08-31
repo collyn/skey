@@ -251,9 +251,18 @@ skey-setup
 
 Script `skey-setup` sẽ:
 1. Thêm SKey vào fcitx5 profile (ActiveByDefault, ShareInputState)
-2. Export biến môi trường `GTK_IM_MODULE`, `QT_IM_MODULE`, `XMODIFIERS`, `SDL_IM_MODULE`, `GLFW_IM_MODULE`
+2. Kiểm tra biến môi trường `GTK_IM_MODULE`, `QT_IM_MODULE`, `XMODIFIERS`, `SDL_IM_MODULE`, `GLFW_IM_MODULE` — chỉ ghi khi thiếu/sai, và hỏi trước (liệt kê file sẽ sửa; bạn đồng ý mới ghi). Nếu biến đã đúng thì không đụng gì. Chỉ ghi **đúng 1 file chuẩn** theo ngữ cảnh:
+   - **KDE Plasma** → `~/.config/plasma-workspace/env/fcitx5-skey.sh`
+   - **Wayland khác** (GNOME, Sway…) → `~/.config/environment.d/fcitx5-skey.conf`
+   - **X11 khác** → `~/.profile`
+   - **KDE Plasma Wayland**: theo [khuyến nghị của fcitx5 wiki](https://fcitx-im.org/wiki/Using_Fcitx_5_on_Wayland), không set `GTK_IM_MODULE` / `QT_IM_MODULE` / `SDL_IM_MODULE` — KWin phục vụ các toolkit này natively qua text-input-v2/v3; chỉ set `XMODIFIERS` (app XWayland) và `GLFW_IM_MODULE`.
 3. Trên Wayland + KDE/GNOME: tự động reconnect compositor virtual keyboard
 4. Enable + start `fcitx5-skey-uinput-server@$USER` service (cần cho chế độ Uinput)
+
+Tuỳ chọn:
+- `skey-setup -y` / `--yes`: ghi biến môi trường không cần hỏi (chỉ khi thiếu/sai)
+- `skey-setup --no-env`: bỏ qua toàn bộ phần biến môi trường, chỉ làm các bước còn lại (profile, restart fcitx5, uinput server...)
+- `skey-setup -u` / `--uninstall`: gỡ cấu hình skey — xóa các block biến môi trường khỏi shell rc files (giữ nguyên phần còn lại của file), xóa `skey-im` khỏi fcitx5 profile, tắt uinput server. Khi gỡ package bằng apt/dnf/pacman, bước này tự chạy (prerm / %preun / pre_remove).
 
 ### Khắc phục sự cố sau khi cài đặt / cập nhật
 

@@ -196,6 +196,32 @@ if [ "$1" = "0" ]; then
     if [ -x /usr/bin/systemctl ]; then
         /usr/bin/systemctl stop "fcitx5-skey-uinput-server@*.service" 2>/dev/null || :
     fi
+
+    # ── Remove per-user config on removal (not upgrade) ──
+    # skey-setup -u strips the env-var blocks from shell rc files, removes
+    # skey-im from the fcitx5 profile and cleans the live session.  It
+    # must run as the USER (HOME + session D-Bus resolve correctly) and
+    # while /usr/bin/skey-setup still exists — %preun is the right hook.
+    CONSOLE_USER=""
+    if [ -x /usr/bin/loginctl ]; then
+        CONSOLE_USER=$(/usr/bin/loginctl list-sessions --no-legend 2>/dev/null | \
+            awk '$4=="seat0" {print $3}' | sort -u | head -1)
+    fi
+    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && \
+       [ -x /usr/bin/skey-setup ]; then
+        if [ -x /usr/bin/systemd-run ] && \
+           /usr/bin/systemd-run --user --machine="${CONSOLE_USER}@.host" \
+               --wait --pipe true 2>/dev/null; then
+            # KillMode=none: skey-setup -u restarts fcitx5 -d, which
+            # daemonizes inside the transient unit.
+            /usr/bin/systemd-run --user --machine="${CONSOLE_USER}@.host" \
+                --wait --pipe -p KillMode=none /usr/bin/skey-setup -u \
+                2>/dev/null || :
+        else
+            su -s /bin/bash "$CONSOLE_USER" -c "/usr/bin/skey-setup -u" \
+                >/dev/null 2>&1 || :
+        fi
+    fi
 fi
 
 %postun
@@ -281,7 +307,6 @@ fi
 %config(noreplace) /etc/polkit-1/rules.d/60-fcitx5-skey-uinput.rules
 %{_prefix}/lib/udev/rules.d/99-skey-uinput.rules
 %{_prefix}/lib/sysusers.d/skey-uinput.conf
-%config %{_sysconfdir}/profile.d/fcitx5-skey.sh
 
 %changelog
 * Sat Aug 01 2026 Huy <collyn094@gmail.com> - 0.4.4-1
