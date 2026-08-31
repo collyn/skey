@@ -676,7 +676,15 @@ register_env_file() {  # $1=path $2=expected content $3=guarded|owned
 if [ "$USER_DE" = "KDE Plasma" ]; then
     register_env_file "$KDE_ENVFILE" "$KDE_CONTENT" owned
 elif [ "$SESSION_TYPE" = "wayland" ]; then
-    register_env_file "$ENVFILE" "$ENVD_CONTENT" owned
+    if command -v systemctl >/dev/null 2>&1 && \
+       systemctl --user show-environment >/dev/null 2>&1; then
+        register_env_file "$ENVFILE" "$ENVD_CONTENT" owned
+    else
+        # Non-systemd session (OpenRC/runit/…): environment.d is a
+        # systemd mechanism and would be inert — fall back to .profile
+        # so the display manager / login shell still picks the vars up.
+        register_env_file "$HOME/.profile" "$EXPORT_BLOCK" guarded
+    fi
 else
     register_env_file "$HOME/.profile" "$EXPORT_BLOCK" guarded
 fi
@@ -757,11 +765,20 @@ if [ "$WRITE_ENV" = "1" ] && [ -n "$ENV_FILES_TO_WRITE" ]; then
 "
         echo "✓ KDE session env: $KDE_ENVFILE"
     elif [ "$SESSION_TYPE" = "wayland" ]; then
-        mkdir -p "$ENVDIR"
-        printf '%s\n' "$ENVD_CONTENT" > "$ENVFILE"
-        ENV_FILES_WRITTEN="    • $ENVFILE
+        if command -v systemctl >/dev/null 2>&1 && \
+           systemctl --user show-environment >/dev/null 2>&1; then
+            mkdir -p "$ENVDIR"
+            printf '%s\n' "$ENVD_CONTENT" > "$ENVFILE"
+            ENV_FILES_WRITTEN="    • $ENVFILE
 "
-        echo "✓ systemd environment.d: $ENVFILE"
+            echo "✓ systemd environment.d: $ENVFILE"
+        else
+            # Non-systemd session: environment.d is inert, use .profile.
+            upsert_shell_env "$HOME/.profile" "$EXPORT_LINES"
+            ENV_FILES_WRITTEN="    • $HOME/.profile
+"
+            echo "✓ Login profile: $HOME/.profile (no systemd user session)"
+        fi
     else
         upsert_shell_env "$HOME/.profile" "$EXPORT_LINES"
         ENV_FILES_WRITTEN="    • $HOME/.profile
@@ -788,8 +805,12 @@ if [ "$WRITE_ENV" = "1" ] && [ -n "$ENV_FILES_TO_WRITE" ]; then
             remove_shell_env "$HOME/.xprofile"
             rm -f "$ENVFILE"
         else
-            remove_shell_env "$HOME/.profile"
             remove_shell_env "$HOME/.xprofile"
+            if command -v systemctl >/dev/null 2>&1 && \
+               systemctl --user show-environment >/dev/null 2>&1; then
+                # env.d is the managed file — .profile is legacy here.
+                remove_shell_env "$HOME/.profile"
+            fi
         fi
     fi
     remove_shell_env "$HOME/.zprofile"
