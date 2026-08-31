@@ -24,6 +24,8 @@ protected:
 private:
     QString formatModifiers(Qt::KeyboardModifiers mods, int keyCode);
     QString toDisplayString(const QString &fcitx5Combo) const;
+    /// Show the current value, or "(không có)" when unbound.
+    void refreshDisplay();
     std::string fcitx5Value_;
 };
 

@@ -303,10 +303,12 @@ std::string readTriggerKey() {
 
     std::string line;
     bool inTriggerSection = false;
+    bool sawSection = false;
     while (std::getline(in, line)) {
         rtrim(line);
         if (line == "[Hotkey/TriggerKeys]") {
             inTriggerSection = true;
+            sawSection = true;
             continue;
         }
         if (inTriggerSection) {
@@ -322,13 +324,20 @@ std::string readTriggerKey() {
             }
         }
     }
+    // Section exists but has no 0= key: the trigger key was unbound in the
+    // GUI.  Distinguish from "no config at all" (fresh install → default).
+    if (sawSection) return "";
     return "Control+space";
 }
 
 bool writeTriggerKey(const std::string &fcitx5Key) {
+    // Unbinding is an empty value: drop the 0= line entirely instead of
+    // writing "0=" — fcitx5 treats an empty [Hotkey/TriggerKeys] as "no
+    // trigger key", and readTriggerKey() maps that state back to "".
     std::string path = fcitx5ConfigPath();
     std::ifstream in(path);
     if (!in.is_open()) {
+        if (fcitx5Key.empty()) return true;  // nothing bound, nothing to write
         // No user-level fcitx5 config yet — NixOS keeps the system config
         // in /etc/xdg/fcitx5 (environment.etc), so ~/.config/fcitx5/config
         // often doesn't exist.  Create it with just the trigger key instead
@@ -358,7 +367,7 @@ bool writeTriggerKey(const std::string &fcitx5Key) {
         if (inTriggerSection) {
             if (!trimmed.empty() && trimmed[0] == '[') {
                 // Next section — insert 0= if not yet written
-                if (!wrote) {
+                if (!wrote && !fcitx5Key.empty()) {
                     lines.push_back("0=" + fcitx5Key);
                     wrote = true;
                 }
@@ -371,8 +380,9 @@ bool writeTriggerKey(const std::string &fcitx5Key) {
                 std::string key = trimmed.substr(0, eq);
                 rtrim(key);
                 if (key == "0") {
-                    lines.push_back("0=" + fcitx5Key);
-                    wrote = true;
+                    if (!fcitx5Key.empty())
+                        lines.push_back("0=" + fcitx5Key);
+                    wrote = true;  // empty value: line removed (unbound)
                     continue;
                 }
             }
@@ -383,11 +393,11 @@ bool writeTriggerKey(const std::string &fcitx5Key) {
     }
 
     // EOF, still inside the trigger section: append the key.
-    if (inTriggerSection && !wrote) {
+    if (inTriggerSection && !wrote && !fcitx5Key.empty()) {
         lines.push_back("0=" + fcitx5Key);
     }
     // EOF, no [Hotkey/TriggerKeys] section at all: append one.
-    if (!inTriggerSection && !wrote) {
+    if (!inTriggerSection && !wrote && !fcitx5Key.empty()) {
         lines.push_back("");
         lines.push_back("[Hotkey/TriggerKeys]");
         lines.push_back("0=" + fcitx5Key);

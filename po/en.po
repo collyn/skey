@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: fcitx5-skey 0.7.9\n"
 "Report-Msgid-Bugs-To: https://github.com/collyn/skey/issues\n"
-"POT-Creation-Date: 2026-08-28 18:50+0700\n"
+"POT-Creation-Date: 2026-08-31 16:20+0700\n"
 "PO-Revision-Date: 2026-08-28 18:36+0700\n"
 "Last-Translator: Skey contributors\n"
 "Language-Team: English\n"
@@ -274,16 +274,16 @@ msgid "Ngôn ngữ:"
 msgstr "Language:"
 
 #: src/settings/general_tab.cpp:67
-msgid "Nhấn tổ hợp phím để thay đổi"
-msgstr "Press a key combination to change"
+msgid "Nhấn tổ hợp phím để thay đổi, Backspace để gỡ bỏ"
+msgstr "Press a key combination to change, Backspace to unbind"
 
 #: src/settings/general_tab.cpp:68
 msgid "Phím chuyển bộ gõ:"
 msgstr "Toggle input method key:"
 
 #: src/settings/general_tab.cpp:72
-msgid "Phím tắt để mở menu chế độ (mặc định: `)"
-msgstr "Shortcut to open the mode menu (default: `)"
+msgid "Phím tắt để mở menu chế độ (mặc định: `), Backspace để gỡ bỏ"
+msgstr "Shortcut to open the mode menu (default: `), Backspace to unbind"
 
 #: src/settings/general_tab.cpp:73
 msgid "Phím menu chế độ:"
@@ -334,13 +334,17 @@ msgstr "Show preedit"
 msgid "Ghi log debug"
 msgstr "Debug logging"
 
-#: src/settings/hotkey_edit.cpp:9
+#: src/settings/hotkey_edit.cpp:32
 msgid "Nhấn tổ hợp phím..."
 msgstr "Press a key combination..."
 
-#: src/settings/hotkey_edit.cpp:114 src/settings/hotkey_edit.cpp:126
-msgid "⌨ Nhấn phím mới..."
-msgstr "⌨ Press a new key..."
+#: src/settings/hotkey_edit.cpp:149 src/settings/hotkey_edit.cpp:156
+msgid "⌨ Nhấn phím mới... (Backspace: gỡ, Esc: hủy)"
+msgstr "⌨ Press a new key... (Backspace: unbind, Esc: cancel)"
+
+#: src/settings/hotkey_edit.cpp:174
+msgid "(không có)"
+msgstr "(none)"
 
 #: src/settings/info_tab.cpp:100
 msgid "SKey - Phiên bản: "
