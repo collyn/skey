@@ -164,6 +164,46 @@ static int queryProcessId(DBusConnection *bus, const char *sender,
     return pid;
 }
 
+// Resolve the pid of the focused app's AT-SPI connection via the a11y
+// registry (org.a11y.Bus on the session bus) instead of round-tripping
+// to the app.  GetProcessId on browser-UI elements can stall AT-SPI,
+// and non-web apps (which skip GetProcessId) otherwise leave pid=-1,
+// forcing the engine into full /proc scans — which can misclassify.
+// The registry answers from its own bookkeeping, so it cannot stall.
+static int queryConnectionPid(const char *sender) {
+    DBusError err;
+    dbus_error_init(&err);
+    DBusConnection *session = dbus_bus_get(DBUS_BUS_SESSION, &err);
+    if (!session || dbus_error_is_set(&err)) {
+        dbus_error_free(&err);
+        return -1;
+    }
+    DBusMessage *msg = dbus_message_new_method_call(
+        "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus",
+        "GetConnectionUnixProcessID");
+    if (!msg) {
+        dbus_connection_unref(session);
+        return -1;
+    }
+    dbus_message_append_args(msg, DBUS_TYPE_STRING, &sender,
+                             DBUS_TYPE_INVALID);
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
+        session, msg, 500, &err);
+    dbus_message_unref(msg);
+
+    int pid = -1;
+    if (reply && !dbus_error_is_set(&err)) {
+        dbus_int32_t p = -1;
+        if (dbus_message_get_args(reply, &err, DBUS_TYPE_INT32, &p,
+                                  DBUS_TYPE_INVALID))
+            pid = static_cast<int>(p);
+        dbus_message_unref(reply);
+    }
+    dbus_error_free(&err);
+    dbus_connection_unref(session);
+    return pid;
+}
+
 static int queryRole(DBusConnection *bus, const char *sender,
                      const char *path) {
     DBusError err;
@@ -791,16 +831,19 @@ void A11yMonitor::threadFunc() {
                     int role = queryRole(bus, sender, path);
                     bool hasDocWeb = hasDocumentWebAncestor(
                         bus, sender, path);
-                    // Only query GetProcessId for web content.  Browser-UI
-                    // elements (the Chromium omnibox) can stall AT-SPI
-                    // calls, and on X11 the autosuggest polling shares
-                    // this monitor thread — a stuck reply here delays the
-                    // polling snapshot and breaks autofill detection.
-                    // Non-web-doc apps (terminals...) fall back to the
-                    // full /proc scan in the engine.
+                    // Only query the app directly for web content.
+                    // Browser-UI elements (the Chromium omnibox) can
+                    // stall AT-SPI calls, and on X11 the autosuggest
+                    // polling shares this monitor thread — a stuck reply
+                    // here delays the polling snapshot and breaks autofill
+                    // detection.  For everything else resolve the pid
+                    // through the a11y registry on the session bus (no app
+                    // round-trip, cannot stall) so the engine gets a
+                    // verified pid instead of falling back to full
+                    // /proc scans.
                     int procId = hasDocWeb
                                      ? queryProcessId(bus, sender, path)
-                                     : -1;
+                                     : queryConnectionPid(sender);
                     focusProcessId_.store(procId,
                                           std::memory_order_relaxed);
                     bool isUI = !hasDocWeb;

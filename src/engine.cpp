@@ -364,6 +364,53 @@ static bool isChromiumBrowser(const std::string &prog) {
   return false;
 }
 
+// Check a single binary's own path for Chromium/Electron markers.
+// Deliberately process-own only: ancestor chains are not evidence — an
+// app launched from an Electron terminal must not inherit the parent's
+// classification (observed with zen: the ancestor walk misclassified the
+// Firefox fork as Chromium and its bare-caps sticky locked it to Uinput).
+// Renamed Electron shells are caught by chrome-sandbox /
+// chrome_crashpad_handler next to their own binary.
+static bool exeHasChromiumMarkers(const std::string &exe) {
+  std::string lower = exe;
+  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+  if (lower.find("electron") != std::string::npos ||
+      lower.find("chrome") != std::string::npos ||
+      lower.find("chromium") != std::string::npos) {
+    return true;
+  }
+  size_t lastSlash = exe.rfind('/');
+  if (lastSlash != std::string::npos) {
+    std::string exeDir = exe.substr(0, lastSlash);
+    if (access((exeDir + "/chrome-sandbox").c_str(), F_OK) == 0 ||
+        access((exeDir + "/chrome_crashpad_handler").c_str(), F_OK) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Firefox-family marker: Gecko browsers always ship libxul.so next to
+// their main binary — a binary-layout check instead of hardcoding app
+// names (covers zen, librewolf, ...).
+static bool processHasGeckoMarker(pid_t pid) {
+  char exeBuf[PATH_MAX];
+  std::string exePath = "/proc/" + std::to_string(pid) + "/exe";
+  ssize_t len = readlink(exePath.c_str(), exeBuf, sizeof(exeBuf) - 1);
+  if (len > 0) {
+    exeBuf[len] = '\0';
+    std::string exe(exeBuf);
+    size_t lastSlash = exe.rfind('/');
+    if (lastSlash != std::string::npos) {
+      std::string exeDir = exe.substr(0, lastSlash);
+      if (access((exeDir + "/libxul.so").c_str(), F_OK) == 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Matches Chromium-family browsers AND Electron-based apps.
 // Electron apps share Chromium's multi-process architecture and need the
 // same BackSpace→commit timing adjustments.  Use this for everything
@@ -426,74 +473,20 @@ static bool isChromiumBasedApp(const std::string &prog) {
       }
     }
 
-    // Found matching process — check ancestry for Chromium markers
-    int ppid = 0;
-    for (int depth = 0; depth < 10; depth++) {
-      std::string checkPid = (depth == 0) ? pidStr : std::to_string(ppid);
-
-      // Check exe symlink
-      char exeBuf[PATH_MAX];
-      std::string exePath = "/proc/" + checkPid + "/exe";
-      ssize_t len = readlink(exePath.c_str(), exeBuf, sizeof(exeBuf) - 1);
-      if (len > 0) {
-        exeBuf[len] = '\0';
-        std::string exe(exeBuf);
-        std::string lower = exe;
-        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-        if (lower.find("electron") != std::string::npos ||
-            lower.find("chrome") != std::string::npos ||
-            lower.find("chromium") != std::string::npos) {
-          closedir(dir);
-          return true;
-        }
-
-        // chrome-sandbox in the same directory = Electron app
-        size_t lastSlash = exe.rfind('/');
-        if (lastSlash != std::string::npos) {
-          std::string exeDir = exe.substr(0, lastSlash);
-          if (access((exeDir + "/chrome-sandbox").c_str(), F_OK) == 0) {
-            closedir(dir);
-            return true;
-          }
-          if (access((exeDir + "/chrome_crashpad_handler").c_str(), F_OK) ==
-              0) {
-            closedir(dir);
-            return true;
-          }
-        }
-      }
-
-      // Walk up to parent
-      if (depth == 0) {
-        std::string statPath = "/proc/" + pidStr + "/stat";
-        std::ifstream statFile(statPath);
-        if (!statFile.is_open())
-          break;
-        std::string statLine;
-        std::getline(statFile, statLine);
-        size_t rparen = statLine.rfind(')');
-        if (rparen == std::string::npos)
-          break;
-        std::istringstream iss(statLine.substr(rparen + 2));
-        std::string state;
-        iss >> state >> ppid;
-      } else {
-        std::string pstatPath = "/proc/" + std::to_string(ppid) + "/stat";
-        std::ifstream pstatFile(pstatPath);
-        if (!pstatFile.is_open())
-          break;
-        std::string pstatLine;
-        std::getline(pstatFile, pstatLine);
-        size_t rparen = pstatLine.rfind(')');
-        if (rparen == std::string::npos)
-          break;
-        std::istringstream piss(pstatLine.substr(rparen + 2));
-        std::string state;
-        int newPpid;
-        piss >> state >> newPpid;
-        if (newPpid <= 1 || newPpid == ppid)
-          break;
-        ppid = newPpid;
+    // Found matching process — check its OWN binary for markers.
+    // Ancestors are deliberately NOT examined: launch origin is not
+    // evidence of the binary's nature — a Firefox fork started from an
+    // Electron terminal was misclassified as Chromium by the ancestor
+    // walk (zen).  Renamed Electron shells are caught by chrome-sandbox
+    // / chrome_crashpad_handler next to their own binary.
+    char exeBuf[PATH_MAX];
+    std::string exePath = "/proc/" + pidStr + "/exe";
+    ssize_t exeLen = readlink(exePath.c_str(), exeBuf, sizeof(exeBuf) - 1);
+    if (exeLen > 0) {
+      exeBuf[exeLen] = '\0';
+      if (exeHasChromiumMarkers(exeBuf)) {
+        closedir(dir);
+        return true;
       }
     }
   }
@@ -535,47 +528,18 @@ static bool isTerminalAppName(const std::string &prog) {
 // directory ships chrome-sandbox / chrome_crashpad_handler (renamed
 // Electron shells like antigravity).  Bounded to 10 generations.
 static bool processHasChromiumMarkers(pid_t pid) {
-  int cur = static_cast<int>(pid);
-  for (int depth = 0; depth < 10; ++depth) {
-    std::string checkPid = std::to_string(cur);
-    char exeBuf[PATH_MAX];
-    std::string exePath = "/proc/" + checkPid + "/exe";
-    ssize_t len = readlink(exePath.c_str(), exeBuf, sizeof(exeBuf) - 1);
-    if (len > 0) {
-      exeBuf[len] = '\0';
-      std::string lower(exeBuf);
-      std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-      if (lower.find("electron") != std::string::npos ||
-          lower.find("chrome") != std::string::npos ||
-          lower.find("chromium") != std::string::npos) {
-        return true;
-      }
-      size_t lastSlash = lower.rfind('/');
-      if (lastSlash != std::string::npos) {
-        std::string exeDir = lower.substr(0, lastSlash);
-        if (access((exeDir + "/chrome-sandbox").c_str(), F_OK) == 0 ||
-            access((exeDir + "/chrome_crashpad_handler").c_str(), F_OK) ==
-                0) {
-          return true;
-        }
-      }
+  // The pid has already been verified to belong to the app (comm match
+  // in a11yAppPid) — only its OWN binary is evidence.  Ancestors are
+  // not checked: an app launched from an Electron terminal must not
+  // inherit the parent's classification (zen false-positive).
+  char exeBuf[PATH_MAX];
+  std::string exePath = "/proc/" + std::to_string(pid) + "/exe";
+  ssize_t len = readlink(exePath.c_str(), exeBuf, sizeof(exeBuf) - 1);
+  if (len > 0) {
+    exeBuf[len] = '\0';
+    if (exeHasChromiumMarkers(exeBuf)) {
+      return true;
     }
-    std::string statPath = "/proc/" + checkPid + "/stat";
-    std::ifstream statFile(statPath);
-    if (!statFile.is_open())
-      break;
-    std::string statLine;
-    std::getline(statFile, statLine);
-    size_t rparen = statLine.rfind(')');
-    if (rparen == std::string::npos)
-      break;
-    std::istringstream iss(statLine.substr(rparen + 2));
-    std::string state;
-    int ppid = 0;
-    iss >> state >> ppid;
-    if (ppid <= 1 || ppid == cur)
-      break;
-    cur = ppid;
   }
   return false;
 }
@@ -1821,12 +1785,17 @@ bool SKeyState::isFirefoxOrSnap() const {
     cachedIsFirefoxOrSnap_ = 1;
     return true;
   }
+  // Firefox forks (zen, ...) are recognized by their binary layout:
+  // Gecko browsers ship libxul.so next to the main executable.  They
+  // share Firefox's reset-after-forwarded-key behavior and need the
+  // same state-preservation guards.
   // Detect Snap-packaged apps: prefer the a11y-reported PID (one readlink,
   // no scan) and fall back to the full /proc scan.
   if (!prog.empty()) {
     int pid = a11yAppPid();
     if (pid > 0) {
-      cachedIsFirefoxOrSnap_ = processIsSnapPid(pid) ? 1 : 0;
+      cachedIsFirefoxOrSnap_ =
+          (processHasGeckoMarker(pid) || processIsSnapPid(pid)) ? 1 : 0;
       return cachedIsFirefoxOrSnap_ == 1;
     }
     DIR *dir = opendir("/proc");
@@ -1851,6 +1820,15 @@ bool SKeyState::isFirefoxOrSnap() const {
             buf[len] = '\0';
             std::string exe(buf);
             if (exe.find("/snap/") != std::string::npos) {
+              closedir(dir);
+              cachedIsFirefoxOrSnap_ = 1;
+              return true;
+            }
+            // Gecko fork: libxul.so next to the main binary
+            size_t lastSlash = exe.rfind('/');
+            if (lastSlash != std::string::npos &&
+                access((exe.substr(0, lastSlash) + "/libxul.so").c_str(),
+                       F_OK) == 0) {
               closedir(dir);
               cachedIsFirefoxOrSnap_ = 1;
               return true;
