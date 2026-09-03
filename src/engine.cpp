@@ -1442,6 +1442,10 @@ static constexpr uint64_t kChromiumStrongHints =
 /// updated (some apps re-sync their text-input state) or the AT-SPI2 focus
 /// event lands and provides the web-editor signal (see a11yFreshWebEditor).
 static constexpr uint64_t kBareCapsDecisionWindowUsec = 2000000; // 2s
+// Surr-mode lazy re-attach: a reset arriving within this window after our
+// own keystroke is treated as the app's reaction (zen fires one after
+// every key), not a focus change.
+static constexpr uint64_t kSurrReattachWindowUsec = 500000; // 500ms
 
 bool SKeyState::a11yFreshWebEditor() const {
   auto *mon = engine_->a11yMonitor();
@@ -1912,6 +1916,8 @@ void SKeyState::activate() {
   // apps — the focused X11 window may have changed.
   appNameAttempted_ = false;
   resolvedProgram_.clear();
+  // Fresh focus: no tentative word state carries over.
+  surrResetTentative_ = false;
 
   // Reactivate after spurious cycle: cancel the genuine-loss timer.
   if (addrBarExpectCycle_) {
@@ -2610,6 +2616,8 @@ void SKeyState::deactivate() {
                << " seenBs=" << seenUinputBackspaces_ << " pendingCommit='"
                << pendingUinputCommit_ << "'";
   lastDeactivateTime_ = now(CLOCK_MONOTONIC);
+  // Genuine focus loss: any Surr tentative word state is gone with it.
+  surrResetTentative_ = false;
   forceFlushDeferredCommit();
   // Stop a11y snapshot polling — re-enabled on the next addrbar key.
   if (auto *mon = engine_->a11yMonitor()) {
@@ -2725,6 +2733,21 @@ void SKeyState::reset() {
     uinputKeyForwarded_ = false;
     return;
   }
+  // Surr-mode lazy re-attach: some apps (zen) fire a reset right after
+  // every keystroke — the app's reaction to our commit, not a focus
+  // change.  If this reset lands within the re-attach window of our own
+  // last key, keep the word state (viet_, lastWord, committedLen_, mode
+  // cache); the next key re-validates against the surrounding text (see
+  // keyEvent) before continuing.  A genuine focus change arrives later,
+  // or is caught by the surrounding-text mismatch.
+  if (useSurroundingText() && !viet_.getComposed().empty() &&
+      !hasDeferredCommitPending() && surrLastKeyUsec_ > 0 &&
+      now(CLOCK_MONOTONIC) - surrLastKeyUsec_ <= kSurrReattachWindowUsec) {
+    surrResetTentative_ = true;
+    SKEY_DEBUG() << "Reset: Surr tentative keep '" << viet_.getComposed()
+                 << "'";
+    return;
+  }
   if (hasDeferredCommitPending()) {
     SKEY_DEBUG() << "Reset: keeping deferred commit";
   }
@@ -2764,8 +2787,43 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
+  surrLastKeyUsec_ = now(CLOCK_MONOTONIC);
+
   // Refresh per-app mode in case IC is shared across apps
   refreshAppMode();
+
+  // Lazy re-attach validation: a Surr-mode reset kept the word state
+  // (see reset()) — confirm or discard it on this first key.  Real
+  // surrounding text wins when available: the word must sit immediately
+  // before the cursor.  Empty/invalid surrounding (zen URL bar pushes
+  // none) trusts the time-based arm done in reset().
+  if (surrResetTentative_) {
+    surrResetTentative_ = false;
+    bool keep = useSurroundingText();
+    if (keep) {
+      const auto &surrounding = ic_->surroundingText();
+      if (surrounding.isValid() && !surrounding.text().empty()) {
+        const std::string &word = viet_.getComposed();
+        const std::string &text = surrounding.text();
+        size_t cursor = surrounding.cursor();
+        size_t wordChars = utf8::length(word);
+        size_t cursorBytes = utf8::ncharByteLength(text.begin(), cursor);
+        keep = cursor >= wordChars && cursorBytes >= word.size() &&
+               text.compare(cursorBytes - word.size(), word.size(), word) ==
+                   0;
+      }
+    }
+    if (!keep) {
+      SKEY_DEBUG() << "Reset: tentative discarded, surrounding mismatch";
+      viet_.reset();
+      committedLen_ = 0;
+      clearLastWord();
+      clearUI();
+    } else {
+      SKEY_DEBUG() << "Reset: tentative confirmed, continuing '"
+                   << viet_.getComposed() << "'";
+    }
+  }
 
   // Deferred mode decision (bare Chromium caps): re-evaluate at word
   // boundaries so a content-type update that arrived after focus (e.g.
