@@ -38,7 +38,7 @@ fcitx5_add_i18n_definition()
 #             tree stays clean.  skey_engine.h is also taken from the source.
 #   CI:     no SKEY_ENGINE_SOURCE_DIR
 #           → clones the pinned tag from GitHub (used by GitHub Actions).
-set(SKEY_ENGINE_VERSION "v0.1.23")
+set(SKEY_ENGINE_VERSION "v0.1.24")
 set(SKEY_ENGINE_DIR "${CMAKE_CURRENT_BINARY_DIR}/skey-engine")
 # Point to a prebuilt libskey_engine.a to skip the cargo build entirely —
 # for build sandboxes without network access (e.g. NixOS/nixpkgs), where the
