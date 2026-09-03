@@ -1481,14 +1481,19 @@ bool SKeyState::a11yBrowserNonEntry() const {
   if (!isChromiumCached() || !isChromiumBrowser(appProgram()))
     return false;
   auto *mon = engine_->a11yMonitor();
-  // A text-entry ROLE is not enough: Chrome (>=150) reports the Google
-  // Sheets cell editor as role ENTRY with editable=0 and NO line state,
-  // while the Facebook chat textarea also has editable=0 but carries
-  // single-line.  Require at least one of editable / line-state.
+  // Only the Google Sheets signature counts as "not a text entry": a
+  // TEXT-ENTRY role with editable=0 and NO line state.  Chrome (>=150)
+  // reports the Sheets cell editor that way (role ENTRY), while real
+  // editors carry single-line / multi-line or editable=1.
+  // Non-text-entry ROLES (button, panel...) are deliberately NOT treated
+  // as non-entry: Chromium UI (vivaldi) fires transient button focus
+  // events WHILE the user types in a real entry — honoring them flipped
+  // Surr→Uinput at every word boundary mid-session and made typing slow.
+  // Clicking a genuinely non-editable widget types nothing anyway; the
+  // next entry focus re-snapshots before any composition starts.
   return mon && mon->isFocusSnapshotFresh(5000000) &&
-         (!mon->isTextEntryFocused() ||
-          (!mon->isFocusEditable() && !mon->isFocusSingleLine() &&
-           !mon->isFocusMultiline()));
+         mon->isTextEntryFocused() && !mon->isFocusEditable() &&
+         !mon->isFocusSingleLine() && !mon->isFocusMultiline();
 }
 
 bool SKeyState::a11yChromiumTerminal() const {
