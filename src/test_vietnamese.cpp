@@ -663,19 +663,23 @@ int main(int argc, char **argv) {
              skey::InputMethod::Telex, "bcdd", "bcđ",
              "ddFreeStyle protects: no vowel + has đ → keep"});
 
-    // dd marker protects regardless of vowels (engine-level
-    // has_vn_markers) — intentional đ composition is never restored.
+    // dd after a CONSONANT is an intentional đ (engine-level
+    // has_vn_markers) — the composition is never restored.
     runTest({cat, "avcdd → avcđ (dd marker protected)",
              skey::InputMethod::Telex, "avcdd", "avcđ",
              "dd signals intentional đ — auto-restore skips", false, false,
              true});
 
-    runTest({cat, "add → ađ (dd marker protected)", skey::InputMethod::Telex,
-             "add", "ađ", "dd signals intentional đ — auto-restore skips",
-             false, false, true});
+    // English dd after a VOWEL is not an intentional đ — auto-restore
+    // returns the raw word (address, add, odd, ladder).
+    runTest({cat, "add → add (English dd after vowel restored)",
+             skey::InputMethod::Telex, "add", "add",
+             "dd after a vowel is English — auto-restore keeps raw", false,
+             false, true});
 
-    runTest({cat, "addr → ảđ (dd marker protected)", skey::InputMethod::Telex,
-             "addr", "ảđ", "dd→đ then r=hỏi on a; marker blocks restore", false,
+    runTest({cat, "addr → addr (English dd after vowel restored)",
+             skey::InputMethod::Telex, "addr", "addr",
+             "dd after a vowel is English — auto-restore keeps raw", false,
              false, true});
 
     // nđm: ddFreeStyle protected (no vowel, has đ)
@@ -729,14 +733,19 @@ int main(int argc, char **argv) {
              "digits are ignored unless VNI mode; 'abc' stays, 123 ignored "
              "individually"});
 
-    // "address" — dd marker protects the đ during composition; the
-    // trailing double tone keys trigger P5, which strips every tone
-    // key after the first vowel (including hỏi 'r') and commits the
-    // raw base + final 's'.
-    runTest({cat, "address → addes (dd marker + P5 tone strip)",
-             skey::InputMethod::Telex, "address", "addes",
-             "dd→đ protected; P5 strips r,s,s after first vowel", false, false,
-             true});
+    // "address" — English dd after a vowel: auto-restore keeps the raw
+    // word at every intermediate stage, so no tone/undo path fires.
+    runTest({cat, "address → address (English dd after vowel restored)",
+             skey::InputMethod::Telex, "address", "address",
+             "dd after a vowel is English — auto-restore keeps raw", false,
+             false, true});
+
+    // Unikey-style English typing: "doww" toggles the ơ off and the rest
+    // of the word must compose literally — not corrupt into "đôwnla".
+    runTest({cat, "dowwnload → download (Unikey-style toggle-off word)",
+             skey::InputMethod::Telex, "dowwnload", "download",
+             "doww→dow un-hooks; after toggle-off transform keys are literal",
+             false, false, true});
 
     // "reboot" — oo→ô transform, real-time restore works.
     runTest({cat, "reboot → reboot (real-time restore)",

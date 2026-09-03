@@ -276,6 +276,12 @@ private:
     bool reclaimReady_ = false;     // True after BS pressed while idle
     bool sepAlreadyDeleted_ = false; // Separator already deleted by first BS
     bool wordWasBackspaced_ = false; // Word deleted by backspace, block reclaim
+    // Lazy re-attach (zen's per-key reset storm in Surr mode): reset()
+    // that arrives right after our own keystroke is the app's reaction,
+    // not a focus change — keep the word state and validate on the next
+    // key against the surrounding text.
+    bool surrResetTentative_ = false;
+    uint64_t surrLastKeyUsec_ = 0; // last keyEvent time (CLOCK_MONOTONIC)
     bool addrBarDidFullReplace_ = false; // FullReplace done, reset engine on commit
     bool addrBarHadFirstWord_ = false;  // First word already done, block fullReplace
     bool addrBarKeepState_ = false;     // Keep-state active, reset engine on BS
