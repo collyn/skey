@@ -1448,6 +1448,16 @@ static constexpr uint64_t kBareCapsDecisionWindowUsec = 2000000; // 2s
 static constexpr uint64_t kSurrReattachWindowUsec = 500000; // 500ms
 
 bool SKeyState::a11yFreshWebEditor() const {
+  // Browsers only.  The signal means "the user just clicked a real web
+  // editor (Facebook chat)" — in standalone Chromium apps it is not
+  // trustworthy: the IDE terminal (xterm.js) now reports webDoc=1 + ENTRY
+  // + single-line, indistinguishable from a real editor, and hijacked
+  // bare-caps decisions into SurroundingText (observed in antigravity-ide:
+  // terminal typed in Surr mode).  The IDE chat composer never fires a11y
+  // events anyway — it upgrades to Surr through the caps-based
+  // focusSawContentHints_ path.
+  if (!isChromiumCached() || !isChromiumBrowser(appProgram()))
+    return false;
   auto *mon = engine_->a11yMonitor();
   if (!mon || !mon->isRunning())
     return false;
@@ -1481,16 +1491,36 @@ bool SKeyState::a11yBrowserNonEntry() const {
   if (!isChromiumCached() || !isChromiumBrowser(appProgram()))
     return false;
   auto *mon = engine_->a11yMonitor();
-  // Only the Google Sheets signature counts as "not a text entry": a
-  // TEXT-ENTRY role with editable=0 and NO line state.  Chrome (>=150)
-  // reports the Sheets cell editor that way (role ENTRY), while real
-  // editors carry single-line / multi-line or editable=1.
-  // Non-text-entry ROLES (button, panel...) are deliberately NOT treated
-  // as non-entry: Chromium UI (vivaldi) fires transient button focus
-  // events WHILE the user types in a real entry — honoring them flipped
-  // Surr→Uinput at every word boundary mid-session and made typing slow.
-  // Clicking a genuinely non-editable widget types nothing anyway; the
-  // next entry focus re-snapshots before any composition starts.
+  // Broad check — the activation-time safe default.  A fresh snapshot
+  // that is NOT a real text entry (button/panel/list) means surrounding-
+  // text editing cannot be assumed: either the user clicked a non-editable
+  // widget, or the snapshot is stale and still describes the previously
+  // focused app when focus just moved (clicking into Google Sheets from
+  // another app).  Uinput is the safe default until typing proves
+  // otherwise (the first key re-evaluates against real caps).
+  // A text-entry ROLE alone is not enough: Chrome (>=150) reports the
+  // Google Sheets cell editor as role ENTRY with editable=0 and NO line
+  // state, while the Facebook chat textarea also has editable=0 but
+  // carries single-line.
+  return mon && mon->isFocusSnapshotFresh(5000000) &&
+         (!mon->isTextEntryFocused() ||
+          (!mon->isFocusEditable() && !mon->isFocusSingleLine() &&
+           !mon->isFocusMultiline()));
+}
+
+bool SKeyState::a11yBrowserNonEntryNarrow() const {
+  if (!isChromiumCached() || !isChromiumBrowser(appProgram()))
+    return false;
+  auto *mon = engine_->a11yMonitor();
+  // Narrow check — for the mid-session keyEvent re-eval trigger only.
+  // Only the Google Sheets signature counts: text-entry role + editable=0
+  // + no line state.  Non-text-entry roles are UI noise here: Chromium
+  // (vivaldi) fires transient button focus events WHILE the user types
+  // in a real entry — honoring them flipped Surr→Uinput at every word
+  // boundary mid-session and made typing slow.  This must NOT replace
+  // a11yBrowserNonEntry() in detectAutoMode: at activation the snapshot
+  // may be stale from the previous app, where the broad check is the
+  // Uinput-safe default.
   return mon && mon->isFocusSnapshotFresh(5000000) &&
          mon->isTextEntryFocused() && !mon->isFocusEditable() &&
          !mon->isFocusSingleLine() && !mon->isFocusMultiline();
@@ -2844,7 +2874,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // mode would carry over — force a re-evaluation when the a11y monitor
   // shows the focus is not on a text entry and the cached mode isn't
   // Uinput yet.
-  bool a11yNonEntry = a11yBrowserNonEntry();
+  bool a11yNonEntry = a11yBrowserNonEntryNarrow();
   bool a11yTerminal = a11yChromiumTerminal();
   if (viet_.getRawInput().empty() &&
       (modeDecisionPending_ || a11yFreshWebEditor() ||

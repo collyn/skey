@@ -87,6 +87,7 @@ private:
     /// (Chrome, Brave...).  Standalone Chromium/Electron apps are excluded:
     /// their bare-caps path already maps to SurroundingText.
     bool a11yBrowserNonEntry() const;
+    bool a11yBrowserNonEntryNarrow() const;
     /// Integrated terminal in a standalone Chromium app (see engine.cpp).
     bool a11yChromiumTerminal() const;
     /// Record a surrounding-text failure.  Returns true when the IC should
