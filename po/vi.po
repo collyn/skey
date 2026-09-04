@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: fcitx5-skey 0.7.9\n"
 "Report-Msgid-Bugs-To: https://github.com/collyn/skey/issues\n"
-"POT-Creation-Date: 2026-08-31 16:20+0700\n"
+"POT-Creation-Date: 2026-09-04 14:24+0700\n"
 "PO-Revision-Date: 2026-08-28 18:36+0700\n"
 "Last-Translator: Skey contributors\n"
 "Language-Team: Vietnamese\n"
@@ -16,36 +16,42 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: src/settings/app_modes_tab.cpp:32
+#: src/settings/app_modes_tab.cpp:42
+msgid "Tìm ứng dụng…"
+msgstr "Tìm ứng dụng…"
+
+#: src/settings/app_modes_tab.cpp:45
 msgid ""
 "Cấu hình chế độ xuất riêng cho từng ứng dụng.\n"
-"Tên ứng dụng là tên file thực thi (vd: firefox, tabby, code)."
+"Tên ứng dụng là tên file thực thi (vd: firefox, tabby, code).\n"
+"Gõ để lọc danh sách."
 msgstr ""
 "Cấu hình chế độ xuất riêng cho từng ứng dụng.\n"
-"Tên ứng dụng là tên file thực thi (vd: firefox, tabby, code)."
+"Tên ứng dụng là tên file thực thi (vd: firefox, tabby, code).\n"
+"Gõ để lọc danh sách."
 
-#: src/settings/app_modes_tab.cpp:41
+#: src/settings/app_modes_tab.cpp:55
 msgid "Tên ứng dụng"
 msgstr "Tên ứng dụng"
 
-#: src/settings/app_modes_tab.cpp:42
+#: src/settings/app_modes_tab.cpp:56
 msgid "Chế độ xuất"
 msgstr "Chế độ xuất"
 
-#: src/settings/app_modes_tab.cpp:43 src/settings/app_modes_tab.cpp:110
+#: src/settings/app_modes_tab.cpp:57 src/settings/app_modes_tab.cpp:322
 #: src/settings/dict_tab.cpp:190 src/settings/macro_tab.cpp:68
 msgid "Xóa"
 msgstr "Xóa"
 
-#: src/settings/app_modes_tab.cpp:55
+#: src/settings/app_modes_tab.cpp:70
 msgid "Thêm ứng dụng"
 msgstr "Thêm ứng dụng"
 
-#: src/settings/app_modes_tab.cpp:66
+#: src/settings/app_modes_tab.cpp:81
 msgid "Thanh địa chỉ Chromium:"
 msgstr "Thanh địa chỉ Chromium:"
 
-#: src/settings/app_modes_tab.cpp:68
+#: src/settings/app_modes_tab.cpp:83
 msgid ""
 "Chế độ gõ cho thanh địa chỉ Chrome/Edge/Brave.\n"
 "Không ảnh hưởng đến nội dung trang web."
@@ -53,31 +59,31 @@ msgstr ""
 "Chế độ gõ cho thanh địa chỉ Chrome/Edge/Brave.\n"
 "Không ảnh hưởng đến nội dung trang web."
 
-#: src/settings/app_modes_tab.cpp:77
+#: src/settings/app_modes_tab.cpp:92
 msgid "Không gõ tiếng Việt"
 msgstr "Không gõ tiếng Việt"
 
-#: src/settings/app_modes_tab.cpp:93
+#: src/settings/app_modes_tab.cpp:305
 msgid "(IBus app)"
 msgstr "(IBus app)"
 
-#: src/settings/app_modes_tab.cpp:153
+#: src/settings/app_modes_tab.cpp:395
 msgid "Thêm ứng dụng mới"
 msgstr "Thêm ứng dụng mới"
 
-#: src/settings/app_modes_tab.cpp:161
+#: src/settings/app_modes_tab.cpp:403
 msgid "vd: firefox, tabby, code"
 msgstr "vd: firefox, tabby, code"
 
-#: src/settings/app_modes_tab.cpp:162
+#: src/settings/app_modes_tab.cpp:404
 msgid "Tên ứng dụng:"
 msgstr "Tên ứng dụng:"
 
-#: src/settings/app_modes_tab.cpp:169 src/settings/general_tab.cpp:41
+#: src/settings/app_modes_tab.cpp:411 src/settings/general_tab.cpp:41
 msgid "Chế độ xuất:"
 msgstr "Chế độ xuất:"
 
-#: src/settings/app_modes_tab.cpp:172 src/settings/dict_tab.cpp:49
+#: src/settings/app_modes_tab.cpp:414 src/settings/dict_tab.cpp:49
 #: src/settings/dict_tab.cpp:114 src/settings/dict_tab.cpp:124
 #: src/settings/dict_tab.cpp:248 src/settings/dict_tab.cpp:269
 #: src/settings/dict_tab.cpp:283 src/settings/macro_tab.cpp:96
@@ -86,7 +92,7 @@ msgstr "Chế độ xuất:"
 msgid "Thêm"
 msgstr "Thêm"
 
-#: src/settings/app_modes_tab.cpp:173
+#: src/settings/app_modes_tab.cpp:415
 msgid "Hủy"
 msgstr "Hủy"
 
