@@ -2384,8 +2384,8 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   // etc.) so they don't reach the app prematurely.
   // In the address bar, Chrome's spurious focus cycles can cause X11 to
   // re-deliver the trigger key — drop it to avoid double-processing.
-  if (!keyEvent.key().check(FcitxKey_BackSpace) ||
-      expectedUinputBackspaces_ == 0) {
+  bool isTrackedKey = keyEvent.key().check(FcitxKey_BackSpace);
+  if (!isTrackedKey || expectedUinputBackspaces_ == 0) {
     auto sym = keyEvent.key().sym();
 
     // Escape sent by our own uinput server (flags=1) must pass
@@ -2396,7 +2396,10 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
       SKEY_DEBUG() << "Uinput: pass Escape to app (autocomplete dismiss)";
       return true; // pass through (no filterAndAccept)
     }
-    if (inChromiumAddressBar() && addrBarLastTriggerKey_ != 0 &&
+    // Re-delivery guard (all Chromium-family, not just the address bar):
+    // Tabby/Electron re-delivers forwarded keys after post-commit focus
+    // cycles — "đây" → "đyy" without this.
+    if (isChromiumCached() && addrBarLastTriggerKey_ != 0 &&
         now(CLOCK_MONOTONIC) < addrBarTriggerDeadline_ &&
         sym == static_cast<uint32_t>(addrBarLastTriggerKey_)) {
       SKEY_DEBUG() << "Uinput: drop re-delivered trigger key 0x" << std::hex
@@ -2472,18 +2475,14 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     minDelay = timing.commitDelayMinUsec;
     maxDelay = timing.commitDelayMaxUsec;
     if (isChromiumCached()) {
+      // Electron shares the browser-level timing (1.5×, 30ms cap on X11):
+      // the extra 2× headroom only added latency without fixing the
+      // Electron commit-channel drops (the internal key-processing delay
+      // can't be out-waited — see the skill).  Occasional mid-word loss
+      // in Electron is accepted in exchange for smooth typing.
       multiplier *= timing.chromiumDelayFactor;
       minDelay = static_cast<uint64_t>(minDelay * timing.chromiumDelayFactor);
       maxDelay = static_cast<uint64_t>(maxDelay * timing.chromiumDelayFactor);
-      if (!isChromiumBrowser(appProgram())) {
-        // Electron: the renderer pipeline lags further behind the anchor
-        // loopback than a full browser — restore the pre-retune headroom
-        // (3.0× total, 60ms cap on X11) that antigravity needs for fast
-        // typing ("chào" → "cho" at the browser-level 1.5×).
-        multiplier *= 2.0;
-        minDelay *= 2;
-        maxDelay *= 2;
-      }
     } else if (isWayland()) {
       // Native Wayland apps: the commit delay scales with the number of
       // deletions (see kWaylandNativeCommitDelayPerBsUsec) — keep a small
@@ -3011,11 +3010,14 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
-  // Enable the a11y snapshot polling only while typing in the Chromium
-  // address bar on X11 (see A11yMonitor::setPollingEnabled) — polling
-  // any other focused entry is wasted DBus traffic.
+  // Enable the a11y snapshot polling while typing in the Chromium address
+  // bar OR any Chromium-family app on X11 (see A11yMonitor::setPollingEnabled)
+  // — Electron (Tabby) needs the focused-entry text for post-commit
+  // verification: its D-Bus commits reach the renderer late and can be
+  // overtaken by the next forwarded key ("đây" → "đyy").
   if (auto *mon = engine_->a11yMonitor()) {
-    mon->setPollingEnabled(!isWayland() && inChromiumAddressBar());
+    mon->setPollingEnabled(!isWayland() &&
+                           (inChromiumAddressBar() || isChromiumCached()));
   }
 
   // Late uinput BS loopbacks — BS we injected that arrive after the
@@ -3030,11 +3032,13 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
-  // Drop re-delivered trigger key after address bar replacement.
-  // Chrome's spurious focus cycles cause X11 to re-send the key that
-  // triggered the last replacement, even after uinput deletion completed.
-  // We use a 200ms deadline so the guard doesn't stay active forever.
-  if (inChromiumAddressBar() && addrBarLastTriggerKey_ != 0 &&
+  // Drop re-delivered trigger key after a Chromium replacement (all
+  // Chromium-family, not just the address bar).  Chrome's spurious focus
+  // cycles cause X11 to re-send the key that triggered the last
+  // replacement or was last forwarded, even after uinput deletion
+  // completed.  The 50ms guard deadline keeps deliberate double-presses
+  // working.
+  if (isChromiumCached() && addrBarLastTriggerKey_ != 0 &&
       now(CLOCK_MONOTONIC) < addrBarTriggerDeadline_) {
     if (keyEvent.key().sym() == static_cast<uint32_t>(addrBarLastTriggerKey_)) {
       SKEY_DEBUG() << "AddrBar: drop re-delivered trigger key 0x" << std::hex
@@ -4119,16 +4123,18 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             // Check matching append: old + key == new
             if (oldComposed + keyUtf8 == newComposed) {
               // Forward raw X11 key — instant, no D-Bus latency.
-              // Set cycle protection + trigger-key guard: subsequent
-              // replacement may trigger spurious focus changes in Chromium
-              // address bar, causing Chrome to re-deliver the forwarded
-              // key.  The guard drops re-delivered keys within 200ms.
-              if (inChromiumAddressBar()) {
-                addrBarExpectCycle_ = true;
-                // Set a short trigger-key guard: Chrome may re-deliver the
-                // forwarded key during a spurious focus cycle (~5ms).  A
-                // 50ms window catches re-delivery while letting deliberate
-                // double-presses (aa→â, dd→đ) through (>100ms typical).
+              // Set cycle protection + trigger-key guard: a subsequent
+              // replacement's commit can trigger spurious focus changes
+              // in Chromium-family apps, causing Chrome to re-deliver the
+              // forwarded key (Tabby: "đây" → "đyy" — the re-delivered
+              // 'y' was processed as a second keystroke).  The guard
+              // drops re-delivered keys.  50ms window: re-delivery is
+              // ~5ms; deliberate double-presses (aa→â, dd→đ) are
+              // >100ms typical.
+              if (isChromiumCached()) {
+                if (inChromiumAddressBar()) {
+                  addrBarExpectCycle_ = true;
+                }
                 addrBarLastTriggerKey_ = static_cast<int>(sym);
                 addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 50000;
               }
