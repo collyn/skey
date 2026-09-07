@@ -40,6 +40,17 @@ public:
     void activate();
     void deactivate();
     void reset();
+    /// Called by SKeyEngine::reloadConfig() after the settings app
+    /// rewrote conf/skey-app-modes.conf: drop the cached program key so
+    /// refreshAppMode() re-reads the file, and invalidate the mode cache
+    /// unless the IC is mid-word (Auto must not flip the composition
+    /// path half-way through — the word-boundary trigger handles it).
+    void invalidateAppModeOverrideCache();
+    /// Per-input deferred-commit delay for the X11 Chromium no-cap Surr
+    /// fallback (forwardKey BS + deferred commit): FB-page inputs get the
+    /// same 20ms floor as the Uinput path (heavy renderer), other inputs
+    /// keep the low kX11BsForwardDeferredUsec.
+    uint64_t x11ChromiumSurrDelayUsec() const;
 
     // Mode switch menu (called from ModeCandidateWord)
     void dismissModeMenu();
@@ -161,6 +172,14 @@ private:
     mutable std::string resolvedProgram_;
     mutable bool modeCacheValid_ = false;
     mutable SKeyOutputMode cachedMode_ = SKeyOutputMode::SurroundingText;
+    // Word-boundary re-eval trigger back-off (see kTriggerBackoffUsec):
+    // suppress trigger-driven mode re-detection while the verdict is
+    // stable.  CLOCK_MONOTONIC, 0 = inactive.
+    uint64_t triggerBackoffUntilUsec_ = 0;
+    // CLOCK_MONOTONIC timestamp of the most recent activate() — the
+    // first word after a focus switch gets extra settle headroom
+    // (kFirstWordSettleUsec) because the renderer is still settling.
+    uint64_t lastActivateUsec_ = 0;
     mutable int cachedIsChromium_ = -1;  // tristate: -1=unset, 0=false, 1=true
     // Sticky browser-UI verdict for X11: the a11y monitor may lag behind
     // keystrokes; keep the last true verdict for a short grace instead of

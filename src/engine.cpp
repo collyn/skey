@@ -220,7 +220,27 @@ static constexpr uint64_t kNativeDeleteDeferredUsec = 5000;
 // past 40ms.  X11 browser BS need enough time for Chrome's renderer to
 // process the forwarded keys; 10ms fixed covers that without the EWMA
 // inflation (0ms loses characters when typing fast, 15ms+ feels laggy).
-static constexpr uint64_t kX11BsForwardDeferredUsec = 10000;
+static constexpr uint64_t kX11BsForwardDeferredUsec = 10000; // 10ms — back to
+                                                             // the tuned safe minimum: 8ms lost chars on Mint's slower renderer
+                                                             // (the forwarded BS ate the deferred commit, "gõ" → "g")
+// X11 Chromium-family Uinput floors: the sync-anchor RT only measures the
+// browser-process IM loopback, NOT the renderer's BS processing — machines
+// with fast loopbacks (Mint: RT 3-7ms) derive sleeps of 4-7ms and lose
+// chars constantly (commit lands before the renderer processed the BS).
+// Per-input (Auto looks at the input): FB-page inputs (ancestor-chain
+// signatures) get 20ms — the FB renderer is heavy; everything else keeps
+// a low 10ms floor.
+static constexpr uint64_t kChromeX11CommitDelayMinUsec = 10000;
+static constexpr uint64_t kFbX11CommitDelayMinUsec = 25000; // 25ms (was 20ms —
+                                                             // still losing chars on FB chat in fast typing)
+// First-word settle headroom: the renderer is still settling right after
+// a focus switch — the first heavy replace (long words like "ứng") and
+// the first immediate commit (del=0) lose chars at the normal timings.
+static constexpr uint64_t kFirstWordSettleUsec = 50000;
+// FB Surr deferred (experiment): 15ms — between the 10ms tuned safe
+// minimum and the 20ms that felt slow; the same-channel D-Bus ordering
+// keeps the loss risk low (the sleep only covers the app's processing).
+static constexpr uint64_t kFbX11SurrDeferredUsec = 15000;
 
 // Uinput commit-delay for non-Chromium apps on native Wayland.  The anchor
 // loopback proves fcitx5 saw the BS, not that the app processed them — Qt
@@ -379,6 +399,33 @@ static std::string userPkgDataDir() {
 // Matches actual Chromium-family browser programs.
 // Used ONLY for address-bar detection — electron/tabby must NOT match here
 // or non-browser Electron apps are misidentified as Chrome address bar.
+// Office suites with broken SurroundingText implementations (X11-only
+// routing exception, user decision 2026-09-08): LibreOffice's VCL and
+// WPS/OnlyOffice process the fallback's forwarded BS asynchronously and
+// type wrong through Surr.  The a11y signals cannot distinguish them
+// from healthy apps (Telegram has the identical invalid-surrounding
+// signature), so these are name-matched — the pragmatic exception to
+// the input-driven philosophy.
+static bool isOfficeSuiteApp(const std::string &prog) {
+  std::string p = prog;
+  std::transform(p.begin(), p.end(), p.begin(), ::tolower);
+  // LibreOffice family
+  if (p.find("soffice") != std::string::npos ||
+      p.find("libreoffice") != std::string::npos ||
+      p.find("loimpress") != std::string::npos ||
+      p.find("lowriter") != std::string::npos ||
+      p.find("localc") != std::string::npos)
+    return true;
+  // WPS Office family (exact binary names — "et" is too generic for find)
+  if (p == "wps" || p == "wpp" || p == "et" || p == "wpspdf")
+    return true;
+  // OnlyOffice
+  if (p.find("onlyoffice") != std::string::npos ||
+      p.find("desktopeditors") != std::string::npos)
+    return true;
+  return false;
+}
+
 static bool isChromiumBrowser(const std::string &prog) {
   static const char *const patterns[] = {
       "chrome",  "chromium",       "google-chrome", "brave",
@@ -808,8 +855,12 @@ SKeyEngine::SKeyEngine(Instance *instance)
     : instance_(instance), factory_([this](InputContext &ic) -> SKeyState * {
         return new SKeyState(this, &ic);
       }) {
-  reloadConfig();
+  // Register BEFORE reloadConfig(): its per-IC invalidation iterates ICs
+  // and calls propertyFor(&factory_), which asserts the factory is
+  // registered on the manager — at startup an IC can already exist
+  // (portal monitor query) before the addon constructor finishes.
   instance_->inputContextManager().registerProperty("skeyState", &factory_);
+  reloadConfig();
   setupTrayMenu();
 
   // Start AT-SPI2 monitor for Chromium address bar detection.
@@ -1132,6 +1183,22 @@ void SKeyEngine::reloadConfig() {
   std::string modeStr = outputModeName(config_.outputMode.value());
   SKEY_INFO() << "Config: outputMode=" << modeStr
               << " debug(from file)=" << g_skeyDebugEnabled;
+
+  // The settings app rewrites conf/skey-app-modes.conf without an IC
+  // activation — the currently focused IC would otherwise keep its stale
+  // per-app override until the next focus cycle.  Invalidate every live
+  // IC's cached program key so refreshAppMode() re-reads the file on the
+  // next effectiveMode() call.  Mid-word ICs keep their mode until the
+  // word boundary — Auto's decision must never flip the composition path
+  // half-way through.  (foreach visits only live ICs — never
+  // lastFocusedInputContext(), which can dangle during startup focus
+  // churn and trips the manager assert in propertyFor().)
+  instance_->inputContextManager().foreach([this](InputContext *ic) {
+    if (auto *state = ic->propertyFor(&factory_)) {
+      state->invalidateAppModeOverrideCache();
+    }
+    return true;
+  });
 }
 
 std::string SKeyEngine::subMode(const InputMethodEntry &entry,
@@ -1257,6 +1324,15 @@ const std::string &SKeyState::appProgram() const {
   return resolvedProgram_;
 }
 
+void SKeyState::invalidateAppModeOverrideCache() {
+  // Sentinel (≠ any real program name, including empty) forces
+  // refreshAppMode() to re-read conf/skey-app-modes.conf.
+  cachedProgram_ = "\x01";
+  if (viet_.getRawInput().empty()) {
+    modeCacheValid_ = false;
+  }
+}
+
 void SKeyState::refreshAppMode() {
   std::string prog = appProgram();
   if (prog == cachedProgram_)
@@ -1324,10 +1400,26 @@ bool SKeyState::inChromiumAddressBar() const {
       return false;
     }
     if (mon && mon->isBrowserUIFocused()) {
-      // Fresh true verdict — remember when so a lagging monitor can't
-      // flip the decision mid-word.
-      addrBarUiVerdictAtUsec_ = now(CLOCK_MONOTONIC);
-      return true;
+      // Only a FRESH browser-UI verdict counts, AND the caret must be
+      // addrbar-shaped.  Web-page buttons (FB's own UI) also produce
+      // fresh webDoc=0 button events — indistinguishable from the
+      // omnibox by a11y alone (Mint traces 02:16/02:18: the addrbar
+      // machinery hijacked the chat — extra autofill BS + desync
+      // resets, "mất chữ liên tục") — but the caret disambiguates: the
+      // omnibox is a thin sliver near the window top (1×~20), web
+      // editors report wide carets (FB chat 81×17).  Without a11y the
+      // deterministic cursor-rect fallback below still covers the real
+      // omnibox.  X11-only (this whole branch is !isWayland()).
+      if (mon->isFocusSnapshotFresh(5000000)) {
+        const auto &rect = ic_->cursorRect();
+        bool addrbarShaped = rect.width() <= 2 && rect.height() >= 18 &&
+                             rect.height() <= 24 && rect.top() >= 0 &&
+                             rect.top() < 200;
+        if (addrbarShaped) {
+          addrBarUiVerdictAtUsec_ = now(CLOCK_MONOTONIC);
+          return true;
+        }
+      }
     }
     // Grace window: the monitor processes focus events asynchronously
     // and Chrome's omnibox churn (dropdown open/close, suggestion
@@ -1337,9 +1429,18 @@ bool SKeyState::inChromiumAddressBar() const {
     // while still latching off after a real focus change.
     if (addrBarUiVerdictAtUsec_ != 0 &&
         now(CLOCK_MONOTONIC) - addrBarUiVerdictAtUsec_ <= 5000000) {
-      return true;
+      // A WIDE caret proves a real editor is focused (the FB search box
+      // can momentarily report a thin IME caret during delete/retype
+      // churn and latch the verdict — the hijack in the 03:07 trace
+      // where "chào" became "hào").  Clear the latch instead.
+      if (ic_->cursorRect().width() > 2) {
+        addrBarUiVerdictAtUsec_ = 0;
+      } else {
+        return true;
+      }
+    } else {
+      addrBarUiVerdictAtUsec_ = 0;
     }
-    addrBarUiVerdictAtUsec_ = 0;
     // Deterministic fallback (no a11y needed): the omnibox cursor rect
     // is a thin 1×~20 sliver near the window top, while Chrome content
     // editors report wider rects or (0,0,0x0).  This keeps the address
@@ -1487,6 +1588,11 @@ static constexpr uint64_t kBareCapsDecisionWindowUsec = 2000000; // 2s
 // own keystroke is treated as the app's reaction (zen fires one after
 // every key), not a focus change.
 static constexpr uint64_t kSurrReattachWindowUsec = 500000; // 500ms
+// Word-boundary mode re-eval trigger back-off: once the trigger has
+// re-evaluated and the verdict is stable, further trigger-driven
+// re-detection is suppressed for this long (in-window input changes
+// still invalidate via reset()/activate()).
+static constexpr uint64_t kTriggerBackoffUsec = 10000000; // 10s
 
 bool SKeyState::a11yFreshWebEditor() const {
   // Browsers only.  The signal means "the user just clicked a real web
@@ -1630,7 +1736,25 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   // editor's strong hints (e.g. 0x90072 from a chat box) — typing would go
   // nowhere.  Requires a FRESH snapshot: without one we cannot conclude
   // anything and fall back to the cap-based decision below.
-  if (a11yBrowserNonEntry()) {
+  bool nonEntry = a11yBrowserNonEntry();
+  // Non-entry flicker guard (X11 Chrome): the broad check is the
+  // activation-time safe default, but X11 Chrome has NO caps-based
+  // recovery — a transient non-entry focus (combo_box/button UI noise
+  // when re-clicking the chat) would drop a web editor back to Uinput
+  // permanently (21:59:08 repro: role=11 combo_box flipped FB chat).
+  // When this IC already resolved to Surr (only the X11 web-editor
+  // route can produce Surr here — overrides bypass detectAutoMode),
+  // treat non-text-entry ROLES as noise and keep Surr; the Sheets cell
+  // signature (text-entry role + editable=0 + no line state, the narrow
+  // check) still flips to Uinput.  The address bar keeps its own Uinput
+  // machinery and is excluded.
+  if (nonEntry && cachedMode_ == SKeyOutputMode::SurroundingText &&
+      !isWayland() && isChromiumCached() && isChromiumBrowser(appProgram()) &&
+      !inChromiumAddressBar() && !a11yBrowserNonEntryNarrow()) {
+    SKEY_DEBUG() << "Auto: non-entry flicker over X11 web editor, keep Surr";
+    return SKeyOutputMode::SurroundingText;
+  }
+  if (nonEntry) {
     SKEY_DEBUG() << "Auto: focus is not a text entry → Uinput";
     return SKeyOutputMode::Uinput;
   }
@@ -1660,6 +1784,15 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     clearEngineBareCapsSticky();
   }
 
+  // Office suites (X11): LibreOffice/WPS/OnlyOffice advertise the
+  // SurroundingText cap but type wrong through it (async key processing
+  // breaks the fallback; a11y cannot tell them from healthy apps) —
+  // hardcoded exception per the user's call, X11-only.
+  if (!isWayland() && isOfficeSuiteApp(appProgram())) {
+    SKEY_DEBUG() << "Auto: office suite (X11) → Uinput";
+    return SKeyOutputMode::Uinput;
+  }
+
   auto caps = ic_->capabilityFlags();
 
   if (!caps.test(CapabilityFlag::SurroundingText)) {
@@ -1672,6 +1805,18 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
       SKEY_DEBUG() << "Auto: no SurroundingText cap, probing SurroundingText";
       return SKeyOutputMode::SurroundingText;
     }
+    // X11 Chromium browsers NEVER advertise the SurroundingText cap (the
+    // GTK IM module only sets it when the client pushes surrounding text,
+    // and Chrome doesn't — caps stay 0x6000000032), so EVERY Chrome input
+    // falls to Uinput on X11.  That is the desired behavior for the whole
+    // FB page (chat included): with the 20ms Uinput floor the FB renderer
+    // types loss-free, and the previous FB-chat→Surr route was removed
+    // (2026-09-08) — the Surr no-cap fallback's step-wise forwardKey
+    // deletion felt slower than the Uinput kernel BS batch, and the
+    // per-input delay split it enabled is not worth the mode flips.
+    // The FB ancestor-chain signatures are still captured by the monitor
+    // (used by x11ChromiumSurrDelayUsec if Surr ever runs again via a
+    // manual override).
     SKEY_DEBUG() << "Auto: no SurroundingText cap → Uinput";
     return SKeyOutputMode::Uinput;
   }
@@ -1819,8 +1964,21 @@ int SKeyState::a11yAppPid() const {
   if (!comm.empty() && comm.back() == '\n') {
     comm.pop_back();
   }
-  if (comm != prog && prog.compare(0, 15, comm) != 0 &&
-      comm.compare(0, 15, prog) != 0) {
+  bool commMatches = comm == prog || prog.compare(0, 15, comm) == 0 ||
+                     comm.compare(0, 15, prog) == 0;
+  // Chromium renames its main/renderer threads ("chrome", "CrRendererMain",
+  // ...), so the comm can never match a full program name like
+  // "google-chrome-stable" — accept the known Chromium thread names when
+  // the program is a Chromium browser (rejecting them killed the entire
+  // pid pipeline for Chrome even after the monitor-side fix, 2026-09-07).
+  if (!commMatches && isChromiumBrowser(prog) &&
+      (comm == "chrome" || comm == "CrRendererMain" ||
+       comm == "CrGpuMain" || comm == "CrUtilityMain")) {
+    commMatches = true;
+  }
+  if (!commMatches) {
+    SKEY_DEBUG() << "a11yAppPid: reject pid " << pid << " comm='" << comm
+                 << "' prog='" << prog << "'";
     return -1; // the focused accessible belongs to a different app
   }
   return pid;
@@ -2141,7 +2299,17 @@ void SKeyState::activate() {
   // Invalidate mode cache — new focus means caps/program may have changed.
   chromiumBareCapsUinput_ = false;
   focusSawContentHints_ = false;
-  modeCacheValid_ = false;
+  // Spurious-cycle preservation (X11 Chromium): a deactivate→activate
+  // round trip within 500ms of the same window is Chrome's focus churn,
+  // not an input change — re-running the full detectAutoMode chain per
+  // flicker (measured 15 evaluations across a few activations) is pure
+  // waste.  Keep the cached mode; in-window input moves go through
+  // reset() (which invalidates), and genuine app switches are >500ms.
+  if (!(!isWayland() && isChromiumCached() && lastDeactivateTime_ > 0 &&
+        (now(CLOCK_MONOTONIC) - lastDeactivateTime_) < 500000)) {
+    modeCacheValid_ = false;
+  }
+  triggerBackoffUntilUsec_ = 0;
   cachedIsChromium_ = -1;
   cachedIsFirefoxOrSnap_ = -1;
   cachedIsTerminalApp_ = -1;
@@ -2195,6 +2363,11 @@ void SKeyState::activate() {
                << " cursor=(" << ic_->cursorRect().left() << ","
                << ic_->cursorRect().top() << "," << ic_->cursorRect().width()
                << "x" << ic_->cursorRect().height() << ")";
+
+  // First-word settle tracking (see kFirstWordSettleUsec): the first
+  // replaces after this activation get extra commit headroom while the
+  // renderer settles into the new focus.
+  lastActivateUsec_ = now(CLOCK_MONOTONIC);
 }
 
 // Connect to a unix socket: filesystem path or abstract name (abstract =
@@ -2483,6 +2656,26 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
       multiplier *= timing.chromiumDelayFactor;
       minDelay = static_cast<uint64_t>(minDelay * timing.chromiumDelayFactor);
       maxDelay = static_cast<uint64_t>(maxDelay * timing.chromiumDelayFactor);
+      // Floor on X11, per-input.  The heavy floor applies to:
+      //   - FB-page inputs (ancestor-chain signatures, where available),
+      //   - any FRESH web-editor focus (role + line-state — portable,
+      //     works on every machine unlike the chain shapes; Mint's FB
+      //     a11y tree differs and the signatures never fire there),
+      //   - UNKNOWN inputs (no fresh snapshot yet — right after a click
+      //     or on machines where the a11y events lag): conservative.
+      // Only a fresh NON-editor snapshot (Sheets cell, browser UI)
+      // selects the low floor.
+      if (!isWayland()) {
+        auto *chainMon = engine_->a11yMonitor();
+        bool fbInput = chainMon && (chainMon->isFocusFbChatChain() ||
+                                    chainMon->isFocusFbCommentChain());
+        bool freshWebEditor = a11yFreshWebEditor();
+        bool unknownInput =
+            !(chainMon && chainMon->isFocusSnapshotFresh(5000000));
+        bool slowInput = fbInput || freshWebEditor || unknownInput;
+        minDelay = std::max(minDelay, slowInput ? kFbX11CommitDelayMinUsec
+                                                : kChromeX11CommitDelayMinUsec);
+      }
     } else if (isWayland()) {
       // Native Wayland apps: the commit delay scales with the number of
       // deletions (see kWaylandNativeCommitDelayPerBsUsec) — keep a small
@@ -2506,6 +2699,18 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
                         : std::max(elapsed, bsRtEwma_ / 2);
   uint64_t sleepUsec = std::clamp(static_cast<uint64_t>(baseRt * multiplier),
                                   minDelay, maxDelay);
+  // First word after a focus switch: the renderer is settling — heavy
+  // first replaces (long words, "ứng") lose chars at the normal sleep.
+  // One-time extra headroom for the first second of the IC.  The
+  // ADDRESS BAR is excluded: its own machinery + timing are tuned
+  // separately, and the omnibox churn (Deactivate/Activate per
+  // keystroke) re-arms lastActivateUsec_ constantly — the 50ms
+  // headroom would apply to every replace and made the omnibox laggy.
+  if (!isWayland() && isChromiumCached() && !inChromiumAddressBar() &&
+      lastActivateUsec_ > 0 &&
+      now(CLOCK_MONOTONIC) - lastActivateUsec_ < 1000000) {
+    sleepUsec = std::max(sleepUsec, kFirstWordSettleUsec);
+  }
 
   if (uinputLoopbackSlow_) {
     // Previous replacement's loopbacks were slow — give the app extra
@@ -2948,13 +3153,26 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // Uinput yet.
   bool a11yNonEntry = a11yBrowserNonEntryNarrow();
   bool a11yTerminal = a11yChromiumTerminal();
-  if (viet_.getRawInput().empty() &&
-      (modeDecisionPending_ || a11yFreshWebEditor() ||
-       (a11yNonEntry &&
-        (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)) ||
-       (a11yTerminal &&
-        (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)))) {
+  bool triggerHit =
+      modeDecisionPending_ || a11yFreshWebEditor() ||
+      (a11yNonEntry &&
+       (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)) ||
+      (a11yTerminal &&
+       (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput));
+  // Back-off: the a11y triggers above re-evaluate the mode at every word
+  // boundary even when the verdict is stable (measured 31 detectAutoMode
+  // runs for 16 keystrokes in one Chrome input).  Re-check at most every
+  // kTriggerBackoffUsec once the mode is decided; in-window input changes
+  // still invalidate via reset()/activate(), and the bare-caps deferral
+  // (modeDecisionPending_) is never backed off — its 2s window must
+  // catch the caps upgrade in time.
+  if (viet_.getRawInput().empty() && triggerHit &&
+      (modeDecisionPending_ || !modeCacheValid_ ||
+       now(CLOCK_MONOTONIC) >= triggerBackoffUntilUsec_)) {
     modeCacheValid_ = false;
+    if (!modeDecisionPending_) {
+      triggerBackoffUntilUsec_ = now(CLOCK_MONOTONIC) + kTriggerBackoffUsec;
+    }
   }
 
   // Track current word state so reclaim targets the right word
@@ -4004,8 +4222,16 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         // An EMPTY snapshot is not desync evidence — Chrome on some
         // distros (Fedora) returns an empty omnibox text while the word
         // is clearly on screen; resetting on it breaks every retype
-        // after a backspace.
-        if (mon && !txt.empty() && txt.find(comp) == std::string::npos) {
+        // after a backspace.  Likewise a snapshot containing only
+        // U+FFFC (object replacement — Chromium's a11y placeholder for
+        // an EMPTY editable, e.g. the FB search box): it fooled the
+        // empty check and reset the composition mid-retype ("chào" →
+        // "hào", 03:07 trace).
+        bool placeholderOnly = (txt == "\xEF\xBF\xBD"); // U+FFFC = Chromium's
+                                                        // a11y placeholder for
+                                                        // an EMPTY editable
+        if (mon && !txt.empty() && !placeholderOnly &&
+            txt.find(comp) == std::string::npos) {
           SKEY_DEBUG() << "AddrBar: desync — bar text '" << txt
                        << "' lacks composed '" << comp << "', resetting";
           viet_.reset();
@@ -4223,6 +4449,17 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                            << addPart << "'";
               if (inChromiumAddressBar())
                 addrBarExpectCycle_ = true;
+              // First key right after a focus switch: the renderer is
+              // still settling — the immediate commit (no BS, no sleep
+              // otherwise) drops or lands out of order with the next
+              // forwards ("ứng" first-word loss).  One-time settle.
+              // Address bar excluded (omnibox churn re-arms the window
+              // constantly).
+              if (!isWayland() && isChromiumCached() &&
+                  !inChromiumAddressBar() && lastActivateUsec_ > 0 &&
+                  now(CLOCK_MONOTONIC) - lastActivateUsec_ < 300000) {
+                usleep(kFirstWordSettleUsec);
+              }
               commitText(addPart);
             }
             committedLen_ = static_cast<int>(utf8::length(newComposed));
@@ -4762,10 +4999,21 @@ void SKeyState::flushDeferredCommit() {
   }
 
   // Enforce adaptive minimum delay between BackSpace and commit.
-  uint64_t minGapUsec =
-      (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
-          ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
-          : dbusDeferredDefaultUsec;
+  // X11 Chromium browsers use the FIXED per-input delay (see
+  // x11ChromiumSurrDelayUsec) — the adaptive EWMA (inflated by a prior
+  // Uinput session on the same IC) or the 15ms default overshoots the
+  // schedule and stretches the visible BS→commit flicker at word
+  // boundaries.
+  uint64_t minGapUsec;
+  if (!isWayland() && isChromiumCached() && isChromiumBrowser(appProgram()) &&
+      !inChromiumAddressBar()) {
+    minGapUsec = x11ChromiumSurrDelayUsec();
+  } else {
+    minGapUsec =
+        (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
+            ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
+            : dbusDeferredDefaultUsec;
+  }
   if (deferredBsSentAt_ > 0) {
     uint64_t nowUs = now(CLOCK_MONOTONIC);
     uint64_t elapsed = nowUs - deferredBsSentAt_;
@@ -4822,6 +5070,15 @@ void SKeyState::forceFlushDeferredCommit() {
   deferredCommitTimer_.reset();
   commitText(toCommit);
 }
+
+uint64_t SKeyState::x11ChromiumSurrDelayUsec() const {
+  auto *chainMon = engine_->a11yMonitor();
+  bool fbInput = chainMon && (chainMon->isFocusFbChatChain() ||
+                              chainMon->isFocusFbCommentChain());
+  return fbInput ? kFbX11SurrDeferredUsec : kX11BsForwardDeferredUsec;
+}
+
+
 
 void SKeyState::surroundingCommit(const std::string &oldComposed,
                                   const std::string &newComposed) {
@@ -4924,6 +5181,13 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         for (int i = 0; i < deleteLen; ++i) {
           ic_->forwardKey(Key(FcitxKey_BackSpace));
         }
+        // Record when the BS were forwarded — flushDeferredCommit()'s
+        // safety guard needs this timestamp to know whether the app has
+        // had time to process them.  It was NEVER set before, so the
+        // guard was dead code and a flush on the next fast key committed
+        // immediately — the in-flight BS then ate the committed text
+        // ("bộ" → "bo", observed 2026-09-07).
+        deferredBsSentAt_ = now(CLOCK_MONOTONIC);
         committedLen_ = newLen;
         if (!addedPart.empty()) {
           if ((isWayland() && (isChromiumCached() || isFirefoxOrSnap())) ||
@@ -4944,13 +5208,24 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             // Electron apps on X11 keep the immediate commit (no race
             // reports there; leave the proven behavior alone).
             SKEY_DEBUG() << "Surr: deferred BS-forward '" << addedPart << "'";
+            scheduleDeferredCommit(
+                addedPart, stablePrefix,
+                isWayland() ? 0 : x11ChromiumSurrDelayUsec());
+          } else if (!isWayland() && isOfficeSuiteApp(appProgram())) {
+            // X11 OFFICE SUITES only (LibreOffice/WPS/OnlyOffice): the
+            // invalid-surrounding fallback.  Their async key processing
+            // (LO's VCL) processes the forwarded BS after an immediate
+            // commit lands ("gõ rất lỗi") — defer like the browser path.
+            SKEY_DEBUG() << "Surr: deferred BS-forward '" << addedPart << "'";
             scheduleDeferredCommit(addedPart, stablePrefix,
-                                   isWayland() ? 0 : kX11BsForwardDeferredUsec);
+                                   kX11BsForwardDeferredUsec);
           } else {
-            // X11 serializes forwarded BS and commitString through the
-            // X server; non-Chromium Wayland apps (Telegram etc.) process
-            // forwarded BS + commit in order — commit immediately, no
-            // extra latency.
+            // X11 non-Chromium apps (Telegram etc.) and non-Chromium
+            // Wayland apps process forwarded BS + commit in order (the
+            // X server serializes delivery) — commit immediately, no
+            // extra latency (Telegram's validated lag-free path; the
+            // blanket deferral added a felt 10ms per tone key,
+            // 2026-09-08).
             commitText(addedPart);
           }
         }

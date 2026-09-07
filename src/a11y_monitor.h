@@ -63,8 +63,29 @@ public:
     /// PID of the process serving the last focused accessible (-1 when
     /// unknown).  Captured on the monitor thread during focus events so
     /// the engine can run pid-targeted /proc checks instead of full scans.
+    /// Resolved via the D-Bus daemon (connection owner) — never stalls.
     int focusProcessId() const {
         return focusProcessId_.load(std::memory_order_relaxed);
+    }
+
+    /// Per-ELEMENT pid from GetProcessId on the focused accessible (the
+    /// per-tab renderer pid on old Chrome; Chrome ≥150 native a11y
+    /// answers -1).  Web content only — browser-UI queries can stall.
+    /// Log/analysis signal only: NOT consumed by the engine.
+    int focusElementPid() const {
+        return focusElementPid_.load(std::memory_order_relaxed);
+    }
+
+    /// FB-specific ancestor-chain signatures (see FB_CHAT_ROLE_A/B and
+    /// FB_COMMENT_ROLE in a11y_monitor.cpp).  Captured on the same focus
+    /// event as the snapshot, so they share its freshness window.  X11
+    /// routing: the FB chat composer gets SurroundingText, comments and
+    /// other web editors stay on Uinput.
+    bool isFocusFbChatChain() const {
+        return focusFbChatSig_.load(std::memory_order_relaxed);
+    }
+    bool isFocusFbCommentChain() const {
+        return focusFbCommentSig_.load(std::memory_order_relaxed);
     }
 
     /// True when the last focus snapshot was a real text-entry element
@@ -147,6 +168,9 @@ private:
     std::atomic<int> focusRole_{0};
     std::atomic<bool> focusEditable_{false};
     std::atomic<int> focusProcessId_{-1};
+    std::atomic<int> focusElementPid_{-1};
+    std::atomic<bool> focusFbChatSig_{false};
+    std::atomic<bool> focusFbCommentSig_{false};
     std::atomic<bool> focusMultiline_{false};
     std::atomic<bool> focusSingleLine_{false};
     std::atomic<bool> textEntryFocused_{false};
