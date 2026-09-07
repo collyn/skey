@@ -2747,6 +2747,13 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     }
     this->commitText(commitText);
   }
+  // Arm the late-BS grace window on EVERY committed replacement, not
+  // just the safety-timeout force-commit: Chromium's post-commit focus
+  // cycles re-deliver the injected BS (the sync anchor included) — a
+  // re-delivered BS arriving after the commit was treated as a user
+  // backspace and ate the commit's tail ("ứng" → "ứn" in the FB
+  // comment, 02:46 trace).  The grace swallows those loopbacks.
+  uinputLateBsDeadlineUsec_ = now(CLOCK_MONOTONIC) + 400000;
   if (uinputPendingFinalLen_ > 0) {
     committedLen_ = uinputPendingFinalLen_;
     uinputPendingFinalLen_ = 0;
