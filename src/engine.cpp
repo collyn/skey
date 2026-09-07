@@ -2638,18 +2638,25 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
       multiplier *= timing.chromiumDelayFactor;
       minDelay = static_cast<uint64_t>(minDelay * timing.chromiumDelayFactor);
       maxDelay = static_cast<uint64_t>(maxDelay * timing.chromiumDelayFactor);
-      // Floor on X11, per-input: the FB ancestor-chain signatures select
-      // the heavier 20ms floor for FB-page inputs; everything else keeps
-      // the low 10ms.  (When the signature is not yet available — right
-      // after a click — the low floor applies for that first word;
-      // acceptable: the a11y focus event usually lands before the first
-      // tone key.)
+      // Floor on X11, per-input.  The heavy floor applies to:
+      //   - FB-page inputs (ancestor-chain signatures, where available),
+      //   - any FRESH web-editor focus (role + line-state — portable,
+      //     works on every machine unlike the chain shapes; Mint's FB
+      //     a11y tree differs and the signatures never fire there),
+      //   - UNKNOWN inputs (no fresh snapshot yet — right after a click
+      //     or on machines where the a11y events lag): conservative.
+      // Only a fresh NON-editor snapshot (Sheets cell, browser UI)
+      // selects the low floor.
       if (!isWayland()) {
         auto *chainMon = engine_->a11yMonitor();
         bool fbInput = chainMon && (chainMon->isFocusFbChatChain() ||
                                     chainMon->isFocusFbCommentChain());
-        minDelay = std::max(minDelay, fbInput ? kFbX11CommitDelayMinUsec
-                                              : kChromeX11CommitDelayMinUsec);
+        bool freshWebEditor = a11yFreshWebEditor();
+        bool unknownInput =
+            !(chainMon && chainMon->isFocusSnapshotFresh(5000000));
+        bool slowInput = fbInput || freshWebEditor || unknownInput;
+        minDelay = std::max(minDelay, slowInput ? kFbX11CommitDelayMinUsec
+                                                : kChromeX11CommitDelayMinUsec);
       }
     } else if (isWayland()) {
       // Native Wayland apps: the commit delay scales with the number of
