@@ -122,7 +122,8 @@ private:
     void reclaimLastWord();
     bool hasDeferredCommitPending() const;
     void scheduleDeferredCommit(const std::string &text,
-                                const std::string &stablePrefix = "");
+                                const std::string &stablePrefix = "",
+                                uint64_t delayUsec = 0);
     void flushDeferredCommit();
     void forceFlushDeferredCommit();
     void updatePreedit();

@@ -163,13 +163,24 @@ struct UinputTiming {
 static constexpr UinputTiming kUinputTimingX11 = {
     0.3,    // bsRtEwmaAlpha
     5000,   // bsRtInitialUsec
-    1.5,    // bsRtMultiplier (sync BS guarantees ordering, lower multiplier)
-    3.0,    // addrBarBsRtMultiplier (unchanged)
+    1.0,    // bsRtMultiplier — the sleep base is already max(lastRT,
+            // ewma/2), so the round trip itself is in the base; no extra
+            // multiple on top (was 1.5× — spike RTs of 26ms turned into
+            // 39ms sleeps on top of the app's own lag, visibly laggy in
+            // terminals; the sync anchor already guarantees X11 ordering)
+    2.0,    // addrBarBsRtMultiplier — omnibox autocomplete needs settle
+            // headroom, but the sync anchor already guarantees X11 ordering
+            // (retuned down from 3.0 — 50ms sleeps felt laggy while typing)
     3000,   // commitDelayMinUsec — 3ms floor for native
     10000,  // addrBarCommitDelayMinUsec — 10ms (unchanged)
-    30000,  // commitDelayMaxUsec — 30ms cap for native
-    50000,  // addrBarCommitDelayMaxUsec — 50ms (unchanged)
-    2.0,    // chromiumDelayFactor — 2× → 6ms–60ms for Electron/Chromium
+    20000,  // commitDelayMaxUsec — 20ms cap for native (was 30ms: the
+            // cap-bound sleeps were the perceptible part of terminal lag)
+    40000,  // addrBarCommitDelayMaxUsec — 40ms (was 50ms; retuned with the
+            // multiplier above, floor untouched)
+    1.5,    // chromiumDelayFactor — 1.5× → 4.5ms–45ms for Electron/Chromium
+            // (was 2.0: 60ms sleeps felt laggy vs Wayland's 18ms cap; the
+            // sync anchor is already a true barrier on X11, so the extra
+            // headroom only needs to cover renderer processing)
     150000, // safetyTimeoutUsec (150ms)
     600000, // safetyRetryUsec (600ms) — one extension for slow loopbacks
 };
@@ -193,6 +204,20 @@ static constexpr UinputTiming kUinputTimingWayland = {
 // Surr deferred commit timing (same mechanism, independent of uinput path)
 static constexpr uint64_t dbusDeferredDefaultUsec = 15000;
 static constexpr uint64_t dbusDeferredMinUsec = 10000;
+// Fixed delay for the native delete path (deleteSurroundingText followed
+// by the deferred commit).  The deletes travel the text-input protocol
+// (no forwarded keys to process), so the commit only needs to avoid
+// landing in the same compositor frame as the last delete — 5ms keeps the
+// intermediate deleted state sub-frame (no visible flicker) while still
+// separating delete and commit in time.
+static constexpr uint64_t kNativeDeleteDeferredUsec = 5000;
+// Fixed delay for the X11 Chromium BS-forward path.  The adaptive delay
+// (bsRtEwma_*2 + 8ms) was tuned on Wayland and, worse, scales with the
+// UINPUT loopback EWMA — after any Uinput-mode session on X11 it blows
+// past 40ms.  X11 browser BS need enough time for Chrome's renderer to
+// process the forwarded keys; 10ms fixed covers that without the EWMA
+// inflation (0ms loses characters when typing fast, 15ms+ feels laggy).
+static constexpr uint64_t kX11BsForwardDeferredUsec = 10000;
 
 // Uinput commit-delay for non-Chromium apps on native Wayland.  The anchor
 // loopback proves fcitx5 saw the BS, not that the app processed them — Qt
@@ -1282,6 +1307,19 @@ bool SKeyState::inChromiumAddressBar() const {
   // Escape-key autocomplete dismissal to close the find bar.
   if (!isWayland() && isChromiumBrowser(appProgram())) {
     auto *mon = engine_->a11yMonitor();
+    // Fresh snapshot with WEB CONTENT focus means the user is in a web
+    // page (Facebook chat, forms...) — never the omnibox.  Must be
+    // checked BEFORE the verdict latch and the cursor-rect fallback: a
+    // genuine focus move inside the 5s latch window, or a chat-box caret
+    // (a 0×24 sliver near the window top — same signature as the
+    // omnibox), would otherwise keep the address-bar machinery running
+    // in web editors, adding a full BS round-trip + commit sleep to
+    // every tone key.
+    if (mon && mon->isFocusSnapshotFresh(5000000) &&
+        mon->isWebContentFocused()) {
+      addrBarUiVerdictAtUsec_ = 0;
+      return false;
+    }
     if (mon && mon->isBrowserUIFocused()) {
       // Fresh true verdict — remember when so a lagging monitor can't
       // flip the decision mid-word.
@@ -1549,6 +1587,16 @@ bool SKeyState::a11yChromiumTerminal() const {
 bool SKeyState::noteSurroundingFailure() {
   if (isChromiumCached())
     return true;
+  // X11 non-Chromium apps: the verdict from the FIRST tone-mark
+  // replacement is enough.  Forwarded BS + commit are serialized by the
+  // X server (validated lag-free and correct in sterm and Telegram on
+  // X11), so an invalid surrounding text means "stick with the forwardKey
+  // fallback" — not "accumulate strikes toward a Uinput downgrade", which
+  // would swap a working path for the slower anchor machinery mid-session
+  // (observed: Telegram typed the first word correctly via forwardKey,
+  // then got stuck on the anchor round trip after the downgrade).
+  if (!isWayland())
+    return false;
   ++surroundingInvalidCount_;
   return surroundingInvalidCount_ >= 2;
 }
@@ -2424,6 +2472,15 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
       multiplier *= timing.chromiumDelayFactor;
       minDelay = static_cast<uint64_t>(minDelay * timing.chromiumDelayFactor);
       maxDelay = static_cast<uint64_t>(maxDelay * timing.chromiumDelayFactor);
+      if (!isChromiumBrowser(appProgram())) {
+        // Electron: the renderer pipeline lags further behind the anchor
+        // loopback than a full browser — restore the pre-retune headroom
+        // (3.0× total, 60ms cap on X11) that antigravity needs for fast
+        // typing ("chào" → "cho" at the browser-level 1.5×).
+        multiplier *= 2.0;
+        minDelay *= 2;
+        maxDelay *= 2;
+      }
     } else if (isWayland()) {
       // Native Wayland apps: the commit delay scales with the number of
       // deletions (see kWaylandNativeCommitDelayPerBsUsec) — keep a small
@@ -2432,7 +2489,20 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
       maxDelay = kWaylandNativeCommitDelayMaxUsec;
     }
   }
-  uint64_t sleepUsec = std::clamp(static_cast<uint64_t>(bsRtEwma_ * multiplier),
+  // Sleep base: the EWMA smooths spikes but stays inflated long after the
+  // app has recovered — fast keys keep paying for a slow one.  On X11 the
+  // sync anchor is a true barrier, so the LAST round trip is the best
+  // proxy for the app's current lag: blend last-RT with a half-EWMA floor
+  // (recent spikes still get minimum headroom — the "mất chữ" guard),
+  // while fast keys no longer pay the full historical penalty (sterm
+  // observed 30ms-cap sleeps after a 42ms spike while subsequent RTs were
+  // 7ms).  Wayland keeps the pure EWMA (tuned and validated there);
+  // Chromium-family keeps it too — the renderer's multi-process lag is
+  // persistent and smooth, lastRT jumps too much to size that headroom.
+  uint64_t baseRt = (isWayland() || isChromiumCached())
+                        ? bsRtEwma_
+                        : std::max(elapsed, bsRtEwma_ / 2);
+  uint64_t sleepUsec = std::clamp(static_cast<uint64_t>(baseRt * multiplier),
                                   minDelay, maxDelay);
 
   if (uinputLoopbackSlow_) {
@@ -3113,11 +3183,16 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     if (sym >= FcitxKey_exclam && sym <= FcitxKey_asciitilde) {
       pendingCh = static_cast<char>(sym);
       pendingIsDigit = pendingCh >= '0' && pendingCh <= '9';
+      // Merge only while a composition is actually in progress.  After a
+      // reset() inside the deferred window the raw input is empty — merging
+      // then would replace the pending text with a new word's first
+      // keystroke and silently drop the old word's tail ("to" vs "tói").
       pendingCanMerge =
-          (pendingCh >= 'a' && pendingCh <= 'z') ||
-          (pendingCh >= 'A' && pendingCh <= 'Z') ||
-          (engine_->config().inputMethod.value() == SKeyInputMethod::VNI &&
-           pendingIsDigit && !viet_.getRawInput().empty());
+          !viet_.getRawInput().empty() &&
+          ((pendingCh >= 'a' && pendingCh <= 'z') ||
+           (pendingCh >= 'A' && pendingCh <= 'Z') ||
+           (engine_->config().inputMethod.value() == SKeyInputMethod::VNI &&
+            pendingIsDigit));
     }
     if (!pendingCanMerge) {
       flushDeferredCommit();
@@ -4101,6 +4176,30 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                     static_cast<int>(sym), newComposed, oldAscii, oldComposed);
                 return;
               }
+              // X11 NATIVE terminals: the X server serializes key delivery
+              // and the terminal processes keys synchronously — the uinput
+              // sync-anchor round trip (RT 13–99ms + sleep observed in
+              // sterm) is pure latency there.  Forward BS and commit
+              // immediately (the Surr forwardKey path is validated
+              // lag-free in sterm).  Wayland terminals keep the anchor
+              // (no X-serialization on Wayland).
+              // Chromium-family apps are EXCLUDED even when the shell scan
+              // flags them as terminals: Electron terminals (Tabby, Hyper)
+              // and IDEs with embedded terminals (antigravity) process
+              // keys asynchronously in the renderer — forwardKey + commit
+              // races there ("chào" → "cho").
+              if (!isWayland() && isTerminalAppCached() &&
+                  !isChromiumCached()) {
+                SKEY_DEBUG() << "Surr: BS x" << deleteLen << " (forward)";
+                for (int i = 0; i < deleteLen; ++i) {
+                  ic_->forwardKey(Key(FcitxKey_BackSpace));
+                }
+                if (!addPart.empty()) {
+                  commitText(addPart);
+                }
+                committedLen_ = static_cast<int>(utf8::length(newComposed));
+                return;
+              }
               sendBackspaceUinput(deleteLen + 1); // +1 sync BS
               expectedUinputBackspaces_ = deleteLen;
               seenUinputBackspaces_ = 0;
@@ -4337,13 +4436,21 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
         totalBs = oldComposedLen + 1;
         commitText = fullComposed;
         {
+          // Only auto-restore when the engine's composition still matches
+          // the word being committed.  After a double-tone-key undo
+          // (tryToneKeyUndo) the engine is reset to the lone tone key
+          // (base moved to committed_) — restoring from that state would
+          // commit just the tone key ("tess" fullReplace commits 's' and
+          // drops the "te" already on screen).
           std::string preRestore = commitText;
-          viet_.autoRestore();
-          std::string postRestore = viet_.getComposed();
-          if (preRestore != postRestore) {
-            SKEY_DEBUG() << "AddrBar: autoRestore '" << preRestore << "' -> '"
-                         << postRestore << "'";
-            commitText = postRestore;
+          if (viet_.getComposed() == preRestore) {
+            viet_.autoRestore();
+            std::string postRestore = viet_.getComposed();
+            if (preRestore != postRestore) {
+              SKEY_DEBUG() << "AddrBar: autoRestore '" << preRestore
+                           << "' -> '" << postRestore << "'";
+              commitText = postRestore;
+            }
           }
         }
         addrBarHadFirstWord_ = true;
@@ -4425,13 +4532,19 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
             totalBs = oldComposedLen + 1;
             commitText = fullComposed;
             {
+              // Guard: skip auto-restore when the engine state no longer
+              // matches the word being committed (double-tone-key undo
+              // leaves the engine on the lone tone key and would drop the
+              // rest of the word — "tess" fullReplace commits only 's').
               std::string preRestore = commitText;
-              viet_.autoRestore();
-              std::string postRestore = viet_.getComposed();
-              if (preRestore != postRestore) {
-                SKEY_DEBUG() << "AddrBar: autoRestore '" << preRestore
-                             << "' -> '" << postRestore << "'";
-                commitText = postRestore;
+              if (viet_.getComposed() == preRestore) {
+                viet_.autoRestore();
+                std::string postRestore = viet_.getComposed();
+                if (preRestore != postRestore) {
+                  SKEY_DEBUG() << "AddrBar: autoRestore '" << preRestore
+                               << "' -> '" << postRestore << "'";
+                  commitText = postRestore;
+                }
               }
             }
             addrBarHadFirstWord_ = true;
@@ -4462,13 +4575,19 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
           totalBs = oldComposedLen + 1;
           commitText = fullComposed;
           {
+            // Guard: skip auto-restore when the engine state no longer
+            // matches the word being committed (double-tone-key undo
+            // leaves the engine on the lone tone key and would drop the
+            // rest of the word — "tess" fullReplace commits only 's').
             std::string preRestore = commitText;
-            viet_.autoRestore();
-            std::string postRestore = viet_.getComposed();
-            if (preRestore != postRestore) {
-              SKEY_DEBUG() << "AddrBar: autoRestore '" << preRestore << "' -> '"
-                           << postRestore << "'";
-              commitText = postRestore;
+            if (viet_.getComposed() == preRestore) {
+              viet_.autoRestore();
+              std::string postRestore = viet_.getComposed();
+              if (preRestore != postRestore) {
+                SKEY_DEBUG() << "AddrBar: autoRestore '" << preRestore
+                             << "' -> '" << postRestore << "'";
+                commitText = postRestore;
+              }
             }
           }
           addrBarHadFirstWord_ = true;
@@ -4564,7 +4683,8 @@ bool SKeyState::hasDeferredCommitPending() const {
 }
 
 void SKeyState::scheduleDeferredCommit(const std::string &text,
-                                       const std::string &stablePrefix) {
+                                       const std::string &stablePrefix,
+                                       uint64_t delayUsec) {
   deferredCommitTimer_.reset();
   deferredCommitText_ = text;
   deferredPrefix_ = stablePrefix;
@@ -4586,10 +4706,16 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
   // During fast typing this delay is invisible: each keystroke resets
   // the timer via the deferred update path in surroundingCommit(), so
   // the commit only happens when the user pauses (natural word boundary).
-  uint64_t delayUsec =
-      (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
-          ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
-          : dbusDeferredDefaultUsec;
+  // Callers on the native delete path pass an explicit small delay (see
+  // kNativeDeleteDeferredUsec) — deletes there travel the text-input
+  // protocol, not forwarded keys, so the adaptive BS-based delay is not
+  // needed and would leave the deleted state visible for a full frame.
+  if (delayUsec == 0) {
+    delayUsec =
+        (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
+            ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
+            : dbusDeferredDefaultUsec;
+  }
 
   SKEY_DEBUG() << "Surr deferred: schedule '" << text << "' in "
                << (delayUsec / 1000) << "ms";
@@ -4730,8 +4856,14 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       // commitString always arrives after the forwarded BackSpace
       // keys — no timer needed.
       auto deleteViaBackspace = [&]() {
+        // forwardKey escape applies only to X11 native terminals (see the
+        // keyEvent replace path — Chromium-family apps with shell children
+        // must keep the anchor).
+        bool usesUinputBs = useUinputMode() &&
+                            (isWayland() || !isTerminalAppCached() ||
+                             isChromiumCached());
         SKEY_DEBUG() << "Surr: BS x" << deleteLen
-                     << (useUinputMode() ? " (uinput)" : " (forward)");
+                     << (usesUinputBs ? " (uinput)" : " (forward)");
         // Chromium address bar: use uinput BS + buffering for both
         // Uinput and SurroundingText modes, avoiding D-Bus forwardKey
         // focus-change issues.
@@ -4742,7 +4874,13 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
               0, newComposed, false, oldComposed);
           return;
         }
-        if (useUinputMode()) {
+        // X11 terminals: the X server serializes key delivery and the
+        // terminal processes keys synchronously, so the uinput sync-anchor
+        // round trip (RT 13–42ms + sleep observed in sterm) is pure
+        // latency — the forwardKey path below (validated lag-free in
+        // sterm Surr mode) forwards BS and commits immediately instead.
+        // Wayland terminals keep the anchor (no X-serialization there).
+        if (usesUinputBs) {
           sendBackspaceUinput(deleteLen + 1); // +1 sync BS
           expectedUinputBackspaces_ = deleteLen;
           seenUinputBackspaces_ = 0;
@@ -4768,17 +4906,26 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         }
         committedLen_ = newLen;
         if (!addedPart.empty()) {
-          if (isWayland() && isChromiumCached()) {
+          if ((isWayland() && (isChromiumCached() || isFirefoxOrSnap())) ||
+              (!isWayland() && isChromiumBrowser(appProgram()))) {
             // Wayland has no ordering guarantee between forwardKey (via
             // the compositor's virtual-keyboard protocol) and commitString
             // (via text-input) — an immediate commit races the forwarded
-            // BackSpace keys and eats characters (observed in Chromium:
-            // "đâu" → "dau").  Commit only after the app has had time to
-            // process them.  Pass the stable prefix (already on screen
-            // after the BS deletes): follow-up keystrokes then extend
-            // only the pending suffix, otherwise the whole word would be
-            // re-committed over the prefix ("chào" → "chchào").
-            scheduleDeferredCommit(addedPart, stablePrefix);
+            // BackSpace keys and eats characters (observed in Chromium and
+            // Firefox on native Wayland: "đâu" → "dau").  X11 Chromium
+            // browsers race the same way: forwarded BS arrive as X key
+            // events processed asynchronously by the renderer while
+            // commitString is applied through the IM module — fast typing
+            // then loses characters.  Commit only after the app has had
+            // time to process the BS.  Pass the stable prefix (already on
+            // screen after the BS deletes): follow-up keystrokes then
+            // extend only the pending suffix, otherwise the whole word
+            // would be re-committed over the prefix ("chào" → "chchào").
+            // Electron apps on X11 keep the immediate commit (no race
+            // reports there; leave the proven behavior alone).
+            SKEY_DEBUG() << "Surr: deferred BS-forward '" << addedPart << "'";
+            scheduleDeferredCommit(addedPart, stablePrefix,
+                                   isWayland() ? 0 : kX11BsForwardDeferredUsec);
           } else {
             // X11 serializes forwarded BS and commitString through the
             // X server; non-Chromium Wayland apps (Telegram etc.) process
@@ -4808,11 +4955,15 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           // characters and duplicates the committed text.
           if (!surrounding.isValid()) {
             // The app never reports surrounding text (LibreOffice,
-            // Telegram...).  Chromium-family apps downgrade immediately;
-            // others get one retry: deleting to empty makes the cache
-            // transiently invalid and the app usually re-pushes it on the
-            // next word — a hard downgrade would lock a healthy app into
-            // Uinput for the whole focus session.
+            // Telegram...).  Chromium-family apps downgrade immediately.
+            // Wayland non-Chromium apps get one retry: deleting to empty
+            // makes the cache transiently invalid and the app usually
+            // re-pushes it on the next word — a hard downgrade would lock
+            // a healthy app into Uinput for the whole focus session.
+            // X11 non-Chromium apps never downgrade (see
+            // noteSurroundingFailure): the X-serialized forwardKey
+            // fallback is reliable there, so the first-tone-key verdict
+            // sticks as "use the fallback".
             if (noteSurroundingFailure()) {
               surroundingTextFailed_ = true;
               modeCacheValid_ = false;
@@ -4820,7 +4971,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
                   << "Surr: surrounding text invalid, downgrading to uinput";
             } else {
               SKEY_DEBUG()
-                  << "Surr: surrounding text invalid, retrying next word";
+                  << "Surr: surrounding text invalid, forwardKey fallback";
             }
           } else if (cacheStale) {
             SKEY_DEBUG() << "Surr: surrounding cache stale, falling back";
@@ -4831,8 +4982,11 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         } else {
           // Delete one character at a time.  Chrome has been observed to
           // drop multi-char delete_surrounding_text requests (the commit
-          // then duplicates text), while single-char deletes share the
-          // commitString protocol channel and are reliable.
+          // then duplicates text).  On native Wayland the deletes and the
+          // follow-up commit are NOT serialized (mutter text-input-v3
+          // mediates both) — an immediate commit can race the in-flight
+          // deletes and eat characters, so browser-class apps defer the
+          // commit through scheduleDeferredCommit.
           for (int i = 0; i < deleteLen; ++i) {
             ic_->deleteSurroundingText(-1, 1);
             if (ic_->surroundingText().isValid()) {
@@ -4842,8 +4996,14 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           surroundingInvalidCount_ = 0; // cache works again
           committedLen_ = newLen;
           if (!addedPart.empty()) {
-            SKEY_DEBUG() << "Surr: direct commit '" << addedPart << "'";
-            commitText(addedPart);
+            if (isWayland() && (isChromiumCached() || isFirefoxOrSnap())) {
+              SKEY_DEBUG() << "Surr: deferred commit '" << addedPart << "'";
+              scheduleDeferredCommit(addedPart, stablePrefix,
+                                     kNativeDeleteDeferredUsec);
+            } else {
+              SKEY_DEBUG() << "Surr: direct commit '" << addedPart << "'";
+              commitText(addedPart);
+            }
           }
         }
       } else {
@@ -4879,7 +5039,7 @@ void SKeyState::surroundingBackspace() {
         SKEY_DEBUG()
             << "SurrBS: surrounding text invalid, downgrading to uinput";
       } else {
-        SKEY_DEBUG() << "SurrBS: surrounding text invalid, retrying";
+        SKEY_DEBUG() << "SurrBS: surrounding text invalid, forwardKey fallback";
       }
       ic_->forwardKey(Key(FcitxKey_BackSpace));
     } else {
