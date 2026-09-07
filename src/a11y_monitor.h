@@ -76,6 +76,18 @@ public:
         return focusElementPid_.load(std::memory_order_relaxed);
     }
 
+    /// FB-specific ancestor-chain signatures (see FB_CHAT_ROLE_A/B and
+    /// FB_COMMENT_ROLE in a11y_monitor.cpp).  Captured on the same focus
+    /// event as the snapshot, so they share its freshness window.  X11
+    /// routing: the FB chat composer gets SurroundingText, comments and
+    /// other web editors stay on Uinput.
+    bool isFocusFbChatChain() const {
+        return focusFbChatSig_.load(std::memory_order_relaxed);
+    }
+    bool isFocusFbCommentChain() const {
+        return focusFbCommentSig_.load(std::memory_order_relaxed);
+    }
+
     /// True when the last focus snapshot was a real text-entry element
     /// (role TEXT / ENTRY / DOCUMENT_TEXT).  A Chromium tab whose focus is
     /// NOT a text entry (clicking a Google Sheets cell focuses the
@@ -157,6 +169,8 @@ private:
     std::atomic<bool> focusEditable_{false};
     std::atomic<int> focusProcessId_{-1};
     std::atomic<int> focusElementPid_{-1};
+    std::atomic<bool> focusFbChatSig_{false};
+    std::atomic<bool> focusFbCommentSig_{false};
     std::atomic<bool> focusMultiline_{false};
     std::atomic<bool> focusSingleLine_{false};
     std::atomic<bool> textEntryFocused_{false};

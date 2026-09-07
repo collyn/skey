@@ -222,6 +222,17 @@ static constexpr uint64_t kNativeDeleteDeferredUsec = 5000;
 // inflation (0ms loses characters when typing fast, 15ms+ feels laggy).
 static constexpr uint64_t kX11BsForwardDeferredUsec = 8000; // 8ms (was 10ms —
                                                              // less BS→commit flicker; watch for char loss on very fast typing)
+// X11 Chromium-family Uinput floor: the sync-anchor RT only measures the
+// browser-process IM loopback, NOT the renderer's BS processing — machines
+// with fast loopbacks (Mint: RT 3-7ms) derive sleeps of 4-7ms and lose
+// chars constantly (commit lands before the renderer processed the BS).
+// Flat 20ms — the level the user validated as smooth on Facebook
+// (matches Lotus's "Uinput (Chậm)" fixed 20ms).
+static constexpr uint64_t kFbX11CommitDelayMinUsec = 20000;
+// FB Surr deferred (experiment): 15ms — between the 10ms tuned safe
+// minimum and the 20ms that felt slow; the same-channel D-Bus ordering
+// keeps the loss risk low (the sleep only covers the app's processing).
+static constexpr uint64_t kFbX11SurrDeferredUsec = 15000;
 
 // Uinput commit-delay for non-Chromium apps on native Wayland.  The anchor
 // loopback proves fcitx5 saw the BS, not that the app processed them — Qt
@@ -380,6 +391,14 @@ static std::string userPkgDataDir() {
 // Matches actual Chromium-family browser programs.
 // Used ONLY for address-bar detection — electron/tabby must NOT match here
 // or non-browser Electron apps are misidentified as Chrome address bar.
+static bool isLibreOfficeApp(const std::string &prog) {
+  return prog.find("soffice") != std::string::npos ||
+         prog.find("libreoffice") != std::string::npos ||
+         prog.find("loimpress") != std::string::npos ||
+         prog.find("lowriter") != std::string::npos ||
+         prog.find("localc") != std::string::npos;
+}
+
 static bool isChromiumBrowser(const std::string &prog) {
   static const char *const patterns[] = {
       "chrome",  "chromium",       "google-chrome", "brave",
@@ -1715,6 +1734,16 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
 
   auto caps = ic_->capabilityFlags();
 
+  // LibreOffice (X11): advertises the SurroundingText cap (0x52) but its
+  // surrounding cache is unreliable — stale data and the focus-loss
+  // auto-commit make replacements delete the wrong text ("gõ rất lỗi").
+  // Route to Uinput (user-validated 2026-09-08; the per-app override the
+  // user saved manually does the same — this makes Auto pick it up).
+  if (!isWayland() && isLibreOfficeApp(appProgram())) {
+    SKEY_DEBUG() << "Auto: LibreOffice (X11) → Uinput";
+    return SKeyOutputMode::Uinput;
+  }
+
   if (!caps.test(CapabilityFlag::SurroundingText)) {
     // Native Wayland apps (Telegram) often omit the SurroundingText cap
     // on the compositor text-input path even though they push surrounding
@@ -1727,20 +1756,16 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     }
     // X11 Chromium browsers NEVER advertise the SurroundingText cap (the
     // GTK IM module only sets it when the client pushes surrounding text,
-    // and Chrome doesn't — caps stay 0x6000000032), so without this every
-    // Chrome input falls to Uinput.  A fresh a11y web-editor focus
-    // (Facebook chat: role ENTRY + single-line; excludes the Sheets cell
-    // signature and browser-UI — see a11yFreshWebEditor) routes to
-    // SurroundingText instead: the no-cap runtime fallback (forwardKey BS
-    // + deferred commit, "client has no surrounding text capability") is
-    // the validated Chromium web-editor path on X11.  If the fallback
-    // ever fails, noteSurroundingFailure() downgrades this IC straight
-    // back to Uinput (Chromium-family rule).
-    if (!isWayland() && a11yFreshWebEditor()) {
-      SKEY_DEBUG() << "Auto: X11 Chromium web editor, no Surr cap → "
-                      "SurroundingText";
-      return SKeyOutputMode::SurroundingText;
-    }
+    // and Chrome doesn't — caps stay 0x6000000032), so EVERY Chrome input
+    // falls to Uinput on X11.  That is the desired behavior for the whole
+    // FB page (chat included): with the 20ms Uinput floor the FB renderer
+    // types loss-free, and the previous FB-chat→Surr route was removed
+    // (2026-09-08) — the Surr no-cap fallback's step-wise forwardKey
+    // deletion felt slower than the Uinput kernel BS batch, and the
+    // per-input delay split it enabled is not worth the mode flips.
+    // The FB ancestor-chain signatures are still captured by the monitor
+    // (used by x11ChromiumSurrDelayUsec if Surr ever runs again via a
+    // manual override).
     SKEY_DEBUG() << "Auto: no SurroundingText cap → Uinput";
     return SKeyOutputMode::Uinput;
   }
@@ -2575,6 +2600,18 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
       multiplier *= timing.chromiumDelayFactor;
       minDelay = static_cast<uint64_t>(minDelay * timing.chromiumDelayFactor);
       maxDelay = static_cast<uint64_t>(maxDelay * timing.chromiumDelayFactor);
+      // Floor on X11: see kFbX11CommitDelayMinUsec — a fast loopback
+      // must not shrink the sleep below what the renderer needs.  FLAT
+      // 20ms for every Chromium-family input: Uinput is the fallback
+      // mode that runs precisely when the a11y snapshot is NOT fresh
+      // yet, so the per-input chain signatures are never reliable here
+      // (observed: the first word after a click slept 16ms with no FB
+      // signature and the feel mismatched the Surr words).  The per-
+      // input split lives only in the Surr path (x11ChromiumSurrDelayUsec),
+      // where the FB-chat gate guarantees the signature exists.
+      if (!isWayland()) {
+        minDelay = std::max(minDelay, kFbX11CommitDelayMinUsec);
+      }
     } else if (isWayland()) {
       // Native Wayland apps: the commit delay scales with the number of
       // deletions (see kWaylandNativeCommitDelayPerBsUsec) — keep a small
@@ -4867,14 +4904,15 @@ void SKeyState::flushDeferredCommit() {
   }
 
   // Enforce adaptive minimum delay between BackSpace and commit.
-  // X11 Chromium browsers use the FIXED kX11BsForwardDeferredUsec —
-  // the adaptive EWMA (inflated by a prior Uinput session on the same
-  // IC) or the 15ms default overshoots the 10ms schedule and stretches
-  // the visible BS→commit flicker at word boundaries.
+  // X11 Chromium browsers use the FIXED per-input delay (see
+  // x11ChromiumSurrDelayUsec) — the adaptive EWMA (inflated by a prior
+  // Uinput session on the same IC) or the 15ms default overshoots the
+  // schedule and stretches the visible BS→commit flicker at word
+  // boundaries.
   uint64_t minGapUsec;
   if (!isWayland() && isChromiumCached() && isChromiumBrowser(appProgram()) &&
       !inChromiumAddressBar()) {
-    minGapUsec = kX11BsForwardDeferredUsec;
+    minGapUsec = x11ChromiumSurrDelayUsec();
   } else {
     minGapUsec =
         (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
@@ -4936,6 +4974,13 @@ void SKeyState::forceFlushDeferredCommit() {
   pendingFlushSuffix_.clear();
   deferredCommitTimer_.reset();
   commitText(toCommit);
+}
+
+uint64_t SKeyState::x11ChromiumSurrDelayUsec() const {
+  auto *chainMon = engine_->a11yMonitor();
+  bool fbInput = chainMon && (chainMon->isFocusFbChatChain() ||
+                              chainMon->isFocusFbCommentChain());
+  return fbInput ? kFbX11SurrDeferredUsec : kX11BsForwardDeferredUsec;
 }
 
 void SKeyState::surroundingCommit(const std::string &oldComposed,
@@ -5066,8 +5111,9 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             // Electron apps on X11 keep the immediate commit (no race
             // reports there; leave the proven behavior alone).
             SKEY_DEBUG() << "Surr: deferred BS-forward '" << addedPart << "'";
-            scheduleDeferredCommit(addedPart, stablePrefix,
-                                   isWayland() ? 0 : kX11BsForwardDeferredUsec);
+            scheduleDeferredCommit(
+                addedPart, stablePrefix,
+                isWayland() ? 0 : x11ChromiumSurrDelayUsec());
           } else {
             // X11 serializes forwarded BS and commitString through the
             // X server; non-Chromium Wayland apps (Telegram etc.) process

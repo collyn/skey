@@ -46,6 +46,11 @@ public:
     /// unless the IC is mid-word (Auto must not flip the composition
     /// path half-way through — the word-boundary trigger handles it).
     void invalidateAppModeOverrideCache();
+    /// Per-input deferred-commit delay for the X11 Chromium no-cap Surr
+    /// fallback (forwardKey BS + deferred commit): FB-page inputs get the
+    /// same 20ms floor as the Uinput path (heavy renderer), other inputs
+    /// keep the low kX11BsForwardDeferredUsec.
+    uint64_t x11ChromiumSurrDelayUsec() const;
 
     // Mode switch menu (called from ModeCandidateWord)
     void dismissModeMenu();

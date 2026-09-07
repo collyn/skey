@@ -401,11 +401,25 @@ static const char *roleName(int role) {
     }
 }
 
+// FB-specific ancestor-chain signatures (X11 routing: chat → Surr,
+// comment/other inputs → Uinput).  The chat composer's chain carries
+// FB_CHAT_ROLE_A immediately followed by FB_CHAT_ROLE_B (observed 3/3
+// sessions); the comment box carries FB_COMMENT_ROLE (2/2).  Stable
+// across tree rebuilds within a session.  Both extracted during the
+// document-web ancestor walk.
+static constexpr int FB_CHAT_ROLE_A = 87;
+static constexpr int FB_CHAT_ROLE_B = 16;
+static constexpr int FB_COMMENT_ROLE = 39;
+
 static bool hasDocumentWebAncestor(DBusConnection *bus,
                                    const char *sender,
-                                   const char *path) {
+                                   const char *path,
+                                   bool &chatSig, bool &commentSig) {
     std::string curSender = sender;
     std::string curPath = path;
+    chatSig = false;
+    commentSig = false;
+    int prevRole = -1;
 
     for (int depth = 0; depth < MAX_ANCESTOR_DEPTH; ++depth) {
         std::string parentSender, parentPath;
@@ -420,6 +434,11 @@ static bool hasDocumentWebAncestor(DBusConnection *bus,
         int role = queryRole(bus, parentSender.c_str(), parentPath.c_str());
         A11Y_LOG("  ancestor[%d]: role=%d path=%s", depth, role,
                  parentPath.c_str());
+        if (prevRole == FB_CHAT_ROLE_A && role == FB_CHAT_ROLE_B)
+            chatSig = true;
+        if (role == FB_COMMENT_ROLE)
+            commentSig = true;
+        prevRole = role;
         if (role == ROLE_DOCUMENT_WEB || role == ROLE_DOCUMENT_FRAME)
             return true;
 
@@ -836,8 +855,13 @@ void A11yMonitor::threadFunc() {
                 const char *path = dbus_message_get_path(msg);
                 if (sender && path) {
                     int role = queryRole(bus, sender, path);
+                    bool fbChatSig = false, fbCommentSig = false;
                     bool hasDocWeb = hasDocumentWebAncestor(
-                        bus, sender, path);
+                        bus, sender, path, fbChatSig, fbCommentSig);
+                    focusFbChatSig_.store(fbChatSig,
+                                          std::memory_order_relaxed);
+                    focusFbCommentSig_.store(fbCommentSig,
+                                             std::memory_order_relaxed);
                     // Resolve the pid through the D-Bus daemon for every
                     // focus event (web content included).  GetProcessId on
                     // Chromium's a11y objects stalls on browser-UI
