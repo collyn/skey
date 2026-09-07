@@ -168,15 +168,18 @@ static constexpr UinputTiming kUinputTimingX11 = {
             // multiple on top (was 1.5× — spike RTs of 26ms turned into
             // 39ms sleeps on top of the app's own lag, visibly laggy in
             // terminals; the sync anchor already guarantees X11 ordering)
-    2.0,    // addrBarBsRtMultiplier — omnibox autocomplete needs settle
+    1.5,    // addrBarBsRtMultiplier — omnibox autocomplete needs settle
             // headroom, but the sync anchor already guarantees X11 ordering
-            // (retuned down from 3.0 — 50ms sleeps felt laggy while typing)
+            // (was 2.0: the anchor RT already covers Chrome's BS processing,
+            // ~70ms in the omnibox — the sleep only covers the autocomplete
+            // re-query tail)
     3000,   // commitDelayMinUsec — 3ms floor for native
     10000,  // addrBarCommitDelayMinUsec — 10ms (unchanged)
     20000,  // commitDelayMaxUsec — 20ms cap for native (was 30ms: the
             // cap-bound sleeps were the perceptible part of terminal lag)
-    40000,  // addrBarCommitDelayMaxUsec — 40ms (was 50ms; retuned with the
-            // multiplier above, floor untouched)
+    25000,  // addrBarCommitDelayMaxUsec — 25ms (was 40ms; retuned with the
+            // multiplier above — the cap-bound 40ms sleep on top of a 70ms
+            // anchor RT made omnibox typing feel laggy)
     1.5,    // chromiumDelayFactor — 1.5× → 4.5ms–45ms for Electron/Chromium
             // (was 2.0: 60ms sleeps felt laggy vs Wayland's 18ms cap; the
             // sync anchor is already a true barrier on X11, so the extra
@@ -4403,10 +4406,10 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
       // FullReplace heuristics below.
       bool a11yDecided = false;
       bool wordAtStart = false;
+      std::string a11yText;
+      int a11ySelStart = -1, a11ySelEnd = -1;
       if (!oldComposed.empty()) {
         auto *mon = engine_->a11yMonitor();
-        std::string a11yText;
-        int a11ySelStart = -1, a11ySelEnd = -1;
         // Wait briefly for a snapshot that includes all forwarded keys
         // (the monitor re-polls on text-change signals, so it catches
         // up within ~30ms).  The a11y verdict is authoritative ONLY for
@@ -4433,7 +4436,18 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
         }
       }
       if (wordAtStart) {
-        totalBs = oldComposedLen + 1;
+        // The +1 BS dismisses Chrome's inline autofill (a selection
+        // extending past the typed word).  When the snapshot explicitly
+        // shows a collapsed caret (no selection), skip it — each omnibox
+        // BS costs ~15-23ms of Chrome autocomplete processing (RT 75ms
+        // for 5 BS observed), so first words get noticeably faster.
+        // Unknown (-1) or any active selection keeps the +1 (safe default).
+        bool noAutofillSelection =
+            a11ySelStart >= 0 && a11ySelStart == a11ySelEnd;
+        totalBs = oldComposedLen + (noAutofillSelection ? 0 : 1);
+        if (noAutofillSelection) {
+          SKEY_DEBUG() << "AddrBar: collapsed caret, no autofill +1 BS";
+        }
         commitText = fullComposed;
         {
           // Only auto-restore when the engine's composition still matches
