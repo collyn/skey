@@ -220,7 +220,8 @@ static constexpr uint64_t kNativeDeleteDeferredUsec = 5000;
 // past 40ms.  X11 browser BS need enough time for Chrome's renderer to
 // process the forwarded keys; 10ms fixed covers that without the EWMA
 // inflation (0ms loses characters when typing fast, 15ms+ feels laggy).
-static constexpr uint64_t kX11BsForwardDeferredUsec = 10000;
+static constexpr uint64_t kX11BsForwardDeferredUsec = 8000; // 8ms (was 10ms —
+                                                             // less BS→commit flicker; watch for char loss on very fast typing)
 
 // Uinput commit-delay for non-Chromium apps on native Wayland.  The anchor
 // loopback proves fcitx5 saw the BS, not that the app processed them — Qt
@@ -4866,10 +4867,20 @@ void SKeyState::flushDeferredCommit() {
   }
 
   // Enforce adaptive minimum delay between BackSpace and commit.
-  uint64_t minGapUsec =
-      (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
-          ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
-          : dbusDeferredDefaultUsec;
+  // X11 Chromium browsers use the FIXED kX11BsForwardDeferredUsec —
+  // the adaptive EWMA (inflated by a prior Uinput session on the same
+  // IC) or the 15ms default overshoots the 10ms schedule and stretches
+  // the visible BS→commit flicker at word boundaries.
+  uint64_t minGapUsec;
+  if (!isWayland() && isChromiumCached() && isChromiumBrowser(appProgram()) &&
+      !inChromiumAddressBar()) {
+    minGapUsec = kX11BsForwardDeferredUsec;
+  } else {
+    minGapUsec =
+        (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
+            ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
+            : dbusDeferredDefaultUsec;
+  }
   if (deferredBsSentAt_ > 0) {
     uint64_t nowUs = now(CLOCK_MONOTONIC);
     uint64_t elapsed = nowUs - deferredBsSentAt_;
@@ -5028,6 +5039,13 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         for (int i = 0; i < deleteLen; ++i) {
           ic_->forwardKey(Key(FcitxKey_BackSpace));
         }
+        // Record when the BS were forwarded — flushDeferredCommit()'s
+        // safety guard needs this timestamp to know whether the app has
+        // had time to process them.  It was NEVER set before, so the
+        // guard was dead code and a flush on the next fast key committed
+        // immediately — the in-flight BS then ate the committed text
+        // ("bộ" → "bo", observed 2026-09-07).
+        deferredBsSentAt_ = now(CLOCK_MONOTONIC);
         committedLen_ = newLen;
         if (!addedPart.empty()) {
           if ((isWayland() && (isChromiumCached() || isFirefoxOrSnap())) ||
