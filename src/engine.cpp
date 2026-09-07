@@ -231,7 +231,8 @@ static constexpr uint64_t kX11BsForwardDeferredUsec = 10000; // 10ms — back to
 // signatures) get 20ms — the FB renderer is heavy; everything else keeps
 // a low 10ms floor.
 static constexpr uint64_t kChromeX11CommitDelayMinUsec = 10000;
-static constexpr uint64_t kFbX11CommitDelayMinUsec = 20000;
+static constexpr uint64_t kFbX11CommitDelayMinUsec = 25000; // 25ms (was 20ms —
+                                                             // still losing chars on FB chat in fast typing)
 // FB Surr deferred (experiment): 15ms — between the 10ms tuned safe
 // minimum and the 20ms that felt slow; the same-channel D-Bus ordering
 // keeps the loss risk low (the sleep only covers the app's processing).
@@ -1395,10 +1396,26 @@ bool SKeyState::inChromiumAddressBar() const {
       return false;
     }
     if (mon && mon->isBrowserUIFocused()) {
-      // Fresh true verdict — remember when so a lagging monitor can't
-      // flip the decision mid-word.
-      addrBarUiVerdictAtUsec_ = now(CLOCK_MONOTONIC);
-      return true;
+      // Only a FRESH browser-UI verdict counts, AND the caret must be
+      // addrbar-shaped.  Web-page buttons (FB's own UI) also produce
+      // fresh webDoc=0 button events — indistinguishable from the
+      // omnibox by a11y alone (Mint traces 02:16/02:18: the addrbar
+      // machinery hijacked the chat — extra autofill BS + desync
+      // resets, "mất chữ liên tục") — but the caret disambiguates: the
+      // omnibox is a thin sliver near the window top (1×~20), web
+      // editors report wide carets (FB chat 81×17).  Without a11y the
+      // deterministic cursor-rect fallback below still covers the real
+      // omnibox.  X11-only (this whole branch is !isWayland()).
+      if (mon->isFocusSnapshotFresh(5000000)) {
+        const auto &rect = ic_->cursorRect();
+        bool addrbarShaped = rect.width() <= 2 && rect.height() >= 18 &&
+                             rect.height() <= 24 && rect.top() >= 0 &&
+                             rect.top() < 200;
+        if (addrbarShaped) {
+          addrBarUiVerdictAtUsec_ = now(CLOCK_MONOTONIC);
+          return true;
+        }
+      }
     }
     // Grace window: the monitor processes focus events asynchronously
     // and Chrome's omnibox churn (dropdown open/close, suggestion
