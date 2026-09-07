@@ -293,9 +293,20 @@ void InfoTab::onUpdateAvailable(const QString &newVersion,
   pendingDownloadUrl_ = downloadUrl;
   pendingVersion_ = newVersion;
 
-  QString msg = T("Có phiên bản mới: v%1\n"
-                                  "(Phiên bản hiện tại: %2)\n")
-                    .arg(newVersion, SKEY_VERSION);
+  // A dev build offered its own base version is the channel switch back
+  // to Stable — phrase it as such instead of claiming a newer version.
+  const bool channelSwitchBack =
+      Updater::devCounterOf(SKEY_VERSION) >= 0 &&
+      Updater::devBaseOf(SKEY_VERSION) == newVersion;
+
+  QString msg =
+      channelSwitchBack
+          ? T("Chuyển về bản Stable v%1\n"
+              "(Phiên bản hiện tại: %2 - Dev)\n")
+                .arg(newVersion, SKEY_VERSION)
+          : T("Có phiên bản mới: v%1\n"
+              "(Phiên bản hiện tại: %2)\n")
+                .arg(newVersion, SKEY_VERSION);
 
   if (!releaseNotes.isEmpty()) {
     msg += T("\nGhi chú:\n%1").arg(releaseNotes);
@@ -322,7 +333,9 @@ void InfoTab::onUpdateAvailable(const QString &newVersion,
   }
 
   QMessageBox msgBox(this);
-  msgBox.setWindowTitle(T("Có bản cập nhật"));
+  msgBox.setWindowTitle(
+      channelSwitchBack ? T("Chuyển về bản Stable")
+                        : T("Có bản cập nhật"));
   msgBox.setText(msg);
   msgBox.setIcon(QMessageBox::Information);
   auto *yesBtn = msgBox.addButton(T("Cập nhật ngay"),

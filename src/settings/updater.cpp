@@ -123,13 +123,13 @@ static const QRegularExpression kDevSuffixRe(
     QStringLiteral(R"(^(.*)[-~.]dev\.(\d+)$)"));
 
 /// Dev build counter, or -1 when `version` is not a dev build.
-static int devCounterOf(const QString &version) {
+int Updater::devCounterOf(const QString &version) {
     const auto m = kDevSuffixRe.match(version);
     return m.hasMatch() ? m.captured(2).toInt() : -1;
 }
 
 /// Base version ("0.7.5"), or the whole string when not a dev build.
-static QString devBaseOf(const QString &version) {
+QString Updater::devBaseOf(const QString &version) {
     const auto m = kDevSuffixRe.match(version);
     return m.hasMatch() ? m.captured(1) : version;
 }
@@ -293,7 +293,19 @@ void Updater::onCheckReplyFinished() {
     QVersionNumber remote = QVersionNumber::fromString(remoteVersion);
     QVersionNumber current = QVersionNumber::fromString(currentVersion_);
 
-    if (remote <= current) {
+    bool offer;
+    if (remote != current) {
+        offer = remote > current;
+    } else {
+        // QVersionNumber truncates the dev suffix ("0.8.1~dev.123" →
+        // 0.8.1), so equal versions can still mean the installed build is
+        // a dev prerelease.  Mirror the dev-path rule: a user on a dev
+        // build re-selecting Stable is offered the switch back to the
+        // stable package of the same base (a downgrade by dev counter
+        // only; apt's --allow-downgrades already covers the install).
+        offer = devCounterOf(currentVersion_) >= 0;
+    }
+    if (!offer) {
         emit noUpdateAvailable();
         return;
     }

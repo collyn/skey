@@ -93,14 +93,24 @@ case "$1" in
             # XDG_SESSION_TYPE / DBUS_SESSION_BUS_ADDRESS (the reconnect
             # toggle silently never ran), so route through the user's
             # systemd manager, which carries the session environment.
-            if [ -n "$SUDO_USER" ]; then
+            # SUDO_USER is unset when the update arrives via pkexec (the
+            # settings GUI updater) or a GUI package manager, which used to
+            # skip the fcitx5 restart entirely.  Resolve the console user
+            # through loginctl as a fallback so the restart still runs
+            # inside the user's graphical session.
+            CONSOLE_USER="$SUDO_USER"
+            if [ -z "$CONSOLE_USER" ] && command -v loginctl >/dev/null 2>&1; then
+                CONSOLE_USER=$(loginctl list-sessions --no-legend 2>/dev/null | \
+                    awk '$4=="seat0" {print $3}' | sort -u | head -1)
+            fi
+            if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
                 if command -v systemd-run >/dev/null 2>&1 && \
-                   systemd-run --user --machine="${SUDO_USER}@.host" \
+                   systemd-run --user --machine="${CONSOLE_USER}@.host" \
                        --wait --pipe true 2>/dev/null; then
                     # KillMode=none: fcitx5 -r -d daemonizes inside the
                     # transient unit — default KillMode would kill it when
                     # the unit finishes.
-                    systemd-run --user --machine="${SUDO_USER}@.host" \
+                    systemd-run --user --machine="${CONSOLE_USER}@.host" \
                         --wait --pipe -p KillMode=none \
                         /usr/bin/skey-restart-fcitx5 \
                         2>/dev/null || true
@@ -108,7 +118,7 @@ case "$1" in
                     # Fallback: no user systemd manager — bare restart
                     # (apps may need a focus toggle to reconnect).
                     # DISPLAY passthrough: `su -` resets the environment.
-                    su - "$SUDO_USER" -c "DISPLAY='${DISPLAY:-:0}' fcitx5 -r -d 2>/dev/null" 2>/dev/null || true
+                    su - "$CONSOLE_USER" -c "DISPLAY='${DISPLAY:-:0}' fcitx5 -r -d 2>/dev/null" 2>/dev/null || true
                 fi
             fi
         fi

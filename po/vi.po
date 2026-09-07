@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: fcitx5-skey 0.7.9\n"
 "Report-Msgid-Bugs-To: https://github.com/collyn/skey/issues\n"
-"POT-Creation-Date: 2026-09-04 14:24+0700\n"
+"POT-Creation-Date: 2026-09-07 17:16+0700\n"
 "PO-Revision-Date: 2026-08-28 18:36+0700\n"
 "Last-Translator: Skey contributors\n"
 "Language-Team: Vietnamese\n"
@@ -164,9 +164,9 @@ msgstr "Tùy chỉnh: %1"
 msgid "Hình ảnh (*.png *.svg)"
 msgstr "Hình ảnh (*.png *.svg)"
 
-#: src/settings/appearance_tab.cpp:347 src/settings/info_tab.cpp:540
-#: src/settings/info_tab.cpp:581 src/settings/info_tab.cpp:615
-#: src/settings/info_tab.cpp:625 src/settings/settings_window.cpp:189
+#: src/settings/appearance_tab.cpp:347 src/settings/info_tab.cpp:553
+#: src/settings/info_tab.cpp:594 src/settings/info_tab.cpp:628
+#: src/settings/info_tab.cpp:638 src/settings/settings_window.cpp:189
 msgid "Lỗi"
 msgstr "Lỗi"
 
@@ -426,46 +426,56 @@ msgstr "Khởi động lại Fcitx5"
 msgid "✓ Fcitx5 đã được khởi động lại"
 msgstr "✓ Fcitx5 đã được khởi động lại"
 
-#: src/settings/info_tab.cpp:290 src/settings/info_tab.cpp:342
-#: src/settings/info_tab.cpp:364 src/settings/info_tab.cpp:385
-#: src/settings/info_tab.cpp:406 src/settings/info_tab.cpp:436
-#: src/settings/info_tab.cpp:476
+#: src/settings/info_tab.cpp:290 src/settings/info_tab.cpp:355
+#: src/settings/info_tab.cpp:377 src/settings/info_tab.cpp:398
+#: src/settings/info_tab.cpp:419 src/settings/info_tab.cpp:449
+#: src/settings/info_tab.cpp:489
 msgid "Kiểm tra cập nhật"
 msgstr "Kiểm tra cập nhật"
 
-#: src/settings/info_tab.cpp:296
+#: src/settings/info_tab.cpp:304
+msgid ""
+"Chuyển về bản Stable v%1\n"
+"(Phiên bản hiện tại: %2 - Dev)\n"
+msgstr ""
+"Chuyển về bản Stable v%1\n"
+"(Phiên bản hiện tại: %2 - Dev)\n"
+"Có phiên bản mới: v%1\n"
+"(Phiên bản hiện tại: %2)\n"
+
+#: src/settings/info_tab.cpp:307
 msgid ""
 "Có phiên bản mới: v%1\n"
 "(Phiên bản hiện tại: %2)\n"
 msgstr ""
 "Có phiên bản mới: v%1\n"
 "(Phiên bản hiện tại: %2)\n"
-
-#: src/settings/info_tab.cpp:301
-msgid ""
-"\n"
-"Ghi chú:\n"
-"%1"
-msgstr ""
-"\n"
-"Ghi chú:\n"
-"%1"
-
-#: src/settings/info_tab.cpp:308
-msgid ""
-"\n"
-"\n"
-"Bạn đang dùng NixOS: bản cập nhật sẽ được cài qua nixos-rebuild (không tải "
-"file từ GitHub)."
-msgstr ""
-"\n"
-"\n"
-"Bạn đang dùng NixOS: bản cập nhật sẽ được cài qua nixos-rebuild (không tải "
-"file từ GitHub)."
 
 #: src/settings/info_tab.cpp:312
 msgid ""
 "\n"
+"Ghi chú:\n"
+"%1"
+msgstr ""
+"\n"
+"Ghi chú:\n"
+"%1"
+
+#: src/settings/info_tab.cpp:319
+msgid ""
+"\n"
+"\n"
+"Bạn đang dùng NixOS: bản cập nhật sẽ được cài qua nixos-rebuild (không tải "
+"file từ GitHub)."
+msgstr ""
+"\n"
+"\n"
+"Bạn đang dùng NixOS: bản cập nhật sẽ được cài qua nixos-rebuild (không tải "
+"file từ GitHub)."
+
+#: src/settings/info_tab.cpp:323
+msgid ""
+"\n"
 "Bản Dev sẽ pin flake input vào tag v%1 và ghi services.fcitx5-"
 "skey.devVersion vào configuration.nix."
 msgstr ""
@@ -473,7 +483,7 @@ msgstr ""
 "Bản Dev sẽ pin flake input vào tag v%1 và ghi services.fcitx5-"
 "skey.devVersion vào configuration.nix."
 
-#: src/settings/info_tab.cpp:317
+#: src/settings/info_tab.cpp:328
 msgid ""
 "\n"
 "\n"
@@ -483,112 +493,116 @@ msgstr ""
 "\n"
 "Không tìm thấy file cài đặt phù hợp. Vui lòng tải thủ công từ GitHub."
 
-#: src/settings/info_tab.cpp:319 src/settings/info_tab.cpp:325
+#: src/settings/info_tab.cpp:330 src/settings/info_tab.cpp:338
 msgid "Có bản cập nhật"
 msgstr "Có bản cập nhật"
 
-#: src/settings/info_tab.cpp:328
+#: src/settings/info_tab.cpp:337
+msgid "Chuyển về bản Stable"
+msgstr "Chuyển về bản Stable"
+
+#: src/settings/info_tab.cpp:341
 msgid "Cập nhật ngay"
 msgstr "Cập nhật ngay"
 
-#: src/settings/info_tab.cpp:330
+#: src/settings/info_tab.cpp:343
 msgid "Bỏ qua"
 msgstr "Bỏ qua"
 
-#: src/settings/info_tab.cpp:336
+#: src/settings/info_tab.cpp:349
 msgid "Đang cập nhật..."
 msgstr "Đang cập nhật..."
 
-#: src/settings/info_tab.cpp:352
+#: src/settings/info_tab.cpp:365
 msgid "Đang tải bản cập nhật..."
 msgstr "Đang tải bản cập nhật..."
 
-#: src/settings/info_tab.cpp:371
+#: src/settings/info_tab.cpp:384
 msgid "✓ Bạn đang dùng bản Dev mới hơn hoặc bằng bản Stable hiện tại."
 msgstr "✓ Bạn đang dùng bản Dev mới hơn hoặc bằng bản Stable hiện tại."
 
-#: src/settings/info_tab.cpp:378
+#: src/settings/info_tab.cpp:391
 msgid "✓ Bạn đang dùng phiên bản mới nhất."
 msgstr "✓ Bạn đang dùng phiên bản mới nhất."
 
-#: src/settings/info_tab.cpp:387
+#: src/settings/info_tab.cpp:400
 msgid "✗ Lỗi kiểm tra: %1"
 msgstr "✗ Lỗi kiểm tra: %1"
 
-#: src/settings/info_tab.cpp:396
+#: src/settings/info_tab.cpp:409
 msgid "Đang tải... %1%"
 msgstr "Đang tải... %1%"
 
-#: src/settings/info_tab.cpp:401
+#: src/settings/info_tab.cpp:414
 msgid "Tải xong. Đang cài đặt..."
 msgstr "Tải xong. Đang cài đặt..."
 
-#: src/settings/info_tab.cpp:408
+#: src/settings/info_tab.cpp:421
 msgid "✗ Lỗi tải: %1"
 msgstr "✗ Lỗi tải: %1"
 
-#: src/settings/info_tab.cpp:419
+#: src/settings/info_tab.cpp:432
 msgid ""
 "Đang pin bản Dev và build lại hệ thống bằng nixos-rebuild... (cần quyền root)"
 msgstr ""
 "Đang pin bản Dev và build lại hệ thống bằng nixos-rebuild... (cần quyền root)"
 
-#: src/settings/info_tab.cpp:423
+#: src/settings/info_tab.cpp:436
 msgid "Đang build lại hệ thống bằng nixos-rebuild... (cần quyền root)"
 msgstr "Đang build lại hệ thống bằng nixos-rebuild... (cần quyền root)"
 
-#: src/settings/info_tab.cpp:429
+#: src/settings/info_tab.cpp:442
 msgid "Đang cài đặt... (cần quyền root)"
 msgstr "Đang cài đặt... (cần quyền root)"
 
-#: src/settings/info_tab.cpp:447
+#: src/settings/info_tab.cpp:460
 msgid "✓ %1"
 msgstr "✓ %1"
 
-#: src/settings/info_tab.cpp:450
+#: src/settings/info_tab.cpp:463
 msgid "SKey - Phiên bản: %1"
 msgstr "SKey - Phiên bản: %1"
 
-#: src/settings/info_tab.cpp:468
+#: src/settings/info_tab.cpp:481
 msgid "✗ %1"
 msgstr "✗ %1"
 
-#: src/settings/info_tab.cpp:480
+#: src/settings/info_tab.cpp:493
 msgid "Không thể cập nhật tự động — xem hướng dẫn."
 msgstr "Không thể cập nhật tự động — xem hướng dẫn."
 
-#: src/settings/info_tab.cpp:488
-msgid ""
-"Không thể tự động cập nhật SKey trên NixOS.\n"
-"\n"
-"Hệ thống cần dùng flake với input tên là \"skey\".\n"
-"Thêm vào /etc/nixos/flake.nix:\n"
-"\n"
-"  inputs.skey = {\n"
-"    url = \"github:collyn/skey\";\n"
-"    inputs.nixpkgs.follows = \"nixpkgs\";\n"
-"  };\n"
-"\n"
-"Rồi chạy (cần quyền root):\n"
-"\n"
-"  cd /etc/nixos\n"
-msgstr ""
-"Không thể tự động cập nhật SKey trên NixOS.\n"
-"\n"
-"Hệ thống cần dùng flake với input tên là \"skey\".\n"
-"Thêm vào /etc/nixos/flake.nix:\n"
-"\n"
-"  inputs.skey = {\n"
-"    url = \"github:collyn/skey\";\n"
-"    inputs.nixpkgs.follows = \"nixpkgs\";\n"
-"  };\n"
-"\n"
-"Rồi chạy (cần quyền root):\n"
-"\n"
-"  cd /etc/nixos\n"
-
 #: src/settings/info_tab.cpp:501
 msgid ""
+"Không thể tự động cập nhật SKey trên NixOS.\n"
+"\n"
+"Hệ thống cần dùng flake với input tên là \"skey\".\n"
+"Thêm vào /etc/nixos/flake.nix:\n"
+"\n"
+"  inputs.skey = {\n"
+"    url = \"github:collyn/skey\";\n"
+"    inputs.nixpkgs.follows = \"nixpkgs\";\n"
+"  };\n"
+"\n"
+"Rồi chạy (cần quyền root):\n"
+"\n"
+"  cd /etc/nixos\n"
+msgstr ""
+"Không thể tự động cập nhật SKey trên NixOS.\n"
+"\n"
+"Hệ thống cần dùng flake với input tên là \"skey\".\n"
+"Thêm vào /etc/nixos/flake.nix:\n"
+"\n"
+"  inputs.skey = {\n"
+"    url = \"github:collyn/skey\";\n"
+"    inputs.nixpkgs.follows = \"nixpkgs\";\n"
+"  };\n"
+"\n"
+"Rồi chạy (cần quyền root):\n"
+"\n"
+"  cd /etc/nixos\n"
+
+#: src/settings/info_tab.cpp:514
+msgid ""
 "  # thêm vào configuration.nix:\n"
 "  # services.fcitx5-skey.devVersion = \"%1\";\n"
 "  sudo nix flake lock --override-input skey github:collyn/skey/v%1\n"
@@ -603,7 +617,7 @@ msgstr ""
 "  fcitx5 -r -d\n"
 "\n"
 
-#: src/settings/info_tab.cpp:510
+#: src/settings/info_tab.cpp:523
 msgid ""
 "  sudo nix flake update skey\n"
 "  sudo nixos-rebuild switch --flake /etc/nixos\n"
@@ -615,7 +629,7 @@ msgstr ""
 "  fcitx5 -r -d\n"
 "\n"
 
-#: src/settings/info_tab.cpp:515
+#: src/settings/info_tab.cpp:528
 msgid ""
 "Xem chi tiết: https://github.com/collyn/skey/blob/main/packaging/nixos/"
 "README.md"
@@ -623,23 +637,23 @@ msgstr ""
 "Xem chi tiết: https://github.com/collyn/skey/blob/main/packaging/nixos/"
 "README.md"
 
-#: src/settings/info_tab.cpp:519
+#: src/settings/info_tab.cpp:532
 msgid "Cần cập nhật thủ công"
 msgstr "Cần cập nhật thủ công"
 
-#: src/settings/info_tab.cpp:530
+#: src/settings/info_tab.cpp:543
 msgid "Lưu bản sao lưu cấu hình"
 msgstr "Lưu bản sao lưu cấu hình"
 
-#: src/settings/info_tab.cpp:532 src/settings/info_tab.cpp:609
+#: src/settings/info_tab.cpp:545 src/settings/info_tab.cpp:622
 msgid "Tarball (*.tar.gz)"
 msgstr "Tarball (*.tar.gz)"
 
-#: src/settings/info_tab.cpp:541 src/settings/info_tab.cpp:616
+#: src/settings/info_tab.cpp:554 src/settings/info_tab.cpp:629
 msgid "Không thể tạo thư mục tạm."
 msgstr "Không thể tạo thư mục tạm."
 
-#: src/settings/info_tab.cpp:582
+#: src/settings/info_tab.cpp:595
 msgid ""
 "Không thể tạo tệp sao lưu:\n"
 "%1"
@@ -647,7 +661,7 @@ msgstr ""
 "Không thể tạo tệp sao lưu:\n"
 "%1"
 
-#: src/settings/info_tab.cpp:587
+#: src/settings/info_tab.cpp:600
 msgid ""
 "Cấu hình đã được lưu vào:\n"
 "%1"
@@ -655,11 +669,11 @@ msgstr ""
 "Cấu hình đã được lưu vào:\n"
 "%1"
 
-#: src/settings/info_tab.cpp:590
+#: src/settings/info_tab.cpp:603
 msgid "Đã sao lưu (thiếu tệp)"
 msgstr "Đã sao lưu (thiếu tệp)"
 
-#: src/settings/info_tab.cpp:591
+#: src/settings/info_tab.cpp:604
 msgid ""
 "\n"
 "\n"
@@ -669,15 +683,15 @@ msgstr ""
 "\n"
 "Không tìm thấy (bỏ qua): %1"
 
-#: src/settings/info_tab.cpp:594
+#: src/settings/info_tab.cpp:607
 msgid "Đã sao lưu"
 msgstr "Đã sao lưu"
 
-#: src/settings/info_tab.cpp:600
+#: src/settings/info_tab.cpp:613
 msgid "Khôi phục cấu hình"
 msgstr "Khôi phục cấu hình"
 
-#: src/settings/info_tab.cpp:601
+#: src/settings/info_tab.cpp:614
 msgid ""
 "Khôi phục sẽ ghi đè toàn bộ cấu hình hiện tại.\n"
 "Bạn có chắc muốn tiếp tục?"
@@ -685,11 +699,11 @@ msgstr ""
 "Khôi phục sẽ ghi đè toàn bộ cấu hình hiện tại.\n"
 "Bạn có chắc muốn tiếp tục?"
 
-#: src/settings/info_tab.cpp:608
+#: src/settings/info_tab.cpp:621
 msgid "Chọn tệp sao lưu để khôi phục"
 msgstr "Chọn tệp sao lưu để khôi phục"
 
-#: src/settings/info_tab.cpp:626
+#: src/settings/info_tab.cpp:639
 msgid ""
 "Không thể giải nén tệp sao lưu:\n"
 "%1"
@@ -697,11 +711,11 @@ msgstr ""
 "Không thể giải nén tệp sao lưu:\n"
 "%1"
 
-#: src/settings/info_tab.cpp:674
+#: src/settings/info_tab.cpp:687
 msgid "Cảnh báo"
 msgstr "Cảnh báo"
 
-#: src/settings/info_tab.cpp:675
+#: src/settings/info_tab.cpp:688
 msgid ""
 "Một số tệp không thể khôi phục.\n"
 "Kiểm tra lại tệp sao lưu."
@@ -709,11 +723,11 @@ msgstr ""
 "Một số tệp không thể khôi phục.\n"
 "Kiểm tra lại tệp sao lưu."
 
-#: src/settings/info_tab.cpp:682
+#: src/settings/info_tab.cpp:695
 msgid "Đã khôi phục"
 msgstr "Đã khôi phục"
 
-#: src/settings/info_tab.cpp:683
+#: src/settings/info_tab.cpp:696
 msgid "Cấu hình đã được khôi phục và áp dụng."
 msgstr "Cấu hình đã được khôi phục và áp dụng."
 
@@ -917,34 +931,34 @@ msgstr "Lỗi phân tích JSON: %1"
 msgid "Phản hồi không hợp lệ từ máy chủ."
 msgstr "Phản hồi không hợp lệ từ máy chủ."
 
-#: src/settings/updater.cpp:326
+#: src/settings/updater.cpp:338
 msgid "Không tìm thấy file cài đặt phù hợp cho %1."
 msgstr "Không tìm thấy file cài đặt phù hợp cho %1."
 
-#: src/settings/updater.cpp:334
+#: src/settings/updater.cpp:346
 msgid "NixOS không dùng file cài đặt; dùng nixos-rebuild."
 msgstr "NixOS không dùng file cài đặt; dùng nixos-rebuild."
 
-#: src/settings/updater.cpp:378
+#: src/settings/updater.cpp:390
 msgid "Không thể ghi file: %1"
 msgstr "Không thể ghi file: %1"
 
-#: src/settings/updater.cpp:435
+#: src/settings/updater.cpp:447
 msgid "Cập nhật thành công! Fcitx5 đã được khởi động lại."
 msgstr "Cập nhật thành công! Fcitx5 đã được khởi động lại."
 
-#: src/settings/updater.cpp:440
+#: src/settings/updater.cpp:452
 msgid "Cài đặt thất bại (mã %1): %2"
 msgstr "Cài đặt thất bại (mã %1): %2"
 
-#: src/settings/updater.cpp:443 src/settings/updater.cpp:566
+#: src/settings/updater.cpp:455 src/settings/updater.cpp:578
 msgid "Người dùng đã hủy hoặc lỗi quyền."
 msgstr "Người dùng đã hủy hoặc lỗi quyền."
 
-#: src/settings/updater.cpp:556
+#: src/settings/updater.cpp:568
 msgid "Cập nhật thành công! Hệ thống đã được build lại bằng nixos-rebuild."
 msgstr "Cập nhật thành công! Hệ thống đã được build lại bằng nixos-rebuild."
 
-#: src/settings/updater.cpp:563
+#: src/settings/updater.cpp:575
 msgid "Cập nhật thất bại (mã %1): %2"
 msgstr "Cập nhật thất bại (mã %1): %2"
