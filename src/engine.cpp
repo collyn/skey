@@ -2701,8 +2701,13 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
                                   minDelay, maxDelay);
   // First word after a focus switch: the renderer is settling — heavy
   // first replaces (long words, "ứng") lose chars at the normal sleep.
-  // One-time extra headroom for the first second of the IC.
-  if (!isWayland() && isChromiumCached() && lastActivateUsec_ > 0 &&
+  // One-time extra headroom for the first second of the IC.  The
+  // ADDRESS BAR is excluded: its own machinery + timing are tuned
+  // separately, and the omnibox churn (Deactivate/Activate per
+  // keystroke) re-arms lastActivateUsec_ constantly — the 50ms
+  // headroom would apply to every replace and made the omnibox laggy.
+  if (!isWayland() && isChromiumCached() && !inChromiumAddressBar() &&
+      lastActivateUsec_ > 0 &&
       now(CLOCK_MONOTONIC) - lastActivateUsec_ < 1000000) {
     sleepUsec = std::max(sleepUsec, kFirstWordSettleUsec);
   }
@@ -4448,7 +4453,10 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               // still settling — the immediate commit (no BS, no sleep
               // otherwise) drops or lands out of order with the next
               // forwards ("ứng" first-word loss).  One-time settle.
-              if (!isWayland() && isChromiumCached() && lastActivateUsec_ > 0 &&
+              // Address bar excluded (omnibox churn re-arms the window
+              // constantly).
+              if (!isWayland() && isChromiumCached() &&
+                  !inChromiumAddressBar() && lastActivateUsec_ > 0 &&
                   now(CLOCK_MONOTONIC) - lastActivateUsec_ < 300000) {
                 usleep(kFirstWordSettleUsec);
               }
