@@ -233,6 +233,10 @@ static constexpr uint64_t kX11BsForwardDeferredUsec = 10000; // 10ms — back to
 static constexpr uint64_t kChromeX11CommitDelayMinUsec = 10000;
 static constexpr uint64_t kFbX11CommitDelayMinUsec = 25000; // 25ms (was 20ms —
                                                              // still losing chars on FB chat in fast typing)
+// First-word settle headroom: the renderer is still settling right after
+// a focus switch — the first heavy replace (long words like "ứng") and
+// the first immediate commit (del=0) lose chars at the normal timings.
+static constexpr uint64_t kFirstWordSettleUsec = 50000;
 // FB Surr deferred (experiment): 15ms — between the 10ms tuned safe
 // minimum and the 20ms that felt slow; the same-channel D-Bus ordering
 // keeps the loss risk low (the sleep only covers the app's processing).
@@ -2350,6 +2354,11 @@ void SKeyState::activate() {
                << " cursor=(" << ic_->cursorRect().left() << ","
                << ic_->cursorRect().top() << "," << ic_->cursorRect().width()
                << "x" << ic_->cursorRect().height() << ")";
+
+  // First-word settle tracking (see kFirstWordSettleUsec): the first
+  // replaces after this activation get extra commit headroom while the
+  // renderer settles into the new focus.
+  lastActivateUsec_ = now(CLOCK_MONOTONIC);
 }
 
 // Connect to a unix socket: filesystem path or abstract name (abstract =
@@ -2681,6 +2690,13 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
                         : std::max(elapsed, bsRtEwma_ / 2);
   uint64_t sleepUsec = std::clamp(static_cast<uint64_t>(baseRt * multiplier),
                                   minDelay, maxDelay);
+  // First word after a focus switch: the renderer is settling — heavy
+  // first replaces (long words, "ứng") lose chars at the normal sleep.
+  // One-time extra headroom for the first second of the IC.
+  if (!isWayland() && isChromiumCached() && lastActivateUsec_ > 0 &&
+      now(CLOCK_MONOTONIC) - lastActivateUsec_ < 1000000) {
+    sleepUsec = std::max(sleepUsec, kFirstWordSettleUsec);
+  }
 
   if (uinputLoopbackSlow_) {
     // Previous replacement's loopbacks were slow — give the app extra
@@ -2747,13 +2763,6 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     }
     this->commitText(commitText);
   }
-  // Arm the late-BS grace window on EVERY committed replacement, not
-  // just the safety-timeout force-commit: Chromium's post-commit focus
-  // cycles re-deliver the injected BS (the sync anchor included) — a
-  // re-delivered BS arriving after the commit was treated as a user
-  // backspace and ate the commit's tail ("ứng" → "ứn" in the FB
-  // comment, 02:46 trace).  The grace swallows those loopbacks.
-  uinputLateBsDeadlineUsec_ = now(CLOCK_MONOTONIC) + 400000;
   if (uinputPendingFinalLen_ > 0) {
     committedLen_ = uinputPendingFinalLen_;
     uinputPendingFinalLen_ = 0;
@@ -4418,6 +4427,14 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                            << addPart << "'";
               if (inChromiumAddressBar())
                 addrBarExpectCycle_ = true;
+              // First key right after a focus switch: the renderer is
+              // still settling — the immediate commit (no BS, no sleep
+              // otherwise) drops or lands out of order with the next
+              // forwards ("ứng" first-word loss).  One-time settle.
+              if (!isWayland() && isChromiumCached() && lastActivateUsec_ > 0 &&
+                  now(CLOCK_MONOTONIC) - lastActivateUsec_ < 300000) {
+                usleep(kFirstWordSettleUsec);
+              }
               commitText(addPart);
             }
             committedLen_ = static_cast<int>(utf8::length(newComposed));

@@ -176,6 +176,10 @@ private:
     // suppress trigger-driven mode re-detection while the verdict is
     // stable.  CLOCK_MONOTONIC, 0 = inactive.
     uint64_t triggerBackoffUntilUsec_ = 0;
+    // CLOCK_MONOTONIC timestamp of the most recent activate() — the
+    // first word after a focus switch gets extra settle headroom
+    // (kFirstWordSettleUsec) because the renderer is still settling.
+    uint64_t lastActivateUsec_ = 0;
     mutable int cachedIsChromium_ = -1;  // tristate: -1=unset, 0=false, 1=true
     // Sticky browser-UI verdict for X11: the a11y monitor may lag behind
     // keystrokes; keep the last true verdict for a short grace instead of
