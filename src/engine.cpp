@@ -220,14 +220,17 @@ static constexpr uint64_t kNativeDeleteDeferredUsec = 5000;
 // past 40ms.  X11 browser BS need enough time for Chrome's renderer to
 // process the forwarded keys; 10ms fixed covers that without the EWMA
 // inflation (0ms loses characters when typing fast, 15ms+ feels laggy).
-static constexpr uint64_t kX11BsForwardDeferredUsec = 8000; // 8ms (was 10ms —
-                                                             // less BS→commit flicker; watch for char loss on very fast typing)
-// X11 Chromium-family Uinput floor: the sync-anchor RT only measures the
+static constexpr uint64_t kX11BsForwardDeferredUsec = 10000; // 10ms — back to
+                                                             // the tuned safe minimum: 8ms lost chars on Mint's slower renderer
+                                                             // (the forwarded BS ate the deferred commit, "gõ" → "g")
+// X11 Chromium-family Uinput floors: the sync-anchor RT only measures the
 // browser-process IM loopback, NOT the renderer's BS processing — machines
 // with fast loopbacks (Mint: RT 3-7ms) derive sleeps of 4-7ms and lose
 // chars constantly (commit lands before the renderer processed the BS).
-// Flat 20ms — the level the user validated as smooth on Facebook
-// (matches Lotus's "Uinput (Chậm)" fixed 20ms).
+// Per-input (Auto looks at the input): FB-page inputs (ancestor-chain
+// signatures) get 20ms — the FB renderer is heavy; everything else keeps
+// a low 10ms floor.
+static constexpr uint64_t kChromeX11CommitDelayMinUsec = 10000;
 static constexpr uint64_t kFbX11CommitDelayMinUsec = 20000;
 // FB Surr deferred (experiment): 15ms — between the 10ms tuned safe
 // minimum and the 20ms that felt slow; the same-channel D-Bus ordering
@@ -2618,17 +2621,18 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
       multiplier *= timing.chromiumDelayFactor;
       minDelay = static_cast<uint64_t>(minDelay * timing.chromiumDelayFactor);
       maxDelay = static_cast<uint64_t>(maxDelay * timing.chromiumDelayFactor);
-      // Floor on X11: see kFbX11CommitDelayMinUsec — a fast loopback
-      // must not shrink the sleep below what the renderer needs.  FLAT
-      // 20ms for every Chromium-family input: Uinput is the fallback
-      // mode that runs precisely when the a11y snapshot is NOT fresh
-      // yet, so the per-input chain signatures are never reliable here
-      // (observed: the first word after a click slept 16ms with no FB
-      // signature and the feel mismatched the Surr words).  The per-
-      // input split lives only in the Surr path (x11ChromiumSurrDelayUsec),
-      // where the FB-chat gate guarantees the signature exists.
+      // Floor on X11, per-input: the FB ancestor-chain signatures select
+      // the heavier 20ms floor for FB-page inputs; everything else keeps
+      // the low 10ms.  (When the signature is not yet available — right
+      // after a click — the low floor applies for that first word;
+      // acceptable: the a11y focus event usually lands before the first
+      // tone key.)
       if (!isWayland()) {
-        minDelay = std::max(minDelay, kFbX11CommitDelayMinUsec);
+        auto *chainMon = engine_->a11yMonitor();
+        bool fbInput = chainMon && (chainMon->isFocusFbChatChain() ||
+                                    chainMon->isFocusFbCommentChain());
+        minDelay = std::max(minDelay, fbInput ? kFbX11CommitDelayMinUsec
+                                              : kChromeX11CommitDelayMinUsec);
       }
     } else if (isWayland()) {
       // Native Wayland apps: the commit delay scales with the number of
