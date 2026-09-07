@@ -391,12 +391,31 @@ static std::string userPkgDataDir() {
 // Matches actual Chromium-family browser programs.
 // Used ONLY for address-bar detection — electron/tabby must NOT match here
 // or non-browser Electron apps are misidentified as Chrome address bar.
-static bool isLibreOfficeApp(const std::string &prog) {
-  return prog.find("soffice") != std::string::npos ||
-         prog.find("libreoffice") != std::string::npos ||
-         prog.find("loimpress") != std::string::npos ||
-         prog.find("lowriter") != std::string::npos ||
-         prog.find("localc") != std::string::npos;
+// Office suites with broken SurroundingText implementations (X11-only
+// routing exception, user decision 2026-09-08): LibreOffice's VCL and
+// WPS/OnlyOffice process the fallback's forwarded BS asynchronously and
+// type wrong through Surr.  The a11y signals cannot distinguish them
+// from healthy apps (Telegram has the identical invalid-surrounding
+// signature), so these are name-matched — the pragmatic exception to
+// the input-driven philosophy.
+static bool isOfficeSuiteApp(const std::string &prog) {
+  std::string p = prog;
+  std::transform(p.begin(), p.end(), p.begin(), ::tolower);
+  // LibreOffice family
+  if (p.find("soffice") != std::string::npos ||
+      p.find("libreoffice") != std::string::npos ||
+      p.find("loimpress") != std::string::npos ||
+      p.find("lowriter") != std::string::npos ||
+      p.find("localc") != std::string::npos)
+    return true;
+  // WPS Office family (exact binary names — "et" is too generic for find)
+  if (p == "wps" || p == "wpp" || p == "et" || p == "wpspdf")
+    return true;
+  // OnlyOffice
+  if (p.find("onlyoffice") != std::string::npos ||
+      p.find("desktopeditors") != std::string::npos)
+    return true;
+  return false;
 }
 
 static bool isChromiumBrowser(const std::string &prog) {
@@ -1732,17 +1751,16 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     clearEngineBareCapsSticky();
   }
 
-  auto caps = ic_->capabilityFlags();
-
-  // LibreOffice (X11): advertises the SurroundingText cap (0x52) but its
-  // surrounding cache is unreliable — stale data and the focus-loss
-  // auto-commit make replacements delete the wrong text ("gõ rất lỗi").
-  // Route to Uinput (user-validated 2026-09-08; the per-app override the
-  // user saved manually does the same — this makes Auto pick it up).
-  if (!isWayland() && isLibreOfficeApp(appProgram())) {
-    SKEY_DEBUG() << "Auto: LibreOffice (X11) → Uinput";
+  // Office suites (X11): LibreOffice/WPS/OnlyOffice advertise the
+  // SurroundingText cap but type wrong through it (async key processing
+  // breaks the fallback; a11y cannot tell them from healthy apps) —
+  // hardcoded exception per the user's call, X11-only.
+  if (!isWayland() && isOfficeSuiteApp(appProgram())) {
+    SKEY_DEBUG() << "Auto: office suite (X11) → Uinput";
     return SKeyOutputMode::Uinput;
   }
+
+  auto caps = ic_->capabilityFlags();
 
   if (!caps.test(CapabilityFlag::SurroundingText)) {
     // Native Wayland apps (Telegram) often omit the SurroundingText cap
@@ -4983,6 +5001,8 @@ uint64_t SKeyState::x11ChromiumSurrDelayUsec() const {
   return fbInput ? kFbX11SurrDeferredUsec : kX11BsForwardDeferredUsec;
 }
 
+
+
 void SKeyState::surroundingCommit(const std::string &oldComposed,
                                   const std::string &newComposed) {
   if (newComposed.empty())
@@ -5114,11 +5134,22 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             scheduleDeferredCommit(
                 addedPart, stablePrefix,
                 isWayland() ? 0 : x11ChromiumSurrDelayUsec());
+          } else if (!isWayland()) {
+            // X11 non-Chromium (LibreOffice, Telegram...): this lambda is
+            // the invalid-surrounding fallback.  The X server serializes
+            // key DELIVERY, but apps with asynchronous key processing
+            // (LO's VCL) still process the forwarded BS after the commit
+            // lands — the immediate commit raced them ("gõ rất lỗi" in
+            // LibreOffice, 2026-09-08).  Defer like the browser path;
+            // ~8ms per tone key is harmless for synchronous apps
+            // (Telegram) and fixes the asynchronous ones.
+            SKEY_DEBUG() << "Surr: deferred BS-forward '" << addedPart << "'";
+            scheduleDeferredCommit(addedPart, stablePrefix,
+                                   kX11BsForwardDeferredUsec);
           } else {
-            // X11 serializes forwarded BS and commitString through the
-            // X server; non-Chromium Wayland apps (Telegram etc.) process
-            // forwarded BS + commit in order — commit immediately, no
-            // extra latency.
+            // Non-Chromium Wayland apps (Telegram etc.) process forwarded
+            // BS + commit in order — commit immediately, no extra
+            // latency.
             commitText(addedPart);
           }
         }
