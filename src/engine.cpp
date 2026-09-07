@@ -5155,22 +5155,21 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             scheduleDeferredCommit(
                 addedPart, stablePrefix,
                 isWayland() ? 0 : x11ChromiumSurrDelayUsec());
-          } else if (!isWayland()) {
-            // X11 non-Chromium (LibreOffice, Telegram...): this lambda is
-            // the invalid-surrounding fallback.  The X server serializes
-            // key DELIVERY, but apps with asynchronous key processing
-            // (LO's VCL) still process the forwarded BS after the commit
-            // lands — the immediate commit raced them ("gõ rất lỗi" in
-            // LibreOffice, 2026-09-08).  Defer like the browser path;
-            // ~8ms per tone key is harmless for synchronous apps
-            // (Telegram) and fixes the asynchronous ones.
+          } else if (!isWayland() && isOfficeSuiteApp(appProgram())) {
+            // X11 OFFICE SUITES only (LibreOffice/WPS/OnlyOffice): the
+            // invalid-surrounding fallback.  Their async key processing
+            // (LO's VCL) processes the forwarded BS after an immediate
+            // commit lands ("gõ rất lỗi") — defer like the browser path.
             SKEY_DEBUG() << "Surr: deferred BS-forward '" << addedPart << "'";
             scheduleDeferredCommit(addedPart, stablePrefix,
                                    kX11BsForwardDeferredUsec);
           } else {
-            // Non-Chromium Wayland apps (Telegram etc.) process forwarded
-            // BS + commit in order — commit immediately, no extra
-            // latency.
+            // X11 non-Chromium apps (Telegram etc.) and non-Chromium
+            // Wayland apps process forwarded BS + commit in order (the
+            // X server serializes delivery) — commit immediately, no
+            // extra latency (Telegram's validated lag-free path; the
+            // blanket deferral added a felt 10ms per tone key,
+            // 2026-09-08).
             commitText(addedPart);
           }
         }
