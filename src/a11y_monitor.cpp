@@ -140,8 +140,15 @@ static DBusConnection *connectAtspiBus() {
 // AT-SPI2 accessible queries
 // ---------------------------------------------------------------------------
 
-static int queryProcessId(DBusConnection *bus, const char *sender,
-                          const char *path) {
+// Per-element pid of the focused accessible (GetProcessId round-trip to
+// the app).  Only queried for WEB content (browser-UI elements can stall
+// AT-SPI and block the shared monitor thread).  On old Chrome this
+// returned the per-tab RENDERER pid — the per-input identity visible in
+// the Focus log; Chrome ≥150's native a11y answers -1 for it, which is
+// why the engine no longer relies on it.  Kept as a log/analysis signal
+// only (focusElementPid_), NOT consumed by the engine.
+static int queryElementPid(DBusConnection *bus, const char *sender,
+                           const char *path) {
     DBusError err;
     dbus_error_init(&err);
     DBusMessage *msg = dbus_message_new_method_call(
@@ -149,7 +156,7 @@ static int queryProcessId(DBusConnection *bus, const char *sender,
     if (!msg) return -1;
 
     DBusMessage *reply = dbus_connection_send_with_reply_and_block(
-        bus, msg, 500, &err);
+        bus, msg, 200, &err);
     dbus_message_unref(msg);
 
     int pid = -1;
@@ -164,43 +171,43 @@ static int queryProcessId(DBusConnection *bus, const char *sender,
     return pid;
 }
 
-// Resolve the pid of the focused app's AT-SPI connection via the a11y
-// registry (org.a11y.Bus on the session bus) instead of round-tripping
-// to the app.  GetProcessId on browser-UI elements can stall AT-SPI,
-// and non-web apps (which skip GetProcessId) otherwise leave pid=-1,
-// forcing the engine into full /proc scans — which can misclassify.
-// The registry answers from its own bookkeeping, so it cannot stall.
-static int queryConnectionPid(const char *sender) {
+// Resolve the pid of the focused app's AT-SPI connection via the D-Bus
+// daemon (GetConnectionUnixProcessID on org.freedesktop.DBus) instead of
+// round-tripping to the app.  GetProcessId on Chromium's a11y objects is
+// unreliable: browser-UI elements can stall AT-SPI (blocking the shared
+// monitor thread), and Chrome ≥150's native-a11y mode simply returns -1
+// for it.  The daemon answers from its own bookkeeping and cannot stall.
+// NOTE: this method lives on org.freedesktop.DBus (path
+// /org/freedesktop/DBus) — org.a11y.Bus has NO such method.  It must be
+// called on the SAME bus the monitor is connected to: accessibility runs
+// on a DEDICATED at-spi bus (/run/user/<uid>/at-spi/bus_0), and the
+// senders' unique names only resolve there — calling the session bus
+// silently returns -1 for every focus event (both bugs fixed
+// 2026-09-07).
+static int queryConnectionPid(DBusConnection *bus, const char *sender) {
     DBusError err;
     dbus_error_init(&err);
-    DBusConnection *session = dbus_bus_get(DBUS_BUS_SESSION, &err);
-    if (!session || dbus_error_is_set(&err)) {
-        dbus_error_free(&err);
-        return -1;
-    }
     DBusMessage *msg = dbus_message_new_method_call(
-        "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus",
-        "GetConnectionUnixProcessID");
+        "org.freedesktop.DBus", "/org/freedesktop/DBus",
+        "org.freedesktop.DBus", "GetConnectionUnixProcessID");
     if (!msg) {
-        dbus_connection_unref(session);
         return -1;
     }
     dbus_message_append_args(msg, DBUS_TYPE_STRING, &sender,
                              DBUS_TYPE_INVALID);
     DBusMessage *reply = dbus_connection_send_with_reply_and_block(
-        session, msg, 500, &err);
+        bus, msg, 500, &err);
     dbus_message_unref(msg);
 
     int pid = -1;
     if (reply && !dbus_error_is_set(&err)) {
-        dbus_int32_t p = -1;
-        if (dbus_message_get_args(reply, &err, DBUS_TYPE_INT32, &p,
+        dbus_uint32_t p = 0; // reply signature is 'u'
+        if (dbus_message_get_args(reply, &err, DBUS_TYPE_UINT32, &p,
                                   DBUS_TYPE_INVALID))
             pid = static_cast<int>(p);
         dbus_message_unref(reply);
     }
     dbus_error_free(&err);
-    dbus_connection_unref(session);
     return pid;
 }
 
@@ -831,21 +838,27 @@ void A11yMonitor::threadFunc() {
                     int role = queryRole(bus, sender, path);
                     bool hasDocWeb = hasDocumentWebAncestor(
                         bus, sender, path);
-                    // Only query the app directly for web content.
-                    // Browser-UI elements (the Chromium omnibox) can
-                    // stall AT-SPI calls, and on X11 the autosuggest
-                    // polling shares this monitor thread — a stuck reply
-                    // here delays the polling snapshot and breaks autofill
-                    // detection.  For everything else resolve the pid
-                    // through the a11y registry on the session bus (no app
-                    // round-trip, cannot stall) so the engine gets a
-                    // verified pid instead of falling back to full
-                    // /proc scans.
-                    int procId = hasDocWeb
-                                     ? queryProcessId(bus, sender, path)
-                                     : queryConnectionPid(sender);
+                    // Resolve the pid through the D-Bus daemon for every
+                    // focus event (web content included).  GetProcessId on
+                    // Chromium's a11y objects stalls on browser-UI
+                    // elements (blocking the shared monitor thread and the
+                    // X11 autosuggest polling) and Chrome ≥150's native
+                    // a11y answers -1 for web objects anyway — the
+                    // connection-owner pid from the daemon is the browser
+                    // process itself, which is exactly what the engine's
+                    // /proc marker checks need.
+                    int procId = queryConnectionPid(bus, sender);
                     focusProcessId_.store(procId,
                                           std::memory_order_relaxed);
+                    // Per-element pid (renderer pid on old Chrome) —
+                    // log/analysis signal only, not consumed by the
+                    // engine.  Web content only: browser-UI GetProcessId
+                    // can stall the shared monitor thread.
+                    int elemPid = hasDocWeb
+                                      ? queryElementPid(bus, sender, path)
+                                      : -1;
+                    focusElementPid_.store(elemPid,
+                                           std::memory_order_relaxed);
                     bool isUI = !hasDocWeb;
                     // Track whether the focused element is a real text
                     // entry (role TEXT / ENTRY / DOCUMENT_TEXT).  A
@@ -889,10 +902,10 @@ void A11yMonitor::threadFunc() {
                         std::memory_order_relaxed);
                     A11Y_LOG("Focus: webDoc=%d role=%d(%s) editable=%d "
                              "multiline=%d singleLine=%d states=[%s] "
-                             "pid=%d path=%s",
+                             "pid=%d elemPid=%d path=%s",
                              hasDocWeb, role, roleName(role), editable,
                              multiline, singleLine, states.c_str(), procId,
-                             path);
+                             elemPid, path);
                     // Track the focused text entry so the engine can
                     // query its content directly at replacement time.
                     static constexpr int ROLE_ENTRY = 79;

@@ -808,8 +808,12 @@ SKeyEngine::SKeyEngine(Instance *instance)
     : instance_(instance), factory_([this](InputContext &ic) -> SKeyState * {
         return new SKeyState(this, &ic);
       }) {
-  reloadConfig();
+  // Register BEFORE reloadConfig(): its per-IC invalidation iterates ICs
+  // and calls propertyFor(&factory_), which asserts the factory is
+  // registered on the manager — at startup an IC can already exist
+  // (portal monitor query) before the addon constructor finishes.
   instance_->inputContextManager().registerProperty("skeyState", &factory_);
+  reloadConfig();
   setupTrayMenu();
 
   // Start AT-SPI2 monitor for Chromium address bar detection.
@@ -1132,6 +1136,22 @@ void SKeyEngine::reloadConfig() {
   std::string modeStr = outputModeName(config_.outputMode.value());
   SKEY_INFO() << "Config: outputMode=" << modeStr
               << " debug(from file)=" << g_skeyDebugEnabled;
+
+  // The settings app rewrites conf/skey-app-modes.conf without an IC
+  // activation — the currently focused IC would otherwise keep its stale
+  // per-app override until the next focus cycle.  Invalidate every live
+  // IC's cached program key so refreshAppMode() re-reads the file on the
+  // next effectiveMode() call.  Mid-word ICs keep their mode until the
+  // word boundary — Auto's decision must never flip the composition path
+  // half-way through.  (foreach visits only live ICs — never
+  // lastFocusedInputContext(), which can dangle during startup focus
+  // churn and trips the manager assert in propertyFor().)
+  instance_->inputContextManager().foreach([this](InputContext *ic) {
+    if (auto *state = ic->propertyFor(&factory_)) {
+      state->invalidateAppModeOverrideCache();
+    }
+    return true;
+  });
 }
 
 std::string SKeyEngine::subMode(const InputMethodEntry &entry,
@@ -1255,6 +1275,15 @@ const std::string &SKeyState::appProgram() const {
                 << "'";
   }
   return resolvedProgram_;
+}
+
+void SKeyState::invalidateAppModeOverrideCache() {
+  // Sentinel (≠ any real program name, including empty) forces
+  // refreshAppMode() to re-read conf/skey-app-modes.conf.
+  cachedProgram_ = "\x01";
+  if (viet_.getRawInput().empty()) {
+    modeCacheValid_ = false;
+  }
 }
 
 void SKeyState::refreshAppMode() {
@@ -1630,7 +1659,25 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   // editor's strong hints (e.g. 0x90072 from a chat box) — typing would go
   // nowhere.  Requires a FRESH snapshot: without one we cannot conclude
   // anything and fall back to the cap-based decision below.
-  if (a11yBrowserNonEntry()) {
+  bool nonEntry = a11yBrowserNonEntry();
+  // Non-entry flicker guard (X11 Chrome): the broad check is the
+  // activation-time safe default, but X11 Chrome has NO caps-based
+  // recovery — a transient non-entry focus (combo_box/button UI noise
+  // when re-clicking the chat) would drop a web editor back to Uinput
+  // permanently (21:59:08 repro: role=11 combo_box flipped FB chat).
+  // When this IC already resolved to Surr (only the X11 web-editor
+  // route can produce Surr here — overrides bypass detectAutoMode),
+  // treat non-text-entry ROLES as noise and keep Surr; the Sheets cell
+  // signature (text-entry role + editable=0 + no line state, the narrow
+  // check) still flips to Uinput.  The address bar keeps its own Uinput
+  // machinery and is excluded.
+  if (nonEntry && cachedMode_ == SKeyOutputMode::SurroundingText &&
+      !isWayland() && isChromiumCached() && isChromiumBrowser(appProgram()) &&
+      !inChromiumAddressBar() && !a11yBrowserNonEntryNarrow()) {
+    SKEY_DEBUG() << "Auto: non-entry flicker over X11 web editor, keep Surr";
+    return SKeyOutputMode::SurroundingText;
+  }
+  if (nonEntry) {
     SKEY_DEBUG() << "Auto: focus is not a text entry → Uinput";
     return SKeyOutputMode::Uinput;
   }
@@ -1670,6 +1717,22 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     // cache never arrives.
     if (waylandNativeSurroundingProbe()) {
       SKEY_DEBUG() << "Auto: no SurroundingText cap, probing SurroundingText";
+      return SKeyOutputMode::SurroundingText;
+    }
+    // X11 Chromium browsers NEVER advertise the SurroundingText cap (the
+    // GTK IM module only sets it when the client pushes surrounding text,
+    // and Chrome doesn't — caps stay 0x6000000032), so without this every
+    // Chrome input falls to Uinput.  A fresh a11y web-editor focus
+    // (Facebook chat: role ENTRY + single-line; excludes the Sheets cell
+    // signature and browser-UI — see a11yFreshWebEditor) routes to
+    // SurroundingText instead: the no-cap runtime fallback (forwardKey BS
+    // + deferred commit, "client has no surrounding text capability") is
+    // the validated Chromium web-editor path on X11.  If the fallback
+    // ever fails, noteSurroundingFailure() downgrades this IC straight
+    // back to Uinput (Chromium-family rule).
+    if (!isWayland() && a11yFreshWebEditor()) {
+      SKEY_DEBUG() << "Auto: X11 Chromium web editor, no Surr cap → "
+                      "SurroundingText";
       return SKeyOutputMode::SurroundingText;
     }
     SKEY_DEBUG() << "Auto: no SurroundingText cap → Uinput";
@@ -1819,8 +1882,21 @@ int SKeyState::a11yAppPid() const {
   if (!comm.empty() && comm.back() == '\n') {
     comm.pop_back();
   }
-  if (comm != prog && prog.compare(0, 15, comm) != 0 &&
-      comm.compare(0, 15, prog) != 0) {
+  bool commMatches = comm == prog || prog.compare(0, 15, comm) == 0 ||
+                     comm.compare(0, 15, prog) == 0;
+  // Chromium renames its main/renderer threads ("chrome", "CrRendererMain",
+  // ...), so the comm can never match a full program name like
+  // "google-chrome-stable" — accept the known Chromium thread names when
+  // the program is a Chromium browser (rejecting them killed the entire
+  // pid pipeline for Chrome even after the monitor-side fix, 2026-09-07).
+  if (!commMatches && isChromiumBrowser(prog) &&
+      (comm == "chrome" || comm == "CrRendererMain" ||
+       comm == "CrGpuMain" || comm == "CrUtilityMain")) {
+    commMatches = true;
+  }
+  if (!commMatches) {
+    SKEY_DEBUG() << "a11yAppPid: reject pid " << pid << " comm='" << comm
+                 << "' prog='" << prog << "'";
     return -1; // the focused accessible belongs to a different app
   }
   return pid;

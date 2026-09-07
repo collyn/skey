@@ -63,8 +63,17 @@ public:
     /// PID of the process serving the last focused accessible (-1 when
     /// unknown).  Captured on the monitor thread during focus events so
     /// the engine can run pid-targeted /proc checks instead of full scans.
+    /// Resolved via the D-Bus daemon (connection owner) — never stalls.
     int focusProcessId() const {
         return focusProcessId_.load(std::memory_order_relaxed);
+    }
+
+    /// Per-ELEMENT pid from GetProcessId on the focused accessible (the
+    /// per-tab renderer pid on old Chrome; Chrome ≥150 native a11y
+    /// answers -1).  Web content only — browser-UI queries can stall.
+    /// Log/analysis signal only: NOT consumed by the engine.
+    int focusElementPid() const {
+        return focusElementPid_.load(std::memory_order_relaxed);
     }
 
     /// True when the last focus snapshot was a real text-entry element
@@ -147,6 +156,7 @@ private:
     std::atomic<int> focusRole_{0};
     std::atomic<bool> focusEditable_{false};
     std::atomic<int> focusProcessId_{-1};
+    std::atomic<int> focusElementPid_{-1};
     std::atomic<bool> focusMultiline_{false};
     std::atomic<bool> focusSingleLine_{false};
     std::atomic<bool> textEntryFocused_{false};

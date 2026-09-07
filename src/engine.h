@@ -40,6 +40,12 @@ public:
     void activate();
     void deactivate();
     void reset();
+    /// Called by SKeyEngine::reloadConfig() after the settings app
+    /// rewrote conf/skey-app-modes.conf: drop the cached program key so
+    /// refreshAppMode() re-reads the file, and invalidate the mode cache
+    /// unless the IC is mid-word (Auto must not flip the composition
+    /// path half-way through — the word-boundary trigger handles it).
+    void invalidateAppModeOverrideCache();
 
     // Mode switch menu (called from ModeCandidateWord)
     void dismissModeMenu();
