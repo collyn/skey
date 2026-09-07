@@ -123,13 +123,13 @@ static const QRegularExpression kDevSuffixRe(
     QStringLiteral(R"(^(.*)[-~.]dev\.(\d+)$)"));
 
 /// Dev build counter, or -1 when `version` is not a dev build.
-static int devCounterOf(const QString &version) {
+int Updater::devCounterOf(const QString &version) {
     const auto m = kDevSuffixRe.match(version);
     return m.hasMatch() ? m.captured(2).toInt() : -1;
 }
 
 /// Base version ("0.7.5"), or the whole string when not a dev build.
-static QString devBaseOf(const QString &version) {
+QString Updater::devBaseOf(const QString &version) {
     const auto m = kDevSuffixRe.match(version);
     return m.hasMatch() ? m.captured(1) : version;
 }
@@ -293,7 +293,14 @@ void Updater::onCheckReplyFinished() {
     QVersionNumber remote = QVersionNumber::fromString(remoteVersion);
     QVersionNumber current = QVersionNumber::fromString(currentVersion_);
 
-    if (remote <= current) {
+    // QVersionNumber truncates the dev suffix ("0.8.1~dev.123" → 0.8.1).
+    // A dev build re-selecting Stable must always get the offer: the
+    // switch is an explicit user choice, so it is offered even when
+    // stable is at the same base (downgrade by dev counter only) or
+    // genuinely older than the dev build.  Stable users are still never
+    // offered a downgrade.
+    const bool offer = remote > current || devCounterOf(currentVersion_) >= 0;
+    if (!offer) {
         emit noUpdateAvailable();
         return;
     }
@@ -336,6 +343,7 @@ void Updater::downloadAndInstall(const QString &downloadUrl,
     }
 
     const char *ext = packageExtension(distro_);
+    pendingVersion_ = version;
     pendingPackagePath_ = QStandardPaths::writableLocation(
                               QStandardPaths::TempLocation) +
                           QString("/fcitx5-skey_%1_amd64%2").arg(version, ext);
@@ -399,8 +407,17 @@ void Updater::onDownloadFinished() {
         }
         break;
     case Distro::Fedora:
-        // dnf install resolves dependencies automatically
-        args = {"dnf", "install", "-y", pendingPackagePath_};
+        // dnf install resolves dependencies automatically, but refuses to
+        // downgrade.  In RPM, the tilde dev suffix sorts BELOW its plain
+        // version ("0.8.1~dev.123" < "0.8.1"), so a same-base dev→stable
+        // switch is an upgrade for dnf; only a strictly older stable base
+        // needs `dnf downgrade`.
+        if (QVersionNumber::fromString(pendingVersion_) <
+            QVersionNumber::fromString(currentVersion_)) {
+            args = {"dnf", "downgrade", "-y", pendingPackagePath_};
+        } else {
+            args = {"dnf", "install", "-y", pendingPackagePath_};
+        }
         break;
     case Distro::Arch:
         args = {"pacman", "-U", "--noconfirm", pendingPackagePath_};

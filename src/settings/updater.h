@@ -37,6 +37,13 @@ public:
     /// Distro detected when this Updater was constructed.
     Distro distro() const { return distro_; }
 
+    /// Dev build counter ("0.8.1~dev.123" → 123), or -1 when `version` is
+    /// not a dev build.
+    static int devCounterOf(const QString &version);
+    /// Base version ("0.8.1~dev.123" → "0.8.1"), or the whole string when
+    /// not a dev build.
+    static QString devBaseOf(const QString &version);
+
 signals:
     void updateAvailable(const QString &newVersion,
                          const QString &downloadUrl,
@@ -73,6 +80,9 @@ private:
     QNetworkReply *checkReply_ = nullptr;
     QNetworkReply *downloadReply_ = nullptr;
     QString pendingPackagePath_;
+    // Version of the in-flight download — onDownloadFinished() uses it to
+    // detect downgrades (dnf refuses them) once the download completes.
+    QString pendingVersion_;
     Distro distro_ = Distro::Unknown;
 };
 

@@ -1012,6 +1012,14 @@ int main(int argc, char **argv) {
     runTest({cat, "ww → w (undo ư)", skey::InputMethod::Telex, "ww", "w",
              nullptr, true});
 
+    // After the ư→w toggle the word is non-Vietnamese — the rest stays raw
+    // (like "doww" → "download").  Production path (autoRestore on): typing
+    // "ww"+"ayland" must give "wayland", never "wwayland" — auto-restore
+    // must not revive the cancelled ư mid-word.
+    runTest({cat, "wwayland → wayland (raw after ư→w, auto-restore on)",
+             skey::InputMethod::Telex, "wwayland", "wayland",
+             "non-VN word mode after ư→w toggle", true, false, true});
+
     std::cout << std::endl;
   }
 

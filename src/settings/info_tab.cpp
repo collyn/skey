@@ -24,6 +24,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QVersionNumber>
 
 #ifndef SKEY_VERSION
 #define SKEY_VERSION "0.1.1"
@@ -293,9 +294,27 @@ void InfoTab::onUpdateAvailable(const QString &newVersion,
   pendingDownloadUrl_ = downloadUrl;
   pendingVersion_ = newVersion;
 
-  QString msg = T("Có phiên bản mới: v%1\n"
-                                  "(Phiên bản hiện tại: %2)\n")
-                    .arg(newVersion, SKEY_VERSION);
+  // A dev build offered its base version or an older one is the channel
+  // switch back to Stable — phrase it as such instead of claiming a newer
+  // version.  A dev build offered a NEWER stable is a normal update.
+  const QVersionNumber offered = QVersionNumber::fromString(newVersion);
+  const QVersionNumber devBase =
+      QVersionNumber::fromString(Updater::devBaseOf(SKEY_VERSION));
+  const bool channelSwitchBack =
+      Updater::devCounterOf(SKEY_VERSION) >= 0 && offered <= devBase;
+
+  QString msg =
+      channelSwitchBack
+          ? T("Chuyển về bản Stable v%1\n"
+              "(Phiên bản hiện tại: %2 - Dev)\n")
+                .arg(newVersion, SKEY_VERSION)
+          : T("Có phiên bản mới: v%1\n"
+              "(Phiên bản hiện tại: %2)\n")
+                .arg(newVersion, SKEY_VERSION);
+
+  if (channelSwitchBack && offered < devBase) {
+    msg += T("\nLưu ý: bản Stable này cũ hơn bản Dev đang dùng.");
+  }
 
   if (!releaseNotes.isEmpty()) {
     msg += T("\nGhi chú:\n%1").arg(releaseNotes);
@@ -322,7 +341,9 @@ void InfoTab::onUpdateAvailable(const QString &newVersion,
   }
 
   QMessageBox msgBox(this);
-  msgBox.setWindowTitle(T("Có bản cập nhật"));
+  msgBox.setWindowTitle(
+      channelSwitchBack ? T("Chuyển về bản Stable")
+                        : T("Có bản cập nhật"));
   msgBox.setText(msg);
   msgBox.setIcon(QMessageBox::Information);
   auto *yesBtn = msgBox.addButton(T("Cập nhật ngay"),
