@@ -1429,9 +1429,18 @@ bool SKeyState::inChromiumAddressBar() const {
     // while still latching off after a real focus change.
     if (addrBarUiVerdictAtUsec_ != 0 &&
         now(CLOCK_MONOTONIC) - addrBarUiVerdictAtUsec_ <= 5000000) {
-      return true;
+      // A WIDE caret proves a real editor is focused (the FB search box
+      // can momentarily report a thin IME caret during delete/retype
+      // churn and latch the verdict — the hijack in the 03:07 trace
+      // where "chào" became "hào").  Clear the latch instead.
+      if (ic_->cursorRect().width() > 2) {
+        addrBarUiVerdictAtUsec_ = 0;
+      } else {
+        return true;
+      }
+    } else {
+      addrBarUiVerdictAtUsec_ = 0;
     }
-    addrBarUiVerdictAtUsec_ = 0;
     // Deterministic fallback (no a11y needed): the omnibox cursor rect
     // is a thin 1×~20 sliver near the window top, while Chrome content
     // editors report wider rects or (0,0,0x0).  This keeps the address
@@ -4208,8 +4217,16 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         // An EMPTY snapshot is not desync evidence — Chrome on some
         // distros (Fedora) returns an empty omnibox text while the word
         // is clearly on screen; resetting on it breaks every retype
-        // after a backspace.
-        if (mon && !txt.empty() && txt.find(comp) == std::string::npos) {
+        // after a backspace.  Likewise a snapshot containing only
+        // U+FFFC (object replacement — Chromium's a11y placeholder for
+        // an EMPTY editable, e.g. the FB search box): it fooled the
+        // empty check and reset the composition mid-retype ("chào" →
+        // "hào", 03:07 trace).
+        bool placeholderOnly = (txt == "\xEF\xBF\xBD"); // U+FFFC = Chromium's
+                                                        // a11y placeholder for
+                                                        // an EMPTY editable
+        if (mon && !txt.empty() && !placeholderOnly &&
+            txt.find(comp) == std::string::npos) {
           SKEY_DEBUG() << "AddrBar: desync — bar text '" << txt
                        << "' lacks composed '" << comp << "', resetting";
           viet_.reset();
