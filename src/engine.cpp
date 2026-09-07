@@ -1516,6 +1516,11 @@ static constexpr uint64_t kBareCapsDecisionWindowUsec = 2000000; // 2s
 // own keystroke is treated as the app's reaction (zen fires one after
 // every key), not a focus change.
 static constexpr uint64_t kSurrReattachWindowUsec = 500000; // 500ms
+// Word-boundary mode re-eval trigger back-off: once the trigger has
+// re-evaluated and the verdict is stable, further trigger-driven
+// re-detection is suppressed for this long (in-window input changes
+// still invalidate via reset()/activate()).
+static constexpr uint64_t kTriggerBackoffUsec = 10000000; // 10s
 
 bool SKeyState::a11yFreshWebEditor() const {
   // Browsers only.  The signal means "the user just clicked a real web
@@ -2217,7 +2222,17 @@ void SKeyState::activate() {
   // Invalidate mode cache — new focus means caps/program may have changed.
   chromiumBareCapsUinput_ = false;
   focusSawContentHints_ = false;
-  modeCacheValid_ = false;
+  // Spurious-cycle preservation (X11 Chromium): a deactivate→activate
+  // round trip within 500ms of the same window is Chrome's focus churn,
+  // not an input change — re-running the full detectAutoMode chain per
+  // flicker (measured 15 evaluations across a few activations) is pure
+  // waste.  Keep the cached mode; in-window input moves go through
+  // reset() (which invalidates), and genuine app switches are >500ms.
+  if (!(!isWayland() && isChromiumCached() && lastDeactivateTime_ > 0 &&
+        (now(CLOCK_MONOTONIC) - lastDeactivateTime_) < 500000)) {
+    modeCacheValid_ = false;
+  }
+  triggerBackoffUntilUsec_ = 0;
   cachedIsChromium_ = -1;
   cachedIsFirefoxOrSnap_ = -1;
   cachedIsTerminalApp_ = -1;
@@ -3024,13 +3039,26 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // Uinput yet.
   bool a11yNonEntry = a11yBrowserNonEntryNarrow();
   bool a11yTerminal = a11yChromiumTerminal();
-  if (viet_.getRawInput().empty() &&
-      (modeDecisionPending_ || a11yFreshWebEditor() ||
-       (a11yNonEntry &&
-        (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)) ||
-       (a11yTerminal &&
-        (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)))) {
+  bool triggerHit =
+      modeDecisionPending_ || a11yFreshWebEditor() ||
+      (a11yNonEntry &&
+       (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)) ||
+      (a11yTerminal &&
+       (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput));
+  // Back-off: the a11y triggers above re-evaluate the mode at every word
+  // boundary even when the verdict is stable (measured 31 detectAutoMode
+  // runs for 16 keystrokes in one Chrome input).  Re-check at most every
+  // kTriggerBackoffUsec once the mode is decided; in-window input changes
+  // still invalidate via reset()/activate(), and the bare-caps deferral
+  // (modeDecisionPending_) is never backed off — its 2s window must
+  // catch the caps upgrade in time.
+  if (viet_.getRawInput().empty() && triggerHit &&
+      (modeDecisionPending_ || !modeCacheValid_ ||
+       now(CLOCK_MONOTONIC) >= triggerBackoffUntilUsec_)) {
     modeCacheValid_ = false;
+    if (!modeDecisionPending_) {
+      triggerBackoffUntilUsec_ = now(CLOCK_MONOTONIC) + kTriggerBackoffUsec;
+    }
   }
 
   // Track current word state so reclaim targets the right word
