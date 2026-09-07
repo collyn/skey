@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: fcitx5-skey 0.8.1\n"
 "Report-Msgid-Bugs-To: https://github.com/collyn/skey/issues\n"
-"POT-Creation-Date: 2026-09-07 17:16+0700\n"
+"POT-Creation-Date: 2026-09-07 17:30+0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -150,9 +150,9 @@ msgstr ""
 msgid "Hình ảnh (*.png *.svg)"
 msgstr ""
 
-#: src/settings/appearance_tab.cpp:347 src/settings/info_tab.cpp:553
-#: src/settings/info_tab.cpp:594 src/settings/info_tab.cpp:628
-#: src/settings/info_tab.cpp:638 src/settings/settings_window.cpp:189
+#: src/settings/appearance_tab.cpp:347 src/settings/info_tab.cpp:561
+#: src/settings/info_tab.cpp:602 src/settings/info_tab.cpp:636
+#: src/settings/info_tab.cpp:646 src/settings/settings_window.cpp:189
 msgid "Lỗi"
 msgstr ""
 
@@ -328,109 +328,115 @@ msgstr ""
 msgid "(không có)"
 msgstr ""
 
-#: src/settings/info_tab.cpp:100
+#: src/settings/info_tab.cpp:101
 msgid "SKey - Phiên bản: "
 msgstr ""
 
-#: src/settings/info_tab.cpp:114
+#: src/settings/info_tab.cpp:115
 msgid "<a href=\"%1\">%1</a>"
 msgstr ""
 
-#: src/settings/info_tab.cpp:126
+#: src/settings/info_tab.cpp:127
 msgid "Kênh cập nhật:"
 msgstr ""
 
-#: src/settings/info_tab.cpp:128
+#: src/settings/info_tab.cpp:129
 msgid "Ổn định (Stable)"
 msgstr ""
 
-#: src/settings/info_tab.cpp:130
+#: src/settings/info_tab.cpp:131
 msgid "Thử nghiệm (Dev)"
 msgstr ""
 
-#: src/settings/info_tab.cpp:146
+#: src/settings/info_tab.cpp:147
 msgid "Check Update"
 msgstr ""
 
-#: src/settings/info_tab.cpp:149
+#: src/settings/info_tab.cpp:150
 msgid "Restart Fcitx5"
 msgstr ""
 
-#: src/settings/info_tab.cpp:180
+#: src/settings/info_tab.cpp:181
 msgid "Liên hệ"
 msgstr ""
 
-#: src/settings/info_tab.cpp:185
+#: src/settings/info_tab.cpp:186
 msgid "Nguyễn Tiến Huy"
 msgstr ""
 
-#: src/settings/info_tab.cpp:191
+#: src/settings/info_tab.cpp:192
 msgid "<a href=\"https://t.me/+irlw1EnOtAkxNDc1\">Telegram Group</a>"
 msgstr ""
 
-#: src/settings/info_tab.cpp:211
+#: src/settings/info_tab.cpp:212
 msgid "Backup / Restore:"
 msgstr ""
 
-#: src/settings/info_tab.cpp:215
+#: src/settings/info_tab.cpp:216
 msgid "Sao lưu"
 msgstr ""
 
-#: src/settings/info_tab.cpp:220
+#: src/settings/info_tab.cpp:221
 msgid "Khôi phục"
 msgstr ""
 
-#: src/settings/info_tab.cpp:234
+#: src/settings/info_tab.cpp:235
 msgid "Đang kiểm tra..."
 msgstr ""
 
-#: src/settings/info_tab.cpp:235
+#: src/settings/info_tab.cpp:236
 msgid "Đang kết nối tới GitHub..."
 msgstr ""
 
-#: src/settings/info_tab.cpp:268
+#: src/settings/info_tab.cpp:269
 msgid "Đang khởi động lại..."
 msgstr ""
 
-#: src/settings/info_tab.cpp:269
+#: src/settings/info_tab.cpp:270
 msgid "Đang khởi động lại Fcitx5..."
 msgstr ""
 
-#: src/settings/info_tab.cpp:279
+#: src/settings/info_tab.cpp:280
 msgid "Khởi động lại Fcitx5"
 msgstr ""
 
-#: src/settings/info_tab.cpp:280
+#: src/settings/info_tab.cpp:281
 msgid "✓ Fcitx5 đã được khởi động lại"
 msgstr ""
 
-#: src/settings/info_tab.cpp:290 src/settings/info_tab.cpp:355
-#: src/settings/info_tab.cpp:377 src/settings/info_tab.cpp:398
-#: src/settings/info_tab.cpp:419 src/settings/info_tab.cpp:449
-#: src/settings/info_tab.cpp:489
+#: src/settings/info_tab.cpp:291 src/settings/info_tab.cpp:363
+#: src/settings/info_tab.cpp:385 src/settings/info_tab.cpp:406
+#: src/settings/info_tab.cpp:427 src/settings/info_tab.cpp:457
+#: src/settings/info_tab.cpp:497
 msgid "Kiểm tra cập nhật"
 msgstr ""
 
-#: src/settings/info_tab.cpp:304
+#: src/settings/info_tab.cpp:308
 msgid ""
 "Chuyển về bản Stable v%1\n"
 "(Phiên bản hiện tại: %2 - Dev)\n"
 msgstr ""
 
-#: src/settings/info_tab.cpp:307
+#: src/settings/info_tab.cpp:311
 msgid ""
 "Có phiên bản mới: v%1\n"
 "(Phiên bản hiện tại: %2)\n"
 msgstr ""
 
-#: src/settings/info_tab.cpp:312
+#: src/settings/info_tab.cpp:316
+msgid ""
+"\n"
+"Lưu ý: bản Stable này cũ hơn bản Dev đang dùng."
+msgstr ""
+
+#: src/settings/info_tab.cpp:320
 msgid ""
 "\n"
 "Ghi chú:\n"
 "%1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:319
+#: src/settings/info_tab.cpp:327
 msgid ""
 "\n"
 "\n"
@@ -438,98 +444,98 @@ msgid ""
 "file từ GitHub)."
 msgstr ""
 
-#: src/settings/info_tab.cpp:323
+#: src/settings/info_tab.cpp:331
 msgid ""
 "\n"
 "Bản Dev sẽ pin flake input vào tag v%1 và ghi services.fcitx5-"
 "skey.devVersion vào configuration.nix."
 msgstr ""
 
-#: src/settings/info_tab.cpp:328
+#: src/settings/info_tab.cpp:336
 msgid ""
 "\n"
 "\n"
 "Không tìm thấy file cài đặt phù hợp. Vui lòng tải thủ công từ GitHub."
 msgstr ""
 
-#: src/settings/info_tab.cpp:330 src/settings/info_tab.cpp:338
+#: src/settings/info_tab.cpp:338 src/settings/info_tab.cpp:346
 msgid "Có bản cập nhật"
 msgstr ""
 
-#: src/settings/info_tab.cpp:337
+#: src/settings/info_tab.cpp:345
 msgid "Chuyển về bản Stable"
 msgstr ""
 
-#: src/settings/info_tab.cpp:341
+#: src/settings/info_tab.cpp:349
 msgid "Cập nhật ngay"
 msgstr ""
 
-#: src/settings/info_tab.cpp:343
+#: src/settings/info_tab.cpp:351
 msgid "Bỏ qua"
 msgstr ""
 
-#: src/settings/info_tab.cpp:349
+#: src/settings/info_tab.cpp:357
 msgid "Đang cập nhật..."
 msgstr ""
 
-#: src/settings/info_tab.cpp:365
+#: src/settings/info_tab.cpp:373
 msgid "Đang tải bản cập nhật..."
 msgstr ""
 
-#: src/settings/info_tab.cpp:384
+#: src/settings/info_tab.cpp:392
 msgid "✓ Bạn đang dùng bản Dev mới hơn hoặc bằng bản Stable hiện tại."
 msgstr ""
 
-#: src/settings/info_tab.cpp:391
+#: src/settings/info_tab.cpp:399
 msgid "✓ Bạn đang dùng phiên bản mới nhất."
 msgstr ""
 
-#: src/settings/info_tab.cpp:400
+#: src/settings/info_tab.cpp:408
 msgid "✗ Lỗi kiểm tra: %1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:409
+#: src/settings/info_tab.cpp:417
 msgid "Đang tải... %1%"
 msgstr ""
 
-#: src/settings/info_tab.cpp:414
+#: src/settings/info_tab.cpp:422
 msgid "Tải xong. Đang cài đặt..."
 msgstr ""
 
-#: src/settings/info_tab.cpp:421
+#: src/settings/info_tab.cpp:429
 msgid "✗ Lỗi tải: %1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:432
+#: src/settings/info_tab.cpp:440
 msgid ""
 "Đang pin bản Dev và build lại hệ thống bằng nixos-rebuild... (cần quyền root)"
 msgstr ""
 
-#: src/settings/info_tab.cpp:436
+#: src/settings/info_tab.cpp:444
 msgid "Đang build lại hệ thống bằng nixos-rebuild... (cần quyền root)"
 msgstr ""
 
-#: src/settings/info_tab.cpp:442
+#: src/settings/info_tab.cpp:450
 msgid "Đang cài đặt... (cần quyền root)"
 msgstr ""
 
-#: src/settings/info_tab.cpp:460
+#: src/settings/info_tab.cpp:468
 msgid "✓ %1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:463
+#: src/settings/info_tab.cpp:471
 msgid "SKey - Phiên bản: %1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:481
+#: src/settings/info_tab.cpp:489
 msgid "✗ %1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:493
+#: src/settings/info_tab.cpp:501
 msgid "Không thể cập nhật tự động — xem hướng dẫn."
 msgstr ""
 
-#: src/settings/info_tab.cpp:501
+#: src/settings/info_tab.cpp:509
 msgid ""
 "Không thể tự động cập nhật SKey trên NixOS.\n"
 "\n"
@@ -546,7 +552,7 @@ msgid ""
 "  cd /etc/nixos\n"
 msgstr ""
 
-#: src/settings/info_tab.cpp:514
+#: src/settings/info_tab.cpp:522
 msgid ""
 "  # thêm vào configuration.nix:\n"
 "  # services.fcitx5-skey.devVersion = \"%1\";\n"
@@ -556,7 +562,7 @@ msgid ""
 "\n"
 msgstr ""
 
-#: src/settings/info_tab.cpp:523
+#: src/settings/info_tab.cpp:531
 msgid ""
 "  sudo nix flake update skey\n"
 "  sudo nixos-rebuild switch --flake /etc/nixos\n"
@@ -564,90 +570,90 @@ msgid ""
 "\n"
 msgstr ""
 
-#: src/settings/info_tab.cpp:528
+#: src/settings/info_tab.cpp:536
 msgid ""
 "Xem chi tiết: https://github.com/collyn/skey/blob/main/packaging/nixos/"
 "README.md"
 msgstr ""
 
-#: src/settings/info_tab.cpp:532
+#: src/settings/info_tab.cpp:540
 msgid "Cần cập nhật thủ công"
 msgstr ""
 
-#: src/settings/info_tab.cpp:543
+#: src/settings/info_tab.cpp:551
 msgid "Lưu bản sao lưu cấu hình"
 msgstr ""
 
-#: src/settings/info_tab.cpp:545 src/settings/info_tab.cpp:622
+#: src/settings/info_tab.cpp:553 src/settings/info_tab.cpp:630
 msgid "Tarball (*.tar.gz)"
 msgstr ""
 
-#: src/settings/info_tab.cpp:554 src/settings/info_tab.cpp:629
+#: src/settings/info_tab.cpp:562 src/settings/info_tab.cpp:637
 msgid "Không thể tạo thư mục tạm."
 msgstr ""
 
-#: src/settings/info_tab.cpp:595
+#: src/settings/info_tab.cpp:603
 msgid ""
 "Không thể tạo tệp sao lưu:\n"
 "%1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:600
+#: src/settings/info_tab.cpp:608
 msgid ""
 "Cấu hình đã được lưu vào:\n"
 "%1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:603
+#: src/settings/info_tab.cpp:611
 msgid "Đã sao lưu (thiếu tệp)"
 msgstr ""
 
-#: src/settings/info_tab.cpp:604
+#: src/settings/info_tab.cpp:612
 msgid ""
 "\n"
 "\n"
 "Không tìm thấy (bỏ qua): %1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:607
+#: src/settings/info_tab.cpp:615
 msgid "Đã sao lưu"
 msgstr ""
 
-#: src/settings/info_tab.cpp:613
+#: src/settings/info_tab.cpp:621
 msgid "Khôi phục cấu hình"
 msgstr ""
 
-#: src/settings/info_tab.cpp:614
+#: src/settings/info_tab.cpp:622
 msgid ""
 "Khôi phục sẽ ghi đè toàn bộ cấu hình hiện tại.\n"
 "Bạn có chắc muốn tiếp tục?"
 msgstr ""
 
-#: src/settings/info_tab.cpp:621
+#: src/settings/info_tab.cpp:629
 msgid "Chọn tệp sao lưu để khôi phục"
 msgstr ""
 
-#: src/settings/info_tab.cpp:639
+#: src/settings/info_tab.cpp:647
 msgid ""
 "Không thể giải nén tệp sao lưu:\n"
 "%1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:687
+#: src/settings/info_tab.cpp:695
 msgid "Cảnh báo"
 msgstr ""
 
-#: src/settings/info_tab.cpp:688
+#: src/settings/info_tab.cpp:696
 msgid ""
 "Một số tệp không thể khôi phục.\n"
 "Kiểm tra lại tệp sao lưu."
 msgstr ""
 
-#: src/settings/info_tab.cpp:695
+#: src/settings/info_tab.cpp:703
 msgid "Đã khôi phục"
 msgstr ""
 
-#: src/settings/info_tab.cpp:696
+#: src/settings/info_tab.cpp:704
 msgid "Cấu hình đã được khôi phục và áp dụng."
 msgstr ""
 
@@ -841,34 +847,34 @@ msgstr ""
 msgid "Phản hồi không hợp lệ từ máy chủ."
 msgstr ""
 
-#: src/settings/updater.cpp:338
+#: src/settings/updater.cpp:333
 msgid "Không tìm thấy file cài đặt phù hợp cho %1."
 msgstr ""
 
-#: src/settings/updater.cpp:346
+#: src/settings/updater.cpp:341
 msgid "NixOS không dùng file cài đặt; dùng nixos-rebuild."
 msgstr ""
 
-#: src/settings/updater.cpp:390
+#: src/settings/updater.cpp:386
 msgid "Không thể ghi file: %1"
 msgstr ""
 
-#: src/settings/updater.cpp:447
+#: src/settings/updater.cpp:452
 msgid "Cập nhật thành công! Fcitx5 đã được khởi động lại."
 msgstr ""
 
-#: src/settings/updater.cpp:452
+#: src/settings/updater.cpp:457
 msgid "Cài đặt thất bại (mã %1): %2"
 msgstr ""
 
-#: src/settings/updater.cpp:455 src/settings/updater.cpp:578
+#: src/settings/updater.cpp:460 src/settings/updater.cpp:583
 msgid "Người dùng đã hủy hoặc lỗi quyền."
 msgstr ""
 
-#: src/settings/updater.cpp:568
+#: src/settings/updater.cpp:573
 msgid "Cập nhật thành công! Hệ thống đã được build lại bằng nixos-rebuild."
 msgstr ""
 
-#: src/settings/updater.cpp:575
+#: src/settings/updater.cpp:580
 msgid "Cập nhật thất bại (mã %1): %2"
 msgstr ""

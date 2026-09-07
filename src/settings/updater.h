@@ -80,6 +80,9 @@ private:
     QNetworkReply *checkReply_ = nullptr;
     QNetworkReply *downloadReply_ = nullptr;
     QString pendingPackagePath_;
+    // Version of the in-flight download — onDownloadFinished() uses it to
+    // detect downgrades (dnf refuses them) once the download completes.
+    QString pendingVersion_;
     Distro distro_ = Distro::Unknown;
 };
 
