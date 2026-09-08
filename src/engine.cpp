@@ -235,6 +235,9 @@ static constexpr uint64_t kChromeX11CommitDelayMinUsec = 10000;
 static constexpr uint64_t kFbX11CommitDelayMinUsec =
     25000; // 25ms (was 20ms —
            // still losing chars on FB chat in fast typing)
+// VTE terminal escape deferral (see isVteTerminalApp) — async key
+// processing needs the headroom; still far below the anchor cost.
+static constexpr uint64_t kVteTerminalDeferredUsec = 20000;
 // First-word settle headroom: the renderer is still settling right after
 // a focus switch — the first heavy replace (long words like "ứng") and
 // the first immediate commit (del=0) lose chars at the normal timings.
@@ -426,6 +429,20 @@ static bool isOfficeSuiteApp(const std::string &prog) {
       p.find("desktopeditors") != std::string::npos)
     return true;
   return false;
+}
+
+// VTE-based terminals process forwarded keys asynchronously (unlike
+// sterm/xterm which are X-serialized and synchronous) — the terminal
+// escape's immediate commit races them.
+static bool isVteTerminalApp(const std::string &prog) {
+  std::string lower = prog;
+  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+  return lower.find("gnome-terminal") != std::string::npos ||
+         lower.find("tilix") != std::string::npos ||
+         lower.find("xfce4-terminal") != std::string::npos ||
+         lower.find("kgx") != std::string::npos ||
+         lower.find("ptyxis") != std::string::npos ||
+         lower.find("console") != std::string::npos;
 }
 
 static bool isChromiumBrowser(const std::string &prog) {
@@ -4431,7 +4448,20 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                   ic_->forwardKey(Key(FcitxKey_BackSpace));
                 }
                 if (!addPart.empty()) {
-                  commitText(addPart);
+                  // VTE-based terminals (gnome-terminal, tilix,
+                  // xfce4-terminal...) process the forwarded BS
+                  // ASYNCHRONOUSLY — the immediate commit raced them
+                  // and the BS ate the tone mark (Mint reports).
+                  // Defer 20ms: far below the anchor cost (13-99ms) for
+                  // the synchronous terminals, enough for VTE.
+                  if (isVteTerminalApp(appProgram())) {
+                    deferredBsSentAt_ = now(CLOCK_MONOTONIC);
+                    scheduleDeferredCommit(addPart,
+                                           newComposed.substr(0, pfx),
+                                           kVteTerminalDeferredUsec);
+                  } else {
+                    commitText(addPart);
+                  }
                 }
                 committedLen_ = static_cast<int>(utf8::length(newComposed));
                 return;
