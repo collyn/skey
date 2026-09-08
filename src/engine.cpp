@@ -220,9 +220,10 @@ static constexpr uint64_t kNativeDeleteDeferredUsec = 5000;
 // past 40ms.  X11 browser BS need enough time for Chrome's renderer to
 // process the forwarded keys; 10ms fixed covers that without the EWMA
 // inflation (0ms loses characters when typing fast, 15ms+ feels laggy).
-static constexpr uint64_t kX11BsForwardDeferredUsec = 10000; // 10ms — back to
-                                                             // the tuned safe minimum: 8ms lost chars on Mint's slower renderer
-                                                             // (the forwarded BS ate the deferred commit, "gõ" → "g")
+static constexpr uint64_t kX11BsForwardDeferredUsec =
+    10000; // 10ms — back to
+           // the tuned safe minimum: 8ms lost chars on Mint's slower renderer
+           // (the forwarded BS ate the deferred commit, "gõ" → "g")
 // X11 Chromium-family Uinput floors: the sync-anchor RT only measures the
 // browser-process IM loopback, NOT the renderer's BS processing — machines
 // with fast loopbacks (Mint: RT 3-7ms) derive sleeps of 4-7ms and lose
@@ -231,8 +232,9 @@ static constexpr uint64_t kX11BsForwardDeferredUsec = 10000; // 10ms — back to
 // signatures) get 20ms — the FB renderer is heavy; everything else keeps
 // a low 10ms floor.
 static constexpr uint64_t kChromeX11CommitDelayMinUsec = 10000;
-static constexpr uint64_t kFbX11CommitDelayMinUsec = 25000; // 25ms (was 20ms —
-                                                             // still losing chars on FB chat in fast typing)
+static constexpr uint64_t kFbX11CommitDelayMinUsec =
+    25000; // 25ms (was 20ms —
+           // still losing chars on FB chat in fast typing)
 // First-word settle headroom: the renderer is still settling right after
 // a focus switch — the first heavy replace (long words like "ứng") and
 // the first immediate commit (del=0) lose chars at the normal timings.
@@ -431,8 +433,10 @@ static bool isChromiumBrowser(const std::string &prog) {
       "chrome",  "chromium",       "google-chrome", "brave",
       "vivaldi", "microsoft-edge", "opera",
   };
+  std::string lower = prog;
+  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
   for (const char *p : patterns) {
-    if (prog.find(p) != std::string::npos) {
+    if (lower.find(p) != std::string::npos) {
       return true;
     }
   }
@@ -457,8 +461,13 @@ static bool exeHasChromiumMarkers(const std::string &exe) {
   size_t lastSlash = exe.rfind('/');
   if (lastSlash != std::string::npos) {
     std::string exeDir = exe.substr(0, lastSlash);
+    // Newer Electron builds renamed the crashpad handler to
+    // "browser_crashpad_handler" (ChatGPT on Mint ships only that one —
+    // the chrome_* check missed it and the app fell through every
+    // detection tier, 2026-09-08).
     if (access((exeDir + "/chrome-sandbox").c_str(), F_OK) == 0 ||
-        access((exeDir + "/chrome_crashpad_handler").c_str(), F_OK) == 0) {
+        access((exeDir + "/chrome_crashpad_handler").c_str(), F_OK) == 0 ||
+        access((exeDir + "/browser_crashpad_handler").c_str(), F_OK) == 0) {
       return true;
     }
   }
@@ -624,7 +633,7 @@ static bool processHasChromiumMarkers(pid_t pid) {
 // with a depth bound — no full /proc scan.
 static bool processHasShellChildPid(pid_t pid) {
   static const char *const shells[] = {"bash", "zsh", "fish", "sh",
-                                       "dash", "ksh",  "tcsh", "csh"};
+                                       "dash", "ksh", "tcsh", "csh"};
   std::vector<pid_t> frontier;
   frontier.push_back(pid);
   for (int depth = 0; depth < 4 && !frontier.empty(); ++depth) {
@@ -684,7 +693,7 @@ static bool processHasShellChild(const std::string &prog) {
     return false;
   }
   static const char *const shells[] = {"bash", "zsh", "fish", "sh",
-                                       "dash", "ksh",  "tcsh", "csh"};
+                                       "dash", "ksh", "tcsh", "csh"};
   DIR *dir = opendir("/proc");
   if (!dir) {
     return false;
@@ -1193,7 +1202,7 @@ void SKeyEngine::reloadConfig() {
   // half-way through.  (foreach visits only live ICs — never
   // lastFocusedInputContext(), which can dangle during startup focus
   // churn and trips the manager assert in propertyFor().)
-  instance_->inputContextManager().foreach([this](InputContext *ic) {
+  instance_->inputContextManager().foreach ([this](InputContext *ic) {
     if (auto *state = ic->propertyFor(&factory_)) {
       state->invalidateAppModeOverrideCache();
     }
@@ -1547,23 +1556,22 @@ bool SKeyState::useUinputMode() const {
 // Any content hint at all — used to remember "this focus session showed
 // hints" (focusSawContentHints_) even when the only hint is weak
 // (UppercaseWords, bit 19).
-static constexpr uint64_t kContentHints =
-    (1ULL << 3) |  // Password
-    (1ULL << 7) |  // Email
-    (1ULL << 8) |  // Digit
-    (1ULL << 9) |  // Uppercase
-    (1ULL << 10) | // Lowercase
-    (1ULL << 11) | // NoAutoUpperCase
-    (1ULL << 13) | // Dialable
-    (1ULL << 14) | // Number
-    (1ULL << 15) | // NoOnScreenKeyboard
-    (1ULL << 16) | // SpellCheck
-    (1ULL << 17) | // NoSpellCheck
-    (1ULL << 18) | // WordCompletion
-    (1ULL << 19) | // UppercaseWords
-    (1ULL << 20) | // UppercaseSentences
-    (1ULL << 21) | // Alpha
-    (1ULL << 22);  // Name
+static constexpr uint64_t kContentHints = (1ULL << 3) |  // Password
+                                          (1ULL << 7) |  // Email
+                                          (1ULL << 8) |  // Digit
+                                          (1ULL << 9) |  // Uppercase
+                                          (1ULL << 10) | // Lowercase
+                                          (1ULL << 11) | // NoAutoUpperCase
+                                          (1ULL << 13) | // Dialable
+                                          (1ULL << 14) | // Number
+                                          (1ULL << 15) | // NoOnScreenKeyboard
+                                          (1ULL << 16) | // SpellCheck
+                                          (1ULL << 17) | // NoSpellCheck
+                                          (1ULL << 18) | // WordCompletion
+                                          (1ULL << 19) | // UppercaseWords
+                                          (1ULL << 20) | // UppercaseSentences
+                                          (1ULL << 21) | // Alpha
+                                          (1ULL << 22);  // Name
 
 static constexpr uint64_t kChromiumStrongHints =
     (1ULL << 3) |  // Password
@@ -1972,8 +1980,8 @@ int SKeyState::a11yAppPid() const {
   // the program is a Chromium browser (rejecting them killed the entire
   // pid pipeline for Chrome even after the monitor-side fix, 2026-09-07).
   if (!commMatches && isChromiumBrowser(prog) &&
-      (comm == "chrome" || comm == "CrRendererMain" ||
-       comm == "CrGpuMain" || comm == "CrUtilityMain")) {
+      (comm == "chrome" || comm == "CrRendererMain" || comm == "CrGpuMain" ||
+       comm == "CrUtilityMain")) {
     commMatches = true;
   }
   if (!commMatches) {
@@ -1987,12 +1995,12 @@ int SKeyState::a11yAppPid() const {
 bool SKeyState::isChromiumCached() const {
   if (cachedIsChromium_ < 0) {
     const std::string &prog = appProgram();
-    bool chromium = isChromiumBrowser(prog) ||
-                    prog.find("electron") != std::string::npos;
+    bool chromium =
+        isChromiumBrowser(prog) || prog.find("electron") != std::string::npos;
     if (!chromium) {
       int pid = a11yAppPid();
-      chromium = pid > 0 ? processHasChromiumMarkers(pid)
-                         : isChromiumBasedApp(prog);
+      chromium =
+          pid > 0 ? processHasChromiumMarkers(pid) : isChromiumBasedApp(prog);
     }
     cachedIsChromium_ = chromium ? 1 : 0;
   }
@@ -2447,7 +2455,8 @@ static int probeUinputServer() {
     }
     if (!connectUnixSocket(fd, path, abstract)) {
       SKEY_DEBUG() << "Uinput: probe connect failed ("
-                   << (abstract ? "abstract" : "fs") << "): " << strerror(errno);
+                   << (abstract ? "abstract" : "fs")
+                   << "): " << strerror(errno);
       close(fd);
       return -1;
     }
@@ -2874,8 +2883,7 @@ void SKeyState::replayBufferedUinputKeys() {
         barEmpty = committedLen_ == -1;
       }
       if (barEmpty) {
-        SKEY_DEBUG()
-            << "AddrBar: ghost composition over empty bar, resetting";
+        SKEY_DEBUG() << "AddrBar: ghost composition over empty bar, resetting";
         viet_.reset();
         committedLen_ = 0;
         addrBarSawBsInWord_ = false;
@@ -3121,8 +3129,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         size_t wordChars = utf8::length(word);
         size_t cursorBytes = utf8::ncharByteLength(text.begin(), cursor);
         keep = cursor >= wordChars && cursorBytes >= word.size() &&
-               text.compare(cursorBytes - word.size(), word.size(), word) ==
-                   0;
+               text.compare(cursorBytes - word.size(), word.size(), word) == 0;
       }
     }
     if (!keep) {
@@ -3293,19 +3300,16 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     // prevCandidate/nextCandidate wrap around at the edges.
     if (auto candList = ic_->inputPanel().candidateList()) {
       auto *cursorList = candList->toCursorMovable();
-      if (cursorList &&
-          (sym == FcitxKey_Up || sym == FcitxKey_KP_Up)) {
+      if (cursorList && (sym == FcitxKey_Up || sym == FcitxKey_KP_Up)) {
         cursorList->prevCandidate();
         SKEY_DEBUG() << "Menu: cursor up (" << candList->cursorIndex() << ")";
         ic_->updateUserInterface(UserInterfaceComponent::InputPanel);
         keyEvent.filterAndAccept();
         return;
       }
-      if (cursorList &&
-          (sym == FcitxKey_Down || sym == FcitxKey_KP_Down)) {
+      if (cursorList && (sym == FcitxKey_Down || sym == FcitxKey_KP_Down)) {
         cursorList->nextCandidate();
-        SKEY_DEBUG() << "Menu: cursor down (" << candList->cursorIndex()
-                     << ")";
+        SKEY_DEBUG() << "Menu: cursor down (" << candList->cursorIndex() << ")";
         ic_->updateUserInterface(UserInterfaceComponent::InputPanel);
         keyEvent.filterAndAccept();
         return;
@@ -3464,10 +3468,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       // selection that re-appears on retype ("chaào" corruption).
       // Other Ctrl+letters (C/V/X/Z…) mutate the bar unpredictably —
       // drop the flag, keep the plain 0 reset.
-      bool ctrlClearsBar =
-          !isWayland() && key.states().test(KeyState::Ctrl) &&
-          (sym == 'a' || sym == 'A' || sym == 'u' || sym == 'U' ||
-           sym == 'l' || sym == 'L');
+      bool ctrlClearsBar = !isWayland() && key.states().test(KeyState::Ctrl) &&
+                           (sym == 'a' || sym == 'A' || sym == 'u' ||
+                            sym == 'U' || sym == 'l' || sym == 'L');
       addrBarClearedByCtrlKey_ = ctrlClearsBar;
       if (ctrlClearsBar) {
         addrBarContentUnknown_ = false;
@@ -3543,8 +3546,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       if (viet_.getRawInput().empty()) {
         committedLen_ = isWayland() ? 0 : -1;
       } else {
-        committedLen_ =
-            static_cast<int>(utf8::length(viet_.getComposed()));
+        committedLen_ = static_cast<int>(utf8::length(viet_.getComposed()));
       }
       // Re-arm cycle protection and, only when no space has been
       // typed yet, the first-word flag.  After a space the next word
@@ -4337,9 +4339,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               addrBarWordStartCaretX_ = ic_->cursorRect().left();
               {
                 int caretX = addrBarWordStartCaretX_;
-                if (caretX > 0 &&
-                    (addrBarLeftEdgeCaretX_ < 0 ||
-                     caretX < addrBarLeftEdgeCaretX_)) {
+                if (caretX > 0 && (addrBarLeftEdgeCaretX_ < 0 ||
+                                   caretX < addrBarLeftEdgeCaretX_)) {
                   addrBarLeftEdgeCaretX_ = caretX;
                 }
               }
@@ -4704,8 +4705,8 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
             viet_.autoRestore();
             std::string postRestore = viet_.getComposed();
             if (preRestore != postRestore) {
-              SKEY_DEBUG() << "AddrBar: autoRestore '" << preRestore
-                           << "' -> '" << postRestore << "'";
+              SKEY_DEBUG() << "AddrBar: autoRestore '" << preRestore << "' -> '"
+                           << postRestore << "'";
               commitText = postRestore;
             }
           }
@@ -4848,8 +4849,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
             }
           }
           addrBarHadFirstWord_ = true;
-          addrBarDidFullReplace_ =
-              !(oldComposedIsAscii && oldComposedLen == 1);
+          addrBarDidFullReplace_ = !(oldComposedIsAscii && oldComposedLen == 1);
           addrBarKeepState_ = (oldComposedIsAscii && oldComposedLen == 1);
           SKEY_DEBUG() << "AddrBar: first word, fullReplace BS=" << totalBs
                        << " commit='" << commitText << "'"
@@ -4968,10 +4968,9 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
   // protocol, not forwarded keys, so the adaptive BS-based delay is not
   // needed and would leave the deleted state visible for a full frame.
   if (delayUsec == 0) {
-    delayUsec =
-        (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
-            ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
-            : dbusDeferredDefaultUsec;
+    delayUsec = (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
+                    ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
+                    : dbusDeferredDefaultUsec;
   }
 
   SKEY_DEBUG() << "Surr deferred: schedule '" << text << "' in "
@@ -5009,10 +5008,9 @@ void SKeyState::flushDeferredCommit() {
       !inChromiumAddressBar()) {
     minGapUsec = x11ChromiumSurrDelayUsec();
   } else {
-    minGapUsec =
-        (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
-            ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
-            : dbusDeferredDefaultUsec;
+    minGapUsec = (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
+                     ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
+                     : dbusDeferredDefaultUsec;
   }
   if (deferredBsSentAt_ > 0) {
     uint64_t nowUs = now(CLOCK_MONOTONIC);
@@ -5078,8 +5076,6 @@ uint64_t SKeyState::x11ChromiumSurrDelayUsec() const {
   return fbInput ? kFbX11SurrDeferredUsec : kX11BsForwardDeferredUsec;
 }
 
-
-
 void SKeyState::surroundingCommit(const std::string &oldComposed,
                                   const std::string &newComposed) {
   if (newComposed.empty())
@@ -5136,9 +5132,9 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         // forwardKey escape applies only to X11 native terminals (see the
         // keyEvent replace path — Chromium-family apps with shell children
         // must keep the anchor).
-        bool usesUinputBs = useUinputMode() &&
-                            (isWayland() || !isTerminalAppCached() ||
-                             isChromiumCached());
+        bool usesUinputBs =
+            useUinputMode() &&
+            (isWayland() || !isTerminalAppCached() || isChromiumCached());
         SKEY_DEBUG() << "Surr: BS x" << deleteLen
                      << (usesUinputBs ? " (uinput)" : " (forward)");
         // Chromium address bar: use uinput BS + buffering for both
@@ -5208,9 +5204,9 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             // Electron apps on X11 keep the immediate commit (no race
             // reports there; leave the proven behavior alone).
             SKEY_DEBUG() << "Surr: deferred BS-forward '" << addedPart << "'";
-            scheduleDeferredCommit(
-                addedPart, stablePrefix,
-                isWayland() ? 0 : x11ChromiumSurrDelayUsec());
+            scheduleDeferredCommit(addedPart, stablePrefix,
+                                   isWayland() ? 0
+                                               : x11ChromiumSurrDelayUsec());
           } else if (!isWayland() && isOfficeSuiteApp(appProgram())) {
             // X11 OFFICE SUITES only (LibreOffice/WPS/OnlyOffice): the
             // invalid-surrounding fallback.  Their async key processing
