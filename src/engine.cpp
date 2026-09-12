@@ -2775,6 +2775,17 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     sleepUsec = std::max(sleepUsec, static_cast<uint64_t>(realBs) *
                                         kWaylandNativeCommitDelayPerBsUsec);
   }
+  if (realBs > 0 && !isWayland() && isOfficeSuiteApp(appProgram())) {
+    // X11 office suites (LibreOffice VCL, WPS, OnlyOffice): injected keys
+    // are queued and processed ASYNCHRONOUSLY by VCL — the sync anchor
+    // proves the BS were dispatched, not processed, and the adaptive
+    // sleep (9-12ms observed) commits while the queued BS are still
+    // draining ("chào các bạn" → "chào các baạ": the late BS ate the
+    // final 'n' of the committed "ạn", 2026-09-13).  Scale the headroom
+    // per deletion like the Wayland native path.
+    sleepUsec = std::max(sleepUsec,
+                         static_cast<uint64_t>(realBs) * 15000);
+  }
 
   // Terminal exclusion uses the NAME list + cap bit only: the shell-scan
   // would flag IDEs with embedded terminals (antigravity, VS Code) as
@@ -4753,9 +4764,22 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
         // fall through to the first-word heuristics below.
         uint64_t waitUntil = now(CLOCK_MONOTONIC) + 30000;
         for (;;) {
-          if (!mon || !mon->a11yState(a11yText, a11ySelStart, a11ySelEnd,
-                                      kA11ySnapshotMaxAgeUsec))
+          if (!mon) {
             break;
+          }
+          if (!mon->a11yState(a11yText, a11ySelStart, a11ySelEnd,
+                              kA11ySnapshotMaxAgeUsec)) {
+            // No snapshot or stale: WAIT for the monitor to catch up
+            // instead of giving up immediately — the re-polls arrive on
+            // text-change signals (~30ms).  Without this wait the
+            // selection values stay -1 and the autofill +1 BS check in
+            // the fallback below can never fire ("git con[fig]" → the
+            // first BS eats the selection → "coonfig", 2026-09-13).
+            if (now(CLOCK_MONOTONIC) >= waitUntil)
+              break; // timeout — heuristics decide
+            mon->waitForSnapshotUpdate(waitUntil - now(CLOCK_MONOTONIC));
+            continue;
+          }
           if (a11yText.size() >= oldComposed.size() &&
               a11yText.compare(0, oldComposed.size(), oldComposed) == 0) {
             wordAtStart = true;
@@ -4973,10 +4997,17 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
     // Only set when triggerKeySym is non-zero — the SurroundingText path
     // already sets the guard before calling us (with the correct sym) and
     // passes triggerKeySym=0 here; we must not overwrite that with 0.
+    // X11 uses a long 1.5s window: the omnibox churn repeats for seconds
+    // and re-delivers the trigger key OUTSIDE the old 200ms deadline —
+    // the late 'f' was then processed as a real tone key and un-did the
+    // tone mid-word ("còn" → "conf" replace, "git config" corruption,
+    // 2026-09-13).  The cost is a blocked deliberate double-tone-key undo
+    // in the omnibox for 1.5s — far cheaper than the corruption.  Wayland
+    // keeps 100ms (validated there).
     if (triggerKeySym != 0) {
       addrBarLastTriggerKey_ = triggerKeySym;
       addrBarTriggerDeadline_ =
-          now(CLOCK_MONOTONIC) + (isWayland() ? 100000 : 200000);
+          now(CLOCK_MONOTONIC) + (isWayland() ? 100000 : 1500000);
     }
     // Sync BS handler uses this to restore committedLen_ after BS
     // pass-through decrements it (same as general uinput path).
