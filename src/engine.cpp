@@ -4902,6 +4902,24 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
                          << (addrBarKeepState_ ? " [keep-state]" : "");
           }
         }
+        // Plain-replacement path (word not at bar start, FullReplace not
+        // taken): Chrome's first BS on an active selection dismisses the
+        // inline autofill WITHOUT deleting a character — the exact-BS
+        // count then leaves one char undeleted ("git con[fig]" → BS×2
+        // deletes only 'n' → commit → "coòn", the duplicated 'o' in
+        // "coonf", 2026-09-13).  Add the dismissal BS when the a11y
+        // snapshot shows a fresh selection extending to the end of the
+        // omnibox text — the inline-autofill signature, mirroring
+        // isAutofillCertain() on Wayland.  Collapsed caret or an
+        // unavailable snapshot keeps the plain count: a stale selection
+        // would eat real text before the cursor ("git ").
+        if (totalBs == bs && a11ySelStart >= 0 &&
+            a11ySelStart != a11ySelEnd &&
+            a11ySelEnd == static_cast<int>(a11yText.size())) {
+          ++totalBs;
+          SKEY_DEBUG() << "AddrBar: autofill selection, +1 BS (total="
+                       << totalBs << ")";
+        }
       }
     } else {
       // ── Wayland: First-word FullReplace + dynamic autocomplete ──
