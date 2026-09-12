@@ -48,7 +48,13 @@ AmbientCapabilities=CAP_SYS_PTRACE
 RuntimeDirectory=skey-uinput-%i
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=no
-ExecStartPost=-+/usr/bin/setfacl -m u:%i:x /run/skey-uinput-%i
+# The explicit m::x keeps the grant intact even when the ACL mask is stale
+# or was cleared by a later chmod of the directory: any named-user entry
+# whose permissions exceed the mask is silently revoked ("user:huy:--x
+# #effective:---" observed, 2026-09-12), and the client then gets EACCES
+# and degrades to the abstract socket.  The server also re-applies this
+# ACL at startup as a self-healing fallback (see uinput_server.cpp).
+ExecStartPost=-+/usr/bin/setfacl -m u:%i:x -m m::x /run/skey-uinput-%i
 
 Type=simple
 User=@SKEY_UINPUT_USER@

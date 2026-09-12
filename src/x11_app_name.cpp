@@ -98,3 +98,55 @@ std::string x11FocusedWmClass() {
   free(reply);
   return wmClassOf(conn, focus, 0);
 }
+
+double x11DisplayDpi() {
+  static const double cached = []() -> double {
+    xcb_connection_t *conn = x11Connection();
+    if (!conn) {
+      return 96.0;
+    }
+    const xcb_setup_t *setup = xcb_get_setup(conn);
+    xcb_screen_iterator_t it = xcb_setup_roots_iterator(setup);
+    if (!it.rem) {
+      return 96.0;
+    }
+    xcb_screen_t *screen = it.data;
+
+    // 1) Xft.dpi from RESOURCE_MANAGER — the standard per-display DPI
+    // override (desktop environments set it for scaled displays; format
+    // is "Xft.dpi:\t120").
+    auto resCookie = xcb_get_property(
+        conn, 0, screen->root, internAtom(conn, "RESOURCE_MANAGER"),
+        XCB_ATOM_STRING, 0, 8192);
+    auto *resReply = xcb_get_property_reply(conn, resCookie, nullptr);
+    if (resReply && resReply->type != XCB_ATOM_NONE && resReply->format == 8) {
+      const char *data =
+          static_cast<const char *>(xcb_get_property_value(resReply));
+      int len = xcb_get_property_value_length(resReply);
+      std::string res(data, static_cast<size_t>(len));
+      free(resReply);
+      size_t pos = res.find("Xft.dpi:");
+      if (pos != std::string::npos) {
+        const char *numStart = res.c_str() + pos + 8;
+        char *end = nullptr;
+        double dpi = strtod(numStart, &end);
+        if (end != numStart && dpi >= 30.0 && dpi <= 500.0) {
+          return dpi;
+        }
+      }
+    } else {
+      free(resReply);
+    }
+
+    // 2) Physical screen size (millimetres) from the X screen metrics.
+    if (screen->width_in_millimeters > 0) {
+      double dpi = static_cast<double>(screen->width_in_pixels) * 25.4 /
+                   static_cast<double>(screen->width_in_millimeters);
+      if (dpi >= 30.0 && dpi <= 500.0) {
+        return dpi;
+      }
+    }
+    return 96.0;
+  }();
+  return cached;
+}

@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
 
@@ -170,6 +171,41 @@ bool setupFsSocketDir(const std::string &dir) {
     return false;
   }
   return true;
+}
+
+// Self-healing ACL grant: the fs socket dir is owned by this process
+// (systemd RuntimeDirectory, or this very mkdir on a manual run), and the
+// owner can always modify the ACL, so an unprivileged setfacl works.
+// The unit's ExecStartPost applies the same grant, but any later chmod of
+// the directory (e.g. systemd re-applying RuntimeDirectoryMode when the
+// template is re-instantiated) clears the ACL mask and silently revokes
+// the named-user traverse grant ("user:huy:--x #effective:---" observed,
+// 2026-09-12) — clients then get EACCES and degrade to the abstract
+// socket.  Re-applying the grant here, after every other start-time
+// operation, keeps the fs socket path reachable.  Best-effort: without
+// the acl package the fs socket still binds, and EACCES clients fall back
+// to the abstract socket as before.
+void applyDirAcl(const std::string &dir, const std::string &user) {
+  // Reject names that could smuggle extra ACL entries or paths.
+  if (user.empty() ||
+      user.find_first_of(", \t/\n") != std::string::npos) {
+    return;
+  }
+  std::string userAcl = "u:" + user + ":x";
+  pid_t pid = fork();
+  if (pid < 0) {
+    return;
+  }
+  if (pid > 0) {
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return;
+  }
+  // Child: grant traverse to exactly the target user, with an explicit
+  // mask so a stale/cleared mask cannot silently revoke the grant.
+  execlp("setfacl", "setfacl", "-m", userAcl.c_str(), "-m", "m::x",
+         dir.c_str(), static_cast<char *>(nullptr));
+  _exit(127); // no acl package / exec failure — parent continues anyway
 }
 
 // Bind the filesystem socket.  Never fatal: on any failure the fd is reset so
@@ -390,6 +426,9 @@ int main(int argc, char **argv) {
     return 1;
   }
   if (setupFsSocketDir(fsSocketDir(targetUser))) {
+    // Apply the client traverse ACL AFTER every other start-time
+    // operation on the dir — see applyDirAcl() for why.
+    applyDirAcl(fsSocketDir(targetUser), targetUser);
     bindFsSocket(fsServer, fsSocketPath(targetUser), target->pw_uid,
                  target->pw_gid);
   }

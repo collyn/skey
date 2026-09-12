@@ -273,6 +273,12 @@ private:
     // extra BS that deletes text before the cursor.
     bool addrBarHadSpace_ = false;
     std::unique_ptr<EventSourceTime> addrBarCycleTimer_;
+    // One-shot timer for the X11 Chromium mid-replacement churn guard (see
+    // deactivate()): armed when a Deactivate lands while injected uinput BS
+    // are still in flight.  A reactivation within 500ms cancels it — the
+    // sync-anchor BS then completes the commit.  No reactivation means a
+    // genuine focus loss and the timer discards the replacement state.
+    std::unique_ptr<EventSourceTime> uinputCycleTimer_;
     // CLOCK_MONOTONIC timestamp of the most recent deactivate().
     // Used in activate() to detect spurious focus cycles that arrive
     // when addrBarExpectCycle_ was not armed — if reactivation happens

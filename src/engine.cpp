@@ -226,18 +226,18 @@ static constexpr uint64_t kX11BsForwardDeferredUsec =
            // (the forwarded BS ate the deferred commit, "gõ" → "g")
 // X11 Chromium-family Uinput floors: the sync-anchor RT only measures the
 // browser-process IM loopback, NOT the renderer's BS processing — machines
-// with fast loopbacks (Mint: RT 3-7ms) derive sleeps of 4-7ms and lose
-// chars constantly (commit lands before the renderer processed the BS).
+// with fast loopbacks derive sleeps far below what the renderer needs and
+// lose chars constantly (commit lands before the renderer processed the
+// BS).  Kernel 7.0's input path made the loopback even faster (RT 2-4ms
+// observed vs the 3-7ms these floors were tuned on), so every derived
+// sleep now sits exactly at the floor — the floor got a small bump to
+// keep the renderer headroom (2026-09-12).
 // Per-input (Auto looks at the input): FB-page inputs (ancestor-chain
-// signatures) get 20ms — the FB renderer is heavy; everything else keeps
-// a low 10ms floor.
-static constexpr uint64_t kChromeX11CommitDelayMinUsec = 10000;
-static constexpr uint64_t kFbX11CommitDelayMinUsec =
-    25000; // 25ms (was 20ms —
-           // still losing chars on FB chat in fast typing)
-// VTE terminal escape deferral (see isVteTerminalApp) — async key
-// processing needs the headroom; still far below the anchor cost.
-static constexpr uint64_t kVteTerminalDeferredUsec = 20000;
+// signatures) get 30ms — the FB renderer is heavy; everything else keeps
+// a 15ms floor.
+static constexpr uint64_t kChromeX11CommitDelayMinUsec = 15000;
+static constexpr uint64_t kFbX11CommitDelayMinUsec = 30000; // 30ms (was 25ms —
+                                                             // raised with the base floor above)
 // First-word settle headroom: the renderer is still settling right after
 // a focus switch — the first heavy replace (long words like "ứng") and
 // the first immediate commit (del=0) lose chars at the normal timings.
@@ -429,20 +429,6 @@ static bool isOfficeSuiteApp(const std::string &prog) {
       p.find("desktopeditors") != std::string::npos)
     return true;
   return false;
-}
-
-// VTE-based terminals process forwarded keys asynchronously (unlike
-// sterm/xterm which are X-serialized and synchronous) — the terminal
-// escape's immediate commit races them.
-static bool isVteTerminalApp(const std::string &prog) {
-  std::string lower = prog;
-  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-  return lower.find("gnome-terminal") != std::string::npos ||
-         lower.find("tilix") != std::string::npos ||
-         lower.find("xfce4-terminal") != std::string::npos ||
-         lower.find("kgx") != std::string::npos ||
-         lower.find("ptyxis") != std::string::npos ||
-         lower.find("console") != std::string::npos;
 }
 
 static bool isChromiumBrowser(const std::string &prog) {
@@ -1411,6 +1397,20 @@ bool SKeyState::inChromiumAddressBar() const {
   // Wayland would misclassify the Ctrl+F find bar as an address bar, causing
   // Escape-key autocomplete dismissal to close the find bar.
   if (!isWayland() && isChromiumBrowser(appProgram())) {
+    // Caret-geometry gates below are scaled by the display DPI.  Fixed
+    // pixel thresholds assume 96 DPI and break on scaled displays
+    // (125%/150%/200%), where Chrome's omnibox caret is proportionally
+    // larger — the same class of fragility as the 18-vs-17 miss when
+    // Chrome changed its omnibox caret height on a 96-DPI machine
+    // (2026-09-13).  The thresholds are 96-DPI baselines (caret ~1×17,
+    // width ≤2 vs web editors' 81+); width is the real discriminator,
+    // height/top are sanity bounds.  The a11y web-content/browser-UI
+    // split above is DPI-independent and does the heavy lifting.
+    const double dpiScale = std::clamp(x11DisplayDpi() / 96.0, 1.0, 2.5);
+    const int thinCaretMaxW = static_cast<int>(2 * dpiScale + 0.5);
+    const int barMinH = static_cast<int>(16 * dpiScale + 0.5);
+    const int barMaxH = static_cast<int>(24 * dpiScale + 0.5);
+    const int barTopMax = static_cast<int>(200 * dpiScale + 0.5);
     auto *mon = engine_->a11yMonitor();
     // Fresh snapshot with WEB CONTENT focus means the user is in a web
     // page (Facebook chat, forms...) — never the omnibox.  Must be
@@ -1438,9 +1438,10 @@ bool SKeyState::inChromiumAddressBar() const {
       // omnibox.  X11-only (this whole branch is !isWayland()).
       if (mon->isFocusSnapshotFresh(5000000)) {
         const auto &rect = ic_->cursorRect();
-        bool addrbarShaped = rect.width() <= 2 && rect.height() >= 18 &&
-                             rect.height() <= 24 && rect.top() >= 0 &&
-                             rect.top() < 200;
+        bool addrbarShaped = rect.width() <= thinCaretMaxW &&
+                             rect.height() >= barMinH &&
+                             rect.height() <= barMaxH && rect.top() >= 0 &&
+                             rect.top() < barTopMax;
         if (addrbarShaped) {
           addrBarUiVerdictAtUsec_ = now(CLOCK_MONOTONIC);
           return true;
@@ -1459,7 +1460,7 @@ bool SKeyState::inChromiumAddressBar() const {
       // can momentarily report a thin IME caret during delete/retype
       // churn and latch the verdict — the hijack in the 03:07 trace
       // where "chào" became "hào").  Clear the latch instead.
-      if (ic_->cursorRect().width() > 2) {
+      if (ic_->cursorRect().width() > thinCaretMaxW) {
         addrBarUiVerdictAtUsec_ = 0;
       } else {
         return true;
@@ -1468,13 +1469,15 @@ bool SKeyState::inChromiumAddressBar() const {
       addrBarUiVerdictAtUsec_ = 0;
     }
     // Deterministic fallback (no a11y needed): the omnibox cursor rect
-    // is a thin 1×~20 sliver near the window top, while Chrome content
-    // editors report wider rects or (0,0,0x0).  This keeps the address
-    // bar routing alive right after fcitx5 restarts, before the a11y
-    // monitor has processed any focus event.
+    // is a thin ~1×17 sliver near the window top (DPI-scaled, see the
+    // branch top), while Chrome content editors report wider rects or
+    // (0,0,0x0).  This keeps the address bar routing alive right after
+    // fcitx5 restarts, before the a11y monitor has processed any focus
+    // event.
     const auto &rect = ic_->cursorRect();
-    if (rect.width() <= 2 && rect.height() >= 18 && rect.height() <= 24 &&
-        rect.top() >= 0 && rect.top() < 200) {
+    if (rect.width() <= thinCaretMaxW && rect.height() >= barMinH &&
+        rect.height() <= barMaxH && rect.top() >= 0 &&
+        rect.top() < barTopMax) {
       return true;
     }
   }
@@ -1773,7 +1776,20 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   // signature (text-entry role + editable=0 + no line state, the narrow
   // check) still flips to Uinput.  The address bar keeps its own Uinput
   // machinery and is excluded.
-  if (nonEntry && cachedMode_ == SKeyOutputMode::SurroundingText &&
+  //
+  // Two guards against a misfire that locked cap-less X11 Chrome into
+  // Surr (kernel 7.0 focus races, 2026-09-12): cachedMode_ DEFAULTS to
+  // SurroundingText, so on the very first evaluation (modeCacheValid_
+  // false) a stale non-entry snapshot "confirmed" a Surr decision that
+  // never existed — every replacement then ran the forwardKey fallback
+  // and lost characters ("Auto: non-entry flicker ... keep Surr" with
+  // caps=0x6000000032 in /tmp/skey.log).  A real prior decision
+  // (modeCacheValid_) AND the SurroundingText cap are required: without
+  // the cap, Surr mode can only run its race-prone fallback, so
+  // "keeping" it can never be right for a cap-less app.
+  if (nonEntry && modeCacheValid_ &&
+      cachedMode_ == SKeyOutputMode::SurroundingText &&
+      ic_->capabilityFlags().test(CapabilityFlag::SurroundingText) &&
       !isWayland() && isChromiumCached() && isChromiumBrowser(appProgram()) &&
       !inChromiumAddressBar() && !a11yBrowserNonEntryNarrow()) {
     SKEY_DEBUG() << "Auto: non-entry flicker over X11 web editor, keep Surr";
@@ -2192,6 +2208,13 @@ void SKeyState::activate() {
   if (addrBarExpectCycle_) {
     SKEY_DEBUG() << "Activate: spurious cycle, cancel loss timer";
     addrBarCycleTimer_.reset();
+  } else if (uinputCycleTimer_) {
+    // X11 Chromium mid-replacement churn: the reactivation arrived within
+    // the 500ms window — cancel the genuine-loss timer so the in-flight
+    // uinput replacement survives and the sync-anchor BS completes the
+    // commit (see deactivate()).
+    SKEY_DEBUG() << "Activate: replacement churn, cancel loss timer";
+    uinputCycleTimer_.reset();
   } else {
     // Spurious-cycle detection: if preeditWasPending_ is set and the
     // activating program matches, the same IC is being reactivated —
@@ -2955,7 +2978,17 @@ void SKeyState::deactivate() {
   lastDeactivateTime_ = now(CLOCK_MONOTONIC);
   // Genuine focus loss: any Surr tentative word state is gone with it.
   surrResetTentative_ = false;
-  forceFlushDeferredCommit();
+  // X11 Chromium churn: keep the deferred commit pending instead of
+  // force-flushing it here — the forwarded BS it waits for haven't been
+  // processed by the renderer yet, and an eager flush lands the commit
+  // in front of them (word tail eaten).  The deferred timer fires a few
+  // ms later, after the spurious reactivation, and commits into the
+  // reactivated IC.  Wayland keeps the eager flush: some compositors
+  // (GNOME Mutter) silently drop commits sent while the IC is
+  // deactivated, and its churn timing was validated with the flush.
+  if (!(!isWayland() && addrBarExpectCycle_)) {
+    forceFlushDeferredCommit();
+  }
   // Stop a11y snapshot polling — re-enabled on the next addrbar key.
   if (auto *mon = engine_->a11yMonitor()) {
     mon->setPollingEnabled(false);
@@ -3027,6 +3060,43 @@ void SKeyState::deactivate() {
     return;
   }
 
+  // X11 Chromium mid-replacement churn (kernel 7.0 race, 2026-09-12):
+  // Chrome fires spurious Reset→Deactivate→Activate while our injected BS
+  // are in flight, BEFORE the sync-anchor BS loops back.  The cleanup
+  // below would discard pendingUinputCommit_ and the replacement text is
+  // lost ("bạn" → "b", verified in /tmp/skey.log).  Keep the replacement
+  // state: the reactivation arrives within milliseconds and the anchor BS
+  // completes the commit.  If nothing reactivates within 500ms it was a
+  // genuine focus loss — discard the replacement instead of committing it
+  // into a stale focus.
+  if (!isWayland() && isChromiumCached() && uinputDeleting_ &&
+      !pendingUinputCommit_.empty()) {
+    SKEY_DEBUG() << "Deactivate: mid-replacement churn, keep uinput state";
+    uinputCycleTimer_.reset();
+    uinputCycleTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 500000, 0,
+        [this](EventSourceTime *, uint64_t) {
+          SKEY_DEBUG()
+              << "Deactivate: no reactivation, discarding mid-flight "
+                 "replacement";
+          uinputCycleTimer_.reset();
+          pendingUinputCommit_.clear();
+          expectedUinputBackspaces_ = 0;
+          seenUinputBackspaces_ = 0;
+          uinputDeleting_ = false;
+          uinputSafetyTimer_.reset();
+          uinputSafetyRetried_ = false;
+          uinputBsOutstanding_ = 0;
+          bufferedUinputKeys_.clear();
+          viet_.reset();
+          committedLen_ = 0;
+          clearLastWord();
+          clearUI();
+          return true;
+        });
+    return;
+  }
+
   expectedUinputBackspaces_ = 0;
   seenUinputBackspaces_ = 0;
   pendingUinputCommit_.clear();
@@ -3059,6 +3129,17 @@ void SKeyState::reset() {
                << " ffSnap=" << isFirefoxOrSnap() << " prog=" << appProgram();
   if (addrBarExpectCycle_) {
     SKEY_DEBUG() << "Reset: expecting cycle, skip";
+    return;
+  }
+  // X11 Chromium mid-replacement churn (kernel 7.0 race, 2026-09-12):
+  // Chrome fires a spurious reset while our injected uinput BS are still
+  // in flight.  Keep the replacement state — deactivate() arms the
+  // genuine-loss timer, and the sync-anchor BS completes the commit after
+  // reactivation.  The full cleanup below would drop the pending commit
+  // and the word loses its tail ("bạn" → "b").
+  if (!isWayland() && isChromiumCached() && uinputDeleting_ &&
+      !pendingUinputCommit_.empty()) {
+    SKEY_DEBUG() << "Reset: mid-replacement churn, keep uinput state";
     return;
   }
   // Firefox/Snap apps in Uinput mode: fcitx5 calls reset() after
@@ -4429,43 +4510,20 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                     static_cast<int>(sym), newComposed, oldAscii, oldComposed);
                 return;
               }
-              // X11 NATIVE terminals: the X server serializes key delivery
-              // and the terminal processes keys synchronously — the uinput
-              // sync-anchor round trip (RT 13–99ms + sleep observed in
-              // sterm) is pure latency there.  Forward BS and commit
-              // immediately (the Surr forwardKey path is validated
-              // lag-free in sterm).  Wayland terminals keep the anchor
-              // (no X-serialization on Wayland).
-              // Chromium-family apps are EXCLUDED even when the shell scan
-              // flags them as terminals: Electron terminals (Tabby, Hyper)
-              // and IDEs with embedded terminals (antigravity) process
-              // keys asynchronously in the renderer — forwardKey + commit
-              // races there ("chào" → "cho").
-              if (!isWayland() && isTerminalAppCached() &&
-                  !isChromiumCached()) {
-                SKEY_DEBUG() << "Surr: BS x" << deleteLen << " (forward)";
-                for (int i = 0; i < deleteLen; ++i) {
-                  ic_->forwardKey(Key(FcitxKey_BackSpace));
-                }
-                if (!addPart.empty()) {
-                  // VTE-based terminals (gnome-terminal, tilix,
-                  // xfce4-terminal...) process the forwarded BS
-                  // ASYNCHRONOUSLY — the immediate commit raced them
-                  // and the BS ate the tone mark (Mint reports).
-                  // Defer 20ms: far below the anchor cost (13-99ms) for
-                  // the synchronous terminals, enough for VTE.
-                  if (isVteTerminalApp(appProgram())) {
-                    deferredBsSentAt_ = now(CLOCK_MONOTONIC);
-                    scheduleDeferredCommit(addPart,
-                                           newComposed.substr(0, pfx),
-                                           kVteTerminalDeferredUsec);
-                  } else {
-                    commitText(addPart);
-                  }
-                }
-                committedLen_ = static_cast<int>(utf8::length(newComposed));
-                return;
-              }
+              // X11 NATIVE terminals: NO forwardKey shortcut anymore.
+              // The old forwardKey + commit path relied on the X server
+              // serializing key delivery, but the commit takes a DIFFERENT
+              // channel into the terminal (D-Bus/GTK IM or XIM commit vs
+              // the forwarded-key path) — the two share no ordering, and
+              // kernel 7.0's dispatch timing made the commit overtake the
+              // forwarded BS, interleaving the PTY writes ("bạn" → "baạ",
+              // "cha"+"f" → "cha", 2026-09-13; fixed waits only shifted
+              // the odds — the old 20ms VTE deferral was insufficient).
+              // The uinput sync anchor proves every real BS was DISPATCHED
+              // to the terminal before the commit is sent, so the PTY
+              // byte stream stays ordered and the shell sees the deletions
+              // before the replacement text.  The adaptive sleep is cheap
+              // on kernel 7.0's fast loopbacks.
               sendBackspaceUinput(deleteLen + 1); // +1 sync BS
               expectedUinputBackspaces_ = deleteLen;
               seenUinputBackspaces_ = 0;
@@ -5159,12 +5217,21 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       // commitString always arrives after the forwarded BackSpace
       // keys — no timer needed.
       auto deleteViaBackspace = [&]() {
-        // forwardKey escape applies only to X11 native terminals (see the
-        // keyEvent replace path — Chromium-family apps with shell children
-        // must keep the anchor).
+        // Chromium-family apps with shell children must keep the anchor
+        // even when the shell scan flags them as terminals.
+        // X11 native terminals also anchor through uinput even in Surr
+        // mode: the forwarded BS and the commit take different channels
+        // into the terminal, so only the sync anchor proves the deletions
+        // were dispatched before the commit is sent (kernel 7.0 PTY
+        // interleaving — see the keyEvent terminal path).
         bool usesUinputBs =
-            useUinputMode() &&
-            (isWayland() || !isTerminalAppCached() || isChromiumCached());
+            (useUinputMode() &&
+             (isWayland() || !isTerminalAppCached() || isChromiumCached())) ||
+            (!isWayland() && isTerminalAppCached()) ||
+            // X11 Firefox: native deletes are unreliable through the async
+            // renderer — anchor through uinput (see the native-path gate
+            // above).
+            (!isWayland() && isFirefoxOrSnap());
         SKEY_DEBUG() << "Surr: BS x" << deleteLen
                      << (usesUinputBs ? " (uinput)" : " (forward)");
         // Chromium address bar: use uinput BS + buffering for both
@@ -5263,7 +5330,15 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       // commit, causing corruption when deleteSurroundingText races with
       // omnibox updates.  The uinput BS approach lets Chrome process the
       // deletion as real keystrokes before we commit the replacement.
-      if (useNativeSurroundingApi() && !inChromiumAddressBar()) {
+      // X11 Firefox-family: delete_surrounding_text through Firefox's
+      // async renderer is DROPPED in heavy web apps (Google Sheets:
+      // "bạn" → "baạn" — the deletes never land, 2026-09-13; deferring
+      // the commit only shifted the odds).  Route X11 Firefox through
+      // deleteViaBackspace() below instead — the uinput anchor deletion
+      // uses the real keyboard path the web app is built for.  Wayland
+      // Firefox keeps the native deletes (validated there).
+      if (useNativeSurroundingApi() && !inChromiumAddressBar() &&
+          !(!isWayland() && isFirefoxOrSnap())) {
         const auto &surrounding = ic_->surroundingText();
         bool cacheStale = !surroundingCacheEndsWith(surrounding, oldComposed);
         if (!surrounding.isValid() ||
