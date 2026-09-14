@@ -597,7 +597,7 @@ static bool isTerminalAppName(const std::string &prog) {
       "gnome-terminal", "xfce4-terminal",
       "sterm",          "st-",
       "terminator",     "terminology",
-      "wezterm",        "foot",
+      "wezterm",        "ghostty", "foot",
       "urxvt",          "rxvt",
       "xterm",          "tabby",
       "hyper",
@@ -2815,6 +2815,15 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     sleepUsec = std::max(sleepUsec,
                          static_cast<uint64_t>(realBs) * 15000);
   }
+  if (realBs > 0 && !isWayland() && isTerminalAppCached()) {
+    // X11 terminals acknowledge the uinput sync key quickly, but their PTY
+    // and rendering path may still be draining the deletion when the
+    // commitString arrives.  Use the dynamic terminal verdict (capability
+    // or shell-child scan, with the name list only as fallback) and give a
+    // bounded queue-drain interval per real deletion.
+    sleepUsec = std::max(sleepUsec,
+                         static_cast<uint64_t>(realBs) * 15000);
+  }
 
   // Terminal exclusion uses the NAME list + cap bit only: the shell-scan
   // would flag IDEs with embedded terminals (antigravity, VS Code) as
@@ -2858,8 +2867,60 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     }
   }
 
-  // ── Commit synchronously ──
+  // ── Commit ──
+  // X11: defer the commit out of the ProcessKeyEvent call.  fcitx5's
+  // D-Bus frontend batches commits produced inside ProcessKeyEventBatch
+  // into the call's reply, and the fcitx5-gtk immodule delivers them
+  // synchronously inside filter_keypress — so GTK4 apps (ghostty) receive
+  // the commit while still inside the anchor key event, attach the text to
+  // the CONSUMED backspace, and drop it silently (ghostty KeyEncoder:
+  // backspace + utf8 → no PTY bytes; "chào" → "cho", verified 2026-09-14
+  // via dbus-monitor).  A 0-delay timer fires right after the D-Bus call
+  // returns, so the commit travels as a normal commit-string signal and
+  // reaches the app between key events.  The X11 sync anchor still
+  // guarantees the BS were applied first.  Wayland keeps the inline commit
+  // — its timing is tuned around it.
   uinputDeleting_ = false;
+  if (!isWayland()) {
+    uinputCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC), 0,
+        [this, commitText = std::move(commitText)](EventSourceTime *,
+                                                   uint64_t) {
+          uinputCommitTimer_.reset();
+          if (!commitText.empty()) {
+            if (isFirefoxOrSnap()) {
+              uinputKeyForwarded_ = true;
+            }
+            this->commitText(commitText);
+          }
+          if (uinputPendingFinalLen_ > 0) {
+            committedLen_ = uinputPendingFinalLen_;
+            uinputPendingFinalLen_ = 0;
+          }
+          // Never manually clear the trigger-key guard — let its deadline
+          // auto-expire.  Chrome may re-deliver the trigger key after ANY
+          // address bar replacement (both fullReplace first-word and
+          // normal non-first-word), and clearing the guard too early lets
+          // the re-delivered key through as a new keystroke, corrupting
+          // the text.  The 100ms deadline is long enough to catch
+          // re-delivery (~5ms) but short enough to allow intentional
+          // double-presses (>150ms).
+          if (addrBarDidFullReplace_) {
+            addrBarDidFullReplace_ = false;
+            addrBarKeepState_ = false;
+            // Don't reset engine after replacement — preedit state is
+            // preserved so subsequent keys extend the same word.
+            committedLen_ = static_cast<int>(utf8::length(commitText));
+            reclaimReady_ = false;
+          }
+          if (!bufferedUinputKeys_.empty()) {
+            replayBufferedUinputKeys();
+          }
+          return true;
+        });
+    return true; // sync BS consumed
+  }
+
   if (!commitText.empty()) {
     if (isFirefoxOrSnap()) {
       uinputKeyForwarded_ = true;
