@@ -127,15 +127,19 @@ AppDelayDialog::Group AppDelayDialog::buildGroup(
     form->addRow(g.hintLabel);
 
     // "Auto" is a universal term — same string in both languages.
+    // NOTE: capture widget pointers by value — `g` is a local that dies
+    // when buildGroup returns.
     auto *resetButton = new QPushButton(QStringLiteral("Auto"), box);
     resetButton->setToolTip(
         T("Bỏ ghi đè, trở về giá trị tự động hiện tại."));
-    connect(resetButton, &QPushButton::clicked, this, [this, &g]() {
-        g.customCheck->setChecked(false);
-        g.paceSpin->setValue(effPaceMs_);
-        g.preSpin->setValue(effPreMs_);
-        g.postSpin->setValue(effPostMs_);
-    });
+    connect(resetButton, &QPushButton::clicked, this,
+            [this, customCheck = g.customCheck, paceSpin = g.paceSpin,
+             preSpin = g.preSpin, postSpin = g.postSpin]() {
+                customCheck->setChecked(false);
+                paceSpin->setValue(effPaceMs_);
+                preSpin->setValue(effPreMs_);
+                postSpin->setValue(effPostMs_);
+            });
     form->addRow(resetButton);
 
     g.warningLabel = new QLabel(box);
@@ -151,26 +155,30 @@ AppDelayDialog::Group AppDelayDialog::buildGroup(
     g.preSpin->setEnabled(false);
     g.postSpin->setEnabled(false);
 
-    auto refreshWarning = [this, &g]() {
-        if (!g.customCheck->isChecked()) {
-            g.warningLabel->clear();
+    // Capture widget pointers by value — `g` dies when buildGroup returns.
+    auto refreshWarning = [this, customCheck = g.customCheck,
+                           paceSpin = g.paceSpin, preSpin = g.preSpin,
+                           warningLabel = g.warningLabel]() {
+        if (!customCheck->isChecked()) {
+            warningLabel->clear();
             return;
         }
         QStringList warnings;
-        if (g.preSpin->value() < 10) {
+        if (preSpin->value() < 10) {
             warnings << T("Cảnh báo: chờ trước commit dưới 10ms có thể mất "
                           "chữ.");
         }
-        if (g.paceSpin->value() == 0 && waylandSession_) {
+        if (paceSpin->value() == 0 && waylandSession_) {
             warnings << T("Nhịp 0ms có thể mất chữ trên Wayland.");
         }
-        g.warningLabel->setText(warnings.join(' '));
+        warningLabel->setText(warnings.join(' '));
     };
     connect(g.customCheck, &QCheckBox::toggled, this,
-            [this, &g, refreshWarning](bool on) {
-                g.paceSpin->setEnabled(on);
-                g.preSpin->setEnabled(on);
-                g.postSpin->setEnabled(on);
+            [this, paceSpin = g.paceSpin, preSpin = g.preSpin,
+             postSpin = g.postSpin, refreshWarning](bool on) {
+                paceSpin->setEnabled(on);
+                preSpin->setEnabled(on);
+                postSpin->setEnabled(on);
                 refreshWarning();
             });
     connect(g.paceSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
