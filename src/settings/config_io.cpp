@@ -12,6 +12,7 @@
 #include <QThread>
 
 #include "../icon_resolver.h"
+#include "../app_delay_key.h"
 
 
 // ── Path resolution ────────────────────────────────────────────────────
@@ -25,6 +26,8 @@ std::string configDir() {
 
 std::string skeyConfPath() { return configDir() + "/skey.conf"; }
 std::string appModesPath() { return configDir() + "/skey-app-modes.conf"; }
+std::string appDelaysPath() { return configDir() + "/skey-app-delays.conf"; }
+std::string appDelayOverridesPath() { return configDir() + "/skey-app-delay-overrides.conf"; }
 std::string macroPath() { return configDir() + "/skey-macro.conf"; }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -96,6 +99,7 @@ SKeyConfig readSkeyConfig() {
         else if (key == "ShowPreedit")  cfg.showPreedit   = parseBool(val);
         else if (key == "ChromiumAddressBarMode") cfg.chromiumAddressBarMode = val;
         else if (key == "Debug")        cfg.debug         = parseBool(val);
+        else if (key == "AutoDelay")    cfg.autoDelay     = parseBool(val);
         else if (key == "EnableMacro")   cfg.enableMacro    = parseBool(val);
         else if (key == "CapitalizeMacro") cfg.capitalizeMacro = parseBool(val);
         else if (key == "MacroInOffMode")  cfg.macroInOffMode  = parseBool(val);
@@ -147,6 +151,8 @@ bool writeSkeyConfig(const SKeyConfig &cfg) {
     out << "ChromiumAddressBarMode=" << maybeQuote(cfg.chromiumAddressBarMode) << "\n";
     out << "# Enable debug logging"        << "\n";
     out << "Debug="         << boolStr(cfg.debug)           << "\n";
+    out << "# Auto-optimise the commit delay per app (learned from typing)" << "\n";
+    out << "AutoDelay="     << boolStr(cfg.autoDelay)       << "\n";
     out << "# Macro / Gõ tắt"                << "\n";
     out << "EnableMacro="    << boolStr(cfg.enableMacro)     << "\n";
     out << "CapitalizeMacro=" << boolStr(cfg.capitalizeMacro) << "\n";
@@ -206,6 +212,91 @@ bool writeAppModesConfig(const AppModesConfig &cfg) {
         out << name << "=" << mode << "\n";
     }
     return out.good();
+}
+
+// ── skey-app-delay-overrides.conf read/write ─────────────────────────────
+
+AppDelayOverridesConfig readAppDelayOverridesConfig() {
+    AppDelayOverridesConfig cfg;
+    std::ifstream in(appDelayOverridesPath());
+    if (!in.is_open()) return cfg;
+
+    std::string line;
+    while (std::getline(in, line)) {
+        rtrim(line);
+        if (line.empty() || line[0] == '#') continue;
+
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq + 1);
+
+        while (!key.empty() && key.front() == ' ') key.erase(0, 1);
+        rtrim(key);
+        rtrim(val);
+        stripQuotes(val);
+
+        skey::AppDelayOverride parsed;
+        if (!skey::parseAppDelayOverride(val, parsed)) continue; // garbage
+        cfg.entries.emplace_back(key, skey::formatAppDelayOverride(parsed));
+    }
+    return cfg;
+}
+
+bool writeAppDelayOverridesConfig(const AppDelayOverridesConfig &cfg) {
+    if (!QDir().mkpath(QString::fromStdString(configDir()))) return false;
+    std::ofstream out(appDelayOverridesPath());
+    if (!out.is_open()) return false;
+
+    out << "# Per-app manual delay overrides — value: auto | "
+           "paceMs,preCommitMs,postCommitMs\n";
+    for (auto &[key, val] : cfg.entries) {
+        out << key << "=" << val << "\n";
+    }
+    return out.good();
+}
+
+std::map<std::string, LearnedDelay> readLearnedDelays() {
+    std::map<std::string, LearnedDelay> result;
+    std::ifstream in(appDelaysPath());
+    if (!in.is_open()) return result;
+
+    std::string line;
+    while (std::getline(in, line)) {
+        rtrim(line);
+        if (line.empty() || line[0] == '#') continue;
+
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq + 1);
+
+        while (!key.empty() && key.front() == ' ') key.erase(0, 1);
+        rtrim(key);
+        rtrim(val);
+        stripQuotes(val);
+
+        auto comma = val.find(',');
+        if (comma == std::string::npos) continue;
+        uint64_t ewma = strtoull(val.substr(0, comma).c_str(), nullptr, 10);
+        std::string rest = val.substr(comma + 1);
+        auto comma2 = rest.find(',');
+        uint32_t samples = static_cast<uint32_t>(strtoul(
+            (comma2 == std::string::npos ? rest : rest.substr(0, comma2))
+                .c_str(),
+            nullptr, 10));
+        uint64_t lastSleep = 0;
+        if (comma2 != std::string::npos) {
+            lastSleep = strtoull(rest.substr(comma2 + 1).c_str(), nullptr, 10);
+        }
+        // Same validity window as the engine: <3 samples or out-of-range
+        // values are not usable as a hint.
+        if (samples < 3 || ewma < 100 || ewma > 200000) continue;
+        result[key] = LearnedDelay{ewma, samples, lastSleep};
+    }
+    return result;
 }
 
 // ── skey-macro.conf read/write ──────────────────────────────────────────

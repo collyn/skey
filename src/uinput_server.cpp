@@ -39,6 +39,7 @@ constexpr useconds_t UINPUT_INIT_WAIT_US = 1000000;
 // interruptible; paceFd is watched for readability (reserved for a
 // future cancel protocol).
 constexpr int BACKSPACE_GAP_MS = 1;
+constexpr int kMaxGapMs = 100; // v3 per-request pacing clamp
 
 std::atomic<bool> running{true};
 
@@ -350,7 +351,7 @@ public:
 
   // N backspaces, one write() each (press+SYN+release+SYN), poll() gap
   // between them — see BACKSPACE_GAP_MS for why the gap is load-bearing.
-  void backspaces(int count, int paceFd) const {
+  void backspaces(int count, int paceFd, int gapMs) const {
     for (int i = 0; i < count; ++i) {
       input_event ev[4]{};
       ev[0].type = EV_KEY;
@@ -369,7 +370,7 @@ public:
       (void)ignored;
       if (i + 1 < count) {
         pollfd pfd{paceFd, POLLIN, 0};
-        poll(&pfd, 1, BACKSPACE_GAP_MS);
+        poll(&pfd, 1, gapMs);
       }
     }
   }
@@ -508,17 +509,29 @@ int main(int argc, char **argv) {
       }
 
       // Protocol:
-      //   v1 (8+ bytes):  int32_t count + uint32_t textLen + text
-      //   v2 (12+ bytes): int32_t count + uint32_t flags  + uint32_t textLen + text
+      //   v1 (8+ bytes):   int32_t count + uint32_t textLen + text
+      //   v2 (12+ bytes):  int32_t count + uint32_t flags  + uint32_t textLen + text
+      //   v3 (16+ bytes):  v2 + uint32_t paceUsec (gap between injected BS)
       //   flags bit 0: send Escape before BS (dismisses Chrome autocomplete)
       // Text is deprecated — replacement text used to be typed via
       // Ctrl+Shift+U hex, but the engine now commits through
       // ic_->commitString().  It is parsed for backward compatibility
       // and never typed.
+      // Compatibility: a v3 engine against a v2 server degrades to the
+      // default pacing (v2 branch ignores the trailing field), and a v2
+      // engine against this server takes the v2 branch below.  The v3
+      // branch MUST precede the n>=12 check — that one accepts any
+      // longer message and would silently swallow the pace field.
       int32_t count = 0;
       uint32_t flags = 0;
+      uint32_t gapUsec = 0;
       if (n == static_cast<ssize_t>(sizeof(int32_t))) {
         memcpy(&count, buf, sizeof(count));
+      } else if (n >= static_cast<ssize_t>(16)) {
+        // v3: count + flags + textLen + paceUsec (+ text)
+        memcpy(&count, buf, sizeof(count));
+        memcpy(&flags, buf + 4, sizeof(flags));
+        memcpy(&gapUsec, buf + 12, sizeof(gapUsec));
       } else if (n >= static_cast<ssize_t>(sizeof(int32_t) +
                                            sizeof(uint32_t) +
                                            sizeof(uint32_t))) {
@@ -532,15 +545,19 @@ int main(int argc, char **argv) {
       } else {
         continue;
       }
+      int gapMs = gapUsec == 0
+                      ? BACKSPACE_GAP_MS
+                      : std::clamp(static_cast<int>(gapUsec / 1000), 0,
+                                   kMaxGapMs);
 
       // Flags: bit 0 = send Escape to dismiss autocomplete before BS
       if ((flags & 1) != 0) {
         uinput.escape();
-        poll(nullptr, 0, BACKSPACE_GAP_MS);
+        poll(nullptr, 0, gapMs);
       }
 
       count = std::clamp(count, 1, 64);
-      uinput.backspaces(count, client.get());
+      uinput.backspaces(count, client.get(), gapMs);
     }
   }
 

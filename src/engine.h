@@ -1,6 +1,7 @@
 #ifndef FCITX5_SKEY_ENGINE_H
 #define FCITX5_SKEY_ENGINE_H
 
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -21,6 +22,7 @@
 #include "vietnamese.h"
 #include "a11y_monitor.h"
 #include "sheets_cell_tracker.h"
+#include "app_delay_key.h"
 
 namespace fcitx {
 
@@ -116,6 +118,11 @@ private:
     SKeyOutputMode detectAutoMode() const;
     bool connectUinputServer();
     void sendBackspaceUinput(int count, uint32_t flags = 0);
+
+    /// Copy of the current app's manual override (all -1 when none).
+    skey::AppDelayOverride appDelayOverrideResolved() const;
+    /// Pause after a commitText — manual postCommitMs only, no-op otherwise.
+    void postCommitPause(int postMs) const;
     bool handlePendingUinputBackspace(KeyEvent &keyEvent);
     void replayBufferedUinputKeys();
     void commitBuffer();
@@ -350,6 +357,15 @@ private:
     bool addrBarSawBsInWord_ = false;
 };
 
+/// Per-app uinput sync-anchor round-trip statistics for the opt-in
+/// AutoDelay feature.  Populated from real typing only (no probes);
+/// see SKeyEngine::noteAppRoundTrip.
+struct AppDelayStat {
+    uint64_t rtEwmaUsec = 0; // 0 = no sample yet
+    uint32_t samples = 0;
+    uint64_t lastSleepUsec = 0; // last BS→commit sleep actually applied
+};
+
 /// Main fcitx5 engine class.
 class SKeyEngine : public InputMethodEngineV2 {
 public:
@@ -384,6 +400,35 @@ public:
     void setInputMethod(SKeyInputMethod method);
     void saveAppMode(const std::string &app, SKeyOutputMode mode);
     void saveAppExcluded(const std::string &app, bool excluded);
+
+    // ── AutoDelay (opt-in): per-app round-trip statistics ───────────────
+    /// Record one measured uinput sync-anchor round trip for `prog`.
+    /// Cheap and side-effect free — called on every replacement whether or
+    /// not the AutoDelay option is on, so enabling it mid-session starts
+    /// from warm data.  Samples outside [kAppDelayMinSampleUsec,
+    /// kAppDelayMaxSampleUsec] are rejected as noise/stalls.
+    void noteAppRoundTrip(const std::string &prog, bool wayland,
+                          uint64_t rtUsec);
+    /// Per-app round-trip estimate (usec); 0 when unknown / fewer than
+    /// kAppDelayMinSamples recorded.
+    uint64_t appDelayRt(const std::string &prog, bool wayland) const;
+    /// Record the last BS→commit sleep actually applied for `prog`
+    /// (persisted so the settings dialog can show the current value).
+    void noteAppSleep(const std::string &prog, bool wayland,
+                      uint64_t sleepUsec);
+    /// Debug suffix for the sleep-decision log line: " [auto Nms/M]",
+    /// " [auto cold]" (no usable sample yet), or empty when OFF.
+    std::string appDelayDebugTag(const std::string &prog, bool wayland) const;
+
+    /// Manual per-app delay override (conf/skey-app-delay-overrides.conf).
+    /// nullptr when the app has no override.  Independent of AutoDelay.
+    const skey::AppDelayOverride *appDelayOverride(const std::string &prog,
+                                                   bool wayland) const;
+    /// Debug suffix " [override pace=N pre=N post=N]" (auto fields print as
+    /// "auto"); empty when the app has no override.
+    std::string appDelayOverrideDebugTag(const std::string &prog,
+                                         bool wayland) const;
+
     void updateMenuActions();
     A11yMonitor *a11yMonitor() const { return a11yMonitor_.get(); }
     const Key &modeMenuKey() const { return modeMenuKey_; }
@@ -403,6 +448,27 @@ private:
     // Pending preedit text saved on focus loss, keyed by program name.
     // Survives IC destruction — committed when the program is reactivated.
     std::map<std::string, std::string> pendingPreedits_;
+
+    // ── AutoDelay (opt-in) ─────────────────────────────────────────────
+    // Per-app round-trip statistics, keyed by appDelayKey() (app name +
+    // "@x"/"@w" display-class suffix).  Engine-level: survives IC
+    // destruction and focus changes.  Persisted to
+    // conf/skey-app-delays.conf only while the option is on.
+    std::map<std::string, AppDelayStat> appDelayStats_;
+    bool appDelaysDirty_ = false;
+    uint32_t appDelaysSinceSave_ = 0;
+    uint64_t appDelaysSavedAtUsec_ = 0;
+    void loadAppDelays();
+    void saveAppDelays();
+    void maybeSaveAppDelays(bool force = false);
+
+    // ── Manual per-app delay overrides (conf/skey-app-delay-overrides.conf)
+    // Keyed by appDelayKey() (app name + "@x"/"@w").  Loaded on every
+    // reloadConfig() (tiny file); consulted per replacement — the values
+    // are applied verbatim over the adaptive computation, whatever the
+    // AutoDelay option says.
+    std::map<std::string, skey::AppDelayOverride> appDelayOverrides_;
+    void loadAppDelayOverrides();
 
     // Tray menu: Input Method selector
     SimpleAction imAction_;

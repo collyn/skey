@@ -119,6 +119,16 @@ void GeneralTab::setupUI() {
   debugCheck_ = new QCheckBox(T("Ghi log debug"), checkFrame);
   checkLayout->addWidget(debugCheck_, 2, 1);
 
+  autoDelayCheck_ =
+      new QCheckBox(T("Tự động tối ưu delay theo app"), checkFrame);
+  autoDelayCheck_->setToolTip(T(
+      "Học thời gian phản hồi thật của từng ứng dụng khi gõ (chế độ Uinput) "
+      "rồi tự chọn độ trễ chèn chữ phù hợp cho lần gõ kế tiếp. Có hiệu lực "
+      "từ lần chuyển cửa sổ kế tiếp.\n"
+      "Dữ liệu lưu ở ~/.config/fcitx5/conf/skey-app-delays.conf — "
+      "xoá tệp đó để quên dữ liệu đã học."));
+  checkLayout->addWidget(autoDelayCheck_, 3, 1);
+
   mainLayout->addWidget(checkFrame);
 
   mainLayout->addStretch();
@@ -156,6 +166,7 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
   showPreeditCheck_->setChecked(cfg.showPreedit);
 
   debugCheck_->setChecked(cfg.debug);
+  autoDelayCheck_->setChecked(cfg.autoDelay);
 }
 
 SKeyConfig GeneralTab::collectConfig() const {
@@ -172,6 +183,7 @@ SKeyConfig GeneralTab::collectConfig() const {
   cfg.dict = dictCheck_->isChecked();
   cfg.showPreedit = showPreeditCheck_->isChecked();
   cfg.debug = debugCheck_->isChecked();
+  cfg.autoDelay = autoDelayCheck_->isChecked();
   cfg.modeMenuKey = modeMenuKeyEdit_->fcitx5Value();
   return cfg;
 }

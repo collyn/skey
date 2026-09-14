@@ -1,6 +1,9 @@
 #include "app_modes_tab.h"
+#include "app_delay_dialog.h"
 #include "config_io.h"
 #include "tr.h"
+
+#include "../app_delay_key.h"
 
 #include <QComboBox>
 #include <QDialog>
@@ -50,15 +53,17 @@ void AppModesTab::setupUI() {
             this, &AppModesTab::onFilterChanged);
 
     // ── Table ──
-    table_ = new QTableWidget(0, 3, this);
+    table_ = new QTableWidget(0, 4, this);
     table_->setHorizontalHeaderLabels({
         T("Tên ứng dụng"),
         T("Chế độ xuất"),
+        T("Tùy chỉnh"),
         T("Xóa")});
     table_->horizontalHeader()->setStretchLastSection(false);
     table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     table_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    table_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     table_->setAlternatingRowColors(true);
     table_->setIconSize(QSize(20, 20));
@@ -294,7 +299,9 @@ static QIcon resolveAppIcon(const QString &execName) {
 }
 
 // ── Add a single row to the table ──────────────────────────────────────
-void AppModesTab::addRow(const std::string &name, const std::string &mode) {
+void AppModesTab::addRow(const std::string &name, const std::string &mode,
+                         const std::string &delayX11,
+                         const std::string &delayWayland) {
     int row = table_->rowCount();
     table_->insertRow(row);
 
@@ -309,8 +316,13 @@ void AppModesTab::addRow(const std::string &name, const std::string &mode) {
     nameItem->setFlags(nameItem->flags() & ~Qt::ItemIsEditable);
     table_->setItem(row, 0, nameItem); // icon resolved later in fillIcons()
 
-    // Column 1 — mode combobox
+    // Column 1 — mode combobox.  Keep it compact: the dropdown still
+    // shows the full item text, but the closed box is capped so the
+    // app-name column keeps the horizontal space.
     auto *combo = new QComboBox(table_);
+    combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    combo->setMinimumContentsLength(8);
+    combo->setMaximumWidth(130);
     for (int i = 0; kAppModeValues[i]; ++i) {
         combo->addItem(kAppModeValues[i], kAppModeValues[i]);
     }
@@ -318,10 +330,38 @@ void AppModesTab::addRow(const std::string &name, const std::string &mode) {
     if (idx >= 0) combo->setCurrentIndex(idx);
     table_->setCellWidget(row, 1, combo);
 
-    // Column 2 — delete button
+    // Column 2 — advanced delay override button.  The per-row override
+    // values ride on the button as dynamic properties (canonical file
+    // format) — removeRow destroys the button with the row, so no
+    // separate container to keep in sync.
+    auto *advBtn = new QPushButton(table_);
+    // Icon-only button: theme gear when available, ⚙ glyph as fallback.
+    QIcon gear = QIcon::fromTheme(
+        QStringLiteral("preferences-system"),
+        QIcon::fromTheme(QStringLiteral("emblem-system")));
+    if (!gear.isNull()) {
+        advBtn->setIcon(gear);
+        advBtn->setText(QString());
+    } else {
+        advBtn->setText(QStringLiteral("⚙"));
+    }
+    advBtn->setProperty("delayX11",
+                        QString::fromStdString(delayX11.empty() ? "auto"
+                                                                : delayX11));
+    advBtn->setProperty("delayWayland",
+                        QString::fromStdString(delayWayland.empty()
+                                                   ? "auto"
+                                                   : delayWayland));
+    advBtn->setToolTip(T("Chỉnh tay độ trễ chèn chữ (X11/Wayland) cho ứng "
+                         "dụng này."));
+    connect(advBtn, &QPushButton::clicked, this,
+            &AppModesTab::onEditDelay);
+    table_->setCellWidget(row, 2, advBtn);
+
+    // Column 3 — delete button
     auto *delBtn = new QPushButton(T("Xóa"), table_);
     connect(delBtn, &QPushButton::clicked, this, &AppModesTab::onDeleteApp);
-    table_->setCellWidget(row, 2, delBtn);
+    table_->setCellWidget(row, 3, delBtn);
 }
 
 // ── Filter rows by app name (display text + real key) ──────────────────
@@ -352,10 +392,17 @@ void AppModesTab::fillIcons() {
 }
 
 // ── Load from config ────────────────────────────────────────────────────
-void AppModesTab::loadFromConfig(const AppModesConfig &cfg) {
+void AppModesTab::loadFromConfig(
+    const AppModesConfig &cfg,
+    const std::map<std::string, std::string> &delayOverrides) {
     table_->setRowCount(0);
     for (auto &[name, mode] : cfg.entries) {
-        addRow(name, mode);
+        auto lookup = [&](bool wayland) {
+            auto it = delayOverrides.find(
+                skey::appDelayKey(name, wayland));
+            return it == delayOverrides.end() ? std::string() : it->second;
+        };
+        addRow(name, mode, lookup(false), lookup(true));
     }
     // Icon lookup (desktop scan + /proc pass) is deferred so the window
     // opens instantly; icons appear on the next event-loop iteration.
@@ -382,6 +429,72 @@ AppModesConfig AppModesTab::collectConfig() const {
         }
     }
     return cfg;
+}
+
+// ── Collect manual delay overrides ──────────────────────────────────────
+AppDelayOverridesConfig AppModesTab::collectOverrides() const {
+    AppDelayOverridesConfig cfg;
+    for (int r = 0; r < table_->rowCount(); ++r) {
+        auto *nameItem = table_->item(r, 0);
+        auto *advBtn =
+            qobject_cast<QPushButton *>(table_->cellWidget(r, 2));
+        if (!nameItem || !advBtn) continue;
+
+        std::string name = nameItem->data(Qt::UserRole).toString().toStdString();
+        if (name.empty() && !nameItem->text().isEmpty()) {
+            name = nameItem->text().toStdString();
+        }
+        auto emitFor = [&](bool wayland, const char *prop) {
+            std::string value =
+                advBtn->property(prop).toString().toStdString();
+            skey::AppDelayOverride ov;
+            if (!skey::parseAppDelayOverride(value, ov)) return;
+            std::string key = skey::appDelayKey(name, wayland);
+            if (key.empty() || !ov.any()) return; // auto rows are omitted
+            cfg.entries.emplace_back(key,
+                                     skey::formatAppDelayOverride(ov));
+        };
+        emitFor(false, "delayX11");
+        emitFor(true, "delayWayland");
+    }
+    return cfg;
+}
+
+// ── Advanced delay dialog per row ───────────────────────────────────────
+void AppModesTab::onEditDelay() {
+    auto *btn = qobject_cast<QPushButton *>(sender());
+    if (!btn) return;
+    int row = -1;
+    for (int r = 0; r < table_->rowCount(); ++r) {
+        if (table_->cellWidget(r, 2) == btn) {
+            row = r;
+            break;
+        }
+    }
+    if (row < 0) return;
+
+    auto *nameItem = table_->item(row, 0);
+    if (!nameItem) return;
+    QString name = nameItem->data(Qt::UserRole).toString();
+    if (name.isEmpty()) name = nameItem->text();
+
+    auto parse = [](const QString &v) {
+        skey::AppDelayOverride ov;
+        skey::parseAppDelayOverride(v.toStdString(), ov);
+        return ov;
+    };
+    AppDelayDialog dlg(name, parse(btn->property("delayX11").toString()),
+                       parse(btn->property("delayWayland").toString()),
+                       this);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    btn->setProperty("delayX11",
+                     QString::fromStdString(
+                         skey::formatAppDelayOverride(dlg.x11Override())));
+    btn->setProperty(
+        "delayWayland",
+        QString::fromStdString(
+            skey::formatAppDelayOverride(dlg.waylandOverride())));
 }
 
 // ── Defaults ────────────────────────────────────────────────────────────
@@ -445,7 +558,7 @@ void AppModesTab::onDeleteApp() {
     if (!btn) return;
 
     for (int r = 0; r < table_->rowCount(); ++r) {
-        if (table_->cellWidget(r, 2) == btn) {
+        if (table_->cellWidget(r, 3) == btn) {
             table_->removeRow(r);
             return;
         }

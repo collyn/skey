@@ -41,6 +41,7 @@ private:
     QCheckBox *dictCheck_;
     QCheckBox *showPreeditCheck_;
     QCheckBox *debugCheck_;
+    QCheckBox *autoDelayCheck_;
 };
 
 #endif // SKEY_SETTINGS_GENERAL_TAB_H

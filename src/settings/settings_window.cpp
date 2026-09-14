@@ -118,7 +118,12 @@ void SkeySettingsWindow::loadSettings() {
   generalTab_->loadFromConfig(cfg);
   generalTab_->setTriggerKey(trigger);
   generalTab_->setModeMenuKey(cfg.modeMenuKey);
-  appModesTab_->loadFromConfig(appModes);
+  // Flatten the per-app delay overrides into key → value for the tab.
+  std::map<std::string, std::string> delayOverrides;
+  for (auto &[key, value] : readAppDelayOverridesConfig().entries) {
+    delayOverrides[key] = value;
+  }
+  appModesTab_->loadFromConfig(appModes, delayOverrides);
   appModesTab_->setChromiumAddressBarMode(cfg.chromiumAddressBarMode);
 
   MacroTabData macroData;
@@ -172,8 +177,9 @@ void SkeySettingsWindow::onApply() {
   bool ok3 = writeMacroConfig(macroCfg);
   bool ok4 = writeTriggerKey(trigger);
   bool ok5 = writeUserDict(dictTab_->collectConfig());
+  bool ok6 = writeAppDelayOverridesConfig(appModesTab_->collectOverrides());
 
-  if (ok1 && ok2 && ok3 && ok4 && ok5) {
+  if (ok1 && ok2 && ok3 && ok4 && ok5 && ok6) {
     reloadFcitx5();
     if (langChanged) {
       // Tái tạo cửa sổ CHÍNH LÀ phản hồi — bỏ hộp thoại để tránh dialog

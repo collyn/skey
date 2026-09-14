@@ -56,6 +56,10 @@ target_link_libraries(test_sheets_cell_tracker skey_engine pthread dl)
 target_include_directories(test_sheets_cell_tracker PRIVATE "${SKEY_ENGINE_DIR}")
 target_compile_features(test_sheets_cell_tracker PRIVATE cxx_std_17)
 add_test(NAME SheetsCellTracking COMMAND test_sheets_cell_tracker)
+
+add_executable(test_app_delay_key test_app_delay_key.cpp)
+target_compile_features(test_app_delay_key PRIVATE cxx_std_17)
+add_test(NAME AppDelayKey COMMAND test_app_delay_key)
 enable_testing()
 
 install(TARGETS skey DESTINATION "${FCITX_INSTALL_ADDONDIR}")

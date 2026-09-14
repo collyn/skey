@@ -42,6 +42,7 @@
 #include <dirent.h>
 #include <fstream>
 #include <pwd.h>
+#include <iomanip>
 #include <sstream>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -112,9 +113,13 @@ public:
     std::ofstream f("/tmp/skey.log", std::ios::app);
     auto now = std::chrono::system_clock::now();
     auto t = std::chrono::system_clock::to_time_t(now);
-    char buf[32];
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                  now.time_since_epoch()) %
+              1000;
+    char buf[40];
     std::strftime(buf, sizeof(buf), "%H:%M:%S", std::localtime(&t));
-    f << "[" << buf << "] " << ss_.str() << std::endl;
+    f << "[" << buf << "." << std::setw(3) << std::setfill('0') << ms.count()
+      << "] " << ss_.str() << std::endl;
   }
   template <typename T> SKeyLogger &operator<<(const T &v) {
     ss_ << v;
@@ -265,6 +270,40 @@ static constexpr uint64_t kSlowLoopbackCommitDelayFloorUsec = 15000;
 static constexpr uint64_t kUinputSlowModeSleepUsec = 20000;
 static constexpr int kUinputSlowModeVerifyRetries = 3;
 static constexpr uint64_t kUinputSlowModeRetryIntervalUsec = 2000;
+
+// ── AutoDelay (opt-in): per-app round-trip statistics ──────────────────
+// The sleep/deferred formulas read bsRtEwma_, which deactivate() resets to
+// the cold sentinel every focus session.  With the option ON, activate()
+// seeds bsRtEwma_ from the app's accumulated history instead, so the first
+// replacement after a focus change already uses the app's own delay.
+// Per-app alpha is much lower than the per-IC 0.3 (the statistic
+// aggregates across sessions); the warm-up average below converges it fast
+// anyway.
+static constexpr double kAppDelayEwmaAlpha = 0.05;
+static constexpr uint32_t kAppDelayMinSamples = 3; // min to persist/seed
+static constexpr uint64_t kAppDelayMinSampleUsec = 100;    // reject glitches
+static constexpr uint64_t kAppDelayMaxSampleUsec = 200000; // reject stalls
+static constexpr uint64_t kAppDelayMaxStoredUsec = 200000; // sanity on load
+static constexpr size_t kAppDelayMaxApps = 128;            // bound the map
+static constexpr uint64_t kAppDelaySaveMinIntervalUsec = 10000000; // 10s
+static constexpr uint32_t kAppDelaySaveEverySamples = 32;
+
+// X11 terminal floor ramp (see the terminal floor in
+// handlePendingUinputBackspace): full floor at/below the lower RT
+// threshold, zero at/above the upper one, linear between.
+static constexpr uint64_t kTerminalFloorPerBsUsec = 15000;
+static constexpr uint64_t kTerminalFloorMaxAtRtUsec = 10000;
+static constexpr uint64_t kTerminalFloorFullRtUsec = 30000;
+// Sleep cap ramp (same thresholds as the floor): 20ms cap for fast apps,
+// 15ms cap for slow ones whose RT already covers most of the drain.
+// 5ms proved too tight for frame-paced apps — a multi-char commit could
+// land while the last deletion's render was still pending and lose half
+// the text ("vãi" → missing ã/i, sterm 2026-09-14).
+static constexpr uint64_t kTerminalSleepCapMaxUsec = 20000;
+static constexpr uint64_t kTerminalSleepCapMinUsec = 15000;
+// Multi-deletion replacements need a full frame+ of headroom even when
+// the single-BS cap ramped down (observed-safe for del>=2: 20ms).
+static constexpr uint64_t kMultiBsSleepFloorUsec = 20000;
 
 // NOTE: AT-SPI2 queries for the Chromium address bar must NEVER run on
 // the fcitx5 main thread — a stuck DBus reply blocks all input handling
@@ -431,6 +470,11 @@ static bool isOfficeSuiteApp(const std::string &prog) {
   return false;
 }
 
+// Shared with the settings GUI via src/app_delay_key.h — the key scheme
+// and value format of the per-app delay files must match byte-for-byte on
+// both sides.
+using skey::appDelayKey;
+
 static bool isChromiumBrowser(const std::string &prog) {
   static const char *const patterns[] = {
       "chrome",  "chromium",       "google-chrome", "brave",
@@ -595,7 +639,7 @@ static bool isTerminalAppName(const std::string &prog) {
       "konsole",        "org.kde.konsole",
       "alacritty",      "kitty",
       "gnome-terminal", "xfce4-terminal",
-      "sterm",          "st-",
+      "st-",
       "terminator",     "terminology",
       "wezterm",        "ghostty", "foot",
       "urxvt",          "rxvt",
@@ -1013,6 +1057,11 @@ void SKeyEngine::deactivate(const InputMethodEntry &entry,
   if (state) {
     state->deactivate();
   }
+  // AutoDelay: persist learned statistics on focus changes (throttled
+  // internally).  Hooks here rather than in SKeyState::deactivate() —
+  // that one early-returns on spurious Chromium churn without resetting,
+  // and a write on every churn cycle would be pointless disk I/O.
+  maybeSaveAppDelays();
 }
 
 void SKeyEngine::reset(const InputMethodEntry &entry,
@@ -1026,6 +1075,9 @@ void SKeyEngine::reset(const InputMethodEntry &entry,
 
 void SKeyEngine::save() {
   safeSaveAsIni(macroTableConfig_, "conf/skey-macro.conf");
+  // AutoDelay: flush learned statistics on shutdown / config save — a
+  // single long-lived focus would otherwise only persist at deactivate.
+  maybeSaveAppDelays(/*force=*/true);
 }
 
 const Configuration *SKeyEngine::getConfig() const { return &config_; }
@@ -1153,6 +1205,205 @@ void SKeyEngine::saveAppExcluded(const std::string &app, bool excluded) {
   SKEY_INFO() << "App '" << app << "' " << (excluded ? "excluded" : "included");
 }
 
+// ── AutoDelay (opt-in): per-app round-trip statistics ──────────────────
+
+void SKeyEngine::noteAppRoundTrip(const std::string &prog, bool wayland,
+                                  uint64_t rtUsec) {
+  if (rtUsec < kAppDelayMinSampleUsec || rtUsec > kAppDelayMaxSampleUsec) {
+    return;
+  }
+  std::string key = appDelayKey(prog, wayland);
+  if (key.empty()) {
+    return;
+  }
+  auto it = appDelayStats_.find(key);
+  if (it == appDelayStats_.end()) {
+    if (appDelayStats_.size() >= kAppDelayMaxApps) {
+      return;
+    }
+    it = appDelayStats_.emplace(key, AppDelayStat{}).first;
+  }
+  AppDelayStat &s = it->second;
+  // Warm-up average: sample 1 snaps, then alpha ramps 1/2, 1/3 … down to
+  // the 0.05 floor — a first-ever sample cannot dominate the statistic.
+  double alpha = std::max(1.0 / (s.samples + 1.0), kAppDelayEwmaAlpha);
+  s.rtEwmaUsec = s.samples == 0
+                     ? rtUsec
+                     : static_cast<uint64_t>(alpha * rtUsec +
+                                             (1.0 - alpha) * s.rtEwmaUsec);
+  ++s.samples;
+  appDelaysDirty_ = true;
+  ++appDelaysSinceSave_;
+}
+
+void SKeyEngine::noteAppSleep(const std::string &prog, bool wayland,
+                              uint64_t sleepUsec) {
+  std::string key = appDelayKey(prog, wayland);
+  if (key.empty()) {
+    return;
+  }
+  auto it = appDelayStats_.find(key);
+  if (it == appDelayStats_.end()) {
+    return; // no RT statistic yet — nothing to attach the sleep to
+  }
+  it->second.lastSleepUsec = sleepUsec;
+  appDelaysDirty_ = true;
+}
+
+uint64_t SKeyEngine::appDelayRt(const std::string &prog, bool wayland) const {
+  std::string key = appDelayKey(prog, wayland);
+  if (key.empty()) {
+    return 0;
+  }
+  auto it = appDelayStats_.find(key);
+  return (it == appDelayStats_.end() || it->second.samples < kAppDelayMinSamples)
+             ? 0
+             : it->second.rtEwmaUsec;
+}
+
+std::string SKeyEngine::appDelayDebugTag(const std::string &prog,
+                                         bool wayland) const {
+  if (!config_.autoDelay.value()) {
+    return {};
+  }
+  std::string key = appDelayKey(prog, wayland);
+  if (key.empty()) {
+    return {};
+  }
+  auto it = appDelayStats_.find(key);
+  if (it == appDelayStats_.end() || it->second.samples < kAppDelayMinSamples) {
+    return " [auto cold]";
+  }
+  return " [auto " + std::to_string(it->second.rtEwmaUsec / 1000) + "ms/" +
+         std::to_string(it->second.samples) + "]";
+}
+
+const skey::AppDelayOverride *
+SKeyEngine::appDelayOverride(const std::string &prog, bool wayland) const {
+  std::string key = appDelayKey(prog, wayland);
+  if (key.empty()) {
+    return nullptr;
+  }
+  auto it = appDelayOverrides_.find(key);
+  return it == appDelayOverrides_.end() ? nullptr : &it->second;
+}
+
+std::string SKeyEngine::appDelayOverrideDebugTag(const std::string &prog,
+                                                 bool wayland) const {
+  const skey::AppDelayOverride *ov = appDelayOverride(prog, wayland);
+  if (!ov || !ov->any()) {
+    return {};
+  }
+  auto mm = [](int v) { return v < 0 ? std::string("auto") : std::to_string(v); };
+  return " [override pace=" + mm(ov->paceMs) + " pre=" + mm(ov->preCommitMs) +
+         " post=" + mm(ov->postCommitMs) + "]";
+}
+
+void SKeyEngine::loadAppDelayOverrides() {
+  appDelayOverrides_.clear();
+  RawConfig cfg;
+  readAsIni(cfg, "conf/skey-app-delay-overrides.conf");
+  size_t added = 0;
+  for (const std::string &key : cfg.subItems()) {
+    auto *raw = cfg.valueByPath(key);
+    if (!raw) {
+      continue;
+    }
+    std::string v = *raw;
+    if (v.size() >= 2 && v.front() == '"' && v.back() == '"') { // defensive
+      v = v.substr(1, v.size() - 2);
+    }
+    skey::AppDelayOverride ov;
+    if (!skey::parseAppDelayOverride(v, ov) || !ov.any()) {
+      continue; // skip auto/garbage
+    }
+    appDelayOverrides_[key] = ov;
+    ++added;
+  }
+  if (added) {
+    SKEY_INFO() << "DelayOverride: loaded " << added << " app(s)";
+  }
+}
+
+void SKeyEngine::loadAppDelays() {
+  RawConfig cfg;
+  readAsIni(cfg, "conf/skey-app-delays.conf");
+  size_t added = 0;
+  for (const std::string &key : cfg.subItems()) {
+    auto *raw = cfg.valueByPath(key); // sanitized keys never nest
+    if (!raw) {
+      continue;
+    }
+    std::string v = *raw;
+    if (v.size() >= 2 && v.front() == '"' && v.back() == '"') { // defensive
+      v = v.substr(1, v.size() - 2);
+    }
+    auto comma = v.find(',');
+    if (comma == std::string::npos) {
+      continue;
+    }
+    uint64_t ewma = strtoull(v.substr(0, comma).c_str(), nullptr, 10);
+    std::string rest = v.substr(comma + 1);
+    auto comma2 = rest.find(',');
+    uint32_t samples = static_cast<uint32_t>(strtoul(
+        (comma2 == std::string::npos ? rest : rest.substr(0, comma2))
+            .c_str(),
+        nullptr, 10));
+    uint64_t lastSleep = 0;
+    if (comma2 != std::string::npos) {
+      lastSleep = strtoull(rest.substr(comma2 + 1).c_str(), nullptr, 10);
+    }
+    if (samples < kAppDelayMinSamples || ewma < kAppDelayMinSampleUsec ||
+        ewma > kAppDelayMaxStoredUsec) {
+      continue;
+    }
+    auto it = appDelayStats_.find(key);
+    if (it == appDelayStats_.end()) {
+      appDelayStats_.emplace(key, AppDelayStat{ewma, samples, lastSleep});
+    } else if (samples > it->second.samples) {
+      // Disk wins only when it holds more evidence than this session.
+      it->second = AppDelayStat{ewma, samples, lastSleep};
+    }
+    ++added;
+  }
+  if (added) {
+    SKEY_INFO() << "AppDelay: loaded " << added << " app(s)";
+  }
+}
+
+void SKeyEngine::saveAppDelays() {
+  RawConfig cfg;
+  cfg.setComment("skey per-app uinput round-trip statistics (AutoDelay)");
+  for (const auto &[key, s] : appDelayStats_) {
+    if (s.samples >= kAppDelayMinSamples) {
+      cfg.setValueByPath(key, std::to_string(s.rtEwmaUsec) + "," +
+                                  std::to_string(s.samples) + "," +
+                                  std::to_string(s.lastSleepUsec));
+    }
+  }
+  bool ok = safeSaveAsIni(cfg, "conf/skey-app-delays.conf");
+  appDelaysDirty_ = false;
+  appDelaysSinceSave_ = 0;
+  appDelaysSavedAtUsec_ = now(CLOCK_MONOTONIC);
+  SKEY_INFO() << "AppDelay: saved " << appDelayStats_.size() << " app(s) ok="
+              << ok;
+}
+
+void SKeyEngine::maybeSaveAppDelays(bool force) {
+  if (!config_.autoDelay.value()) { // OFF never writes
+    return;
+  }
+  if (!appDelaysDirty_) {
+    return;
+  }
+  uint64_t nowUs = now(CLOCK_MONOTONIC);
+  if (!force && appDelaysSinceSave_ < kAppDelaySaveEverySamples &&
+      nowUs - appDelaysSavedAtUsec_ < kAppDelaySaveMinIntervalUsec) {
+    return;
+  }
+  saveAppDelays();
+}
+
 void SKeyEngine::reloadConfig() {
   // Migrate legacy "Telex W" input method → Telex + ShortW=True.
   // The TelexW enum value no longer exists, so peek the raw ini first.
@@ -1172,6 +1423,17 @@ void SKeyEngine::reloadConfig() {
   g_skeyDebugEnabled = readDebugFromFile();
   if (a11yMonitor_)
     a11yMonitor_->setDebug(g_skeyDebugEnabled);
+  // AutoDelay: load learned per-app statistics only while the option is
+  // on — zero I/O otherwise.  reloadConfig() runs on every activate, so a
+  // mid-session toggle takes effect at the next focus change.  The merge
+  // keeps the session's fresher data when disk has fewer samples.
+  if (config_.autoDelay.value()) {
+    loadAppDelays();
+  }
+  // Manual per-app delay overrides: loaded unconditionally — the override
+  // must work whether AutoDelay is on or off.  Tiny file, consulted per
+  // replacement (no IC cache to invalidate).
+  loadAppDelayOverrides();
 
   // Parse mode-menu key from config string (default: "grave" = backtick `)
   modeMenuKey_ = Key(config_.modeMenuKey.value());
@@ -2441,6 +2703,25 @@ void SKeyState::activate() {
                << ic_->cursorRect().top() << "," << ic_->cursorRect().width()
                << "x" << ic_->cursorRect().height() << ")";
 
+  // ── AutoDelay (opt-in) ────────────────────────────────────────────────
+  // Start this focus session from the app's accumulated round-trip history
+  // instead of the cold sentinel.  Everything downstream (baseRt at the
+  // commit site, both Surr deferred formulas) reads bsRtEwma_, so this one
+  // seed covers both paths; the in-session EWMA then re-adapts to what this
+  // focus is actually doing and the seed decays away within ~5 samples.
+  // The omnibox is excluded: its autocomplete round trip is a different
+  // population than page typing (CapabilityFlag::Url is the only signal
+  // available at activate time).
+  if (engine_->config().autoDelay.value() &&
+      !caps.test(CapabilityFlag::Url)) {
+    if (uint64_t appRt = engine_->appDelayRt(appProgram(), isWayland());
+        appRt > 0) {
+      bsRtEwma_ = appRt;
+      SKEY_DEBUG() << "AppDelay: seeded from '" << appProgram() << "' = "
+                   << (appRt / 1000) << "ms";
+    }
+  }
+
   // First-word settle tracking (see kFirstWordSettleUsec): the first
   // replaces after this activation get extra commit headroom while the
   // renderer settles into the new focus.
@@ -2578,20 +2859,32 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags) {
     return;
   }
 
-  // Protocol v2: int32_t count, uint32_t flags, uint32_t textLen, then text.
-  // textLen is always 0 — replacement text is committed via
-  // ic_->commitString() (see handlePendingUinputBackspace), never typed
-  // through uinput.  flags bit 0: send Escape before BS (deprecated —
-  //   autocomplete is now handled via extra BS when isAutofillCertain()
-  //   detects a selection).
-  // The server detects v1 vs v2 by message size for backward compatibility.
+  // Protocol v3: int32_t count, uint32_t flags, uint32_t textLen,
+  // uint32_t paceUsec, then text.  textLen is always 0 — replacement text
+  // is committed via ic_->commitString() (see
+  // handlePendingUinputBackspace), never typed through uinput.
+  // flags bit 0: send Escape before BS (deprecated — autocomplete is now
+  //   handled via extra BS when isAutofillCertain() detects a selection).
+  // paceUsec: gap between injected BS (manual per-app override; 1000 =
+  //   the server's 1ms default).  The server detects v1/v2/v3 by message
+  //   size; a v2 server ignores the trailing field and uses the default.
+  uint32_t paceUsec = 1000;
+  if (const skey::AppDelayOverride *ov =
+          engine_->appDelayOverride(appProgram(), isWayland());
+      ov && ov->paceMs >= 0) {
+    paceUsec = static_cast<uint32_t>(
+        std::min(ov->paceMs, skey::kMaxPaceMs)) *
+               1000;
+  }
   int32_t count32 = count;
   uint32_t textLen = 0;
-  std::vector<char> msg(sizeof(int32_t) + sizeof(uint32_t) * 2);
+  std::vector<char> msg(sizeof(int32_t) + sizeof(uint32_t) * 3); // 16 bytes
   memcpy(msg.data(), &count32, sizeof(count32));
   memcpy(msg.data() + sizeof(count32), &flags, sizeof(flags));
   memcpy(msg.data() + sizeof(count32) + sizeof(flags), &textLen,
          sizeof(textLen));
+  memcpy(msg.data() + sizeof(count32) + sizeof(flags) + sizeof(textLen),
+         &paceUsec, sizeof(paceUsec));
 
   bsSentAt_ = now(CLOCK_MONOTONIC);
   ssize_t n = send(uinputClientFd_, msg.data(), msg.size(), MSG_NOSIGNAL);
@@ -2606,7 +2899,24 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags) {
   // Track injected BS that will loop back through fcitx5 — used to
   // swallow late loopbacks instead of mistaking them for user backspaces.
   uinputBsOutstanding_ += count;
-  SKEY_DEBUG() << "Uinput: sent BS=" << count;
+  SKEY_DEBUG() << "Uinput: sent BS=" << count
+               << (paceUsec != 1000
+                       ? " pace=" + std::to_string(paceUsec / 1000) + "ms"
+                       : "");
+}
+
+skey::AppDelayOverride SKeyState::appDelayOverrideResolved() const {
+  const skey::AppDelayOverride *ov =
+      engine_->appDelayOverride(appProgram(), isWayland());
+  return ov ? *ov : skey::AppDelayOverride{};
+}
+
+void SKeyState::postCommitPause(int postMs) const {
+  if (postMs > 0) {
+    usleep(static_cast<useconds_t>(
+               std::min(postMs, skey::kMaxPostCommitMs)) *
+           1000);
+  }
 }
 
 bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
@@ -2704,8 +3014,21 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   std::string commitText = pendingUinputCommit_;
   pendingUinputCommit_.clear();
 
+  // Hoisted: used by the AutoDelay measurement exclusion, the multiplier
+  // band selection and the debug line — one a11y read instead of three.
+  const bool inAddrBar = inChromiumAddressBar();
+
   uint64_t elapsed = now(CLOCK_MONOTONIC) - bsSentAt_;
   lastBsRoundTrip_ = elapsed;
+
+  // AutoDelay: feed the per-app statistic regardless of the option — the
+  // update is one map lookup plus a few flops, and it means turning the
+  // option on mid-session starts from warm data.  The omnibox is excluded:
+  // Chrome's autocomplete round trip (~70ms on X11) is a different
+  // population from page typing and would poison the statistic.
+  if (!inAddrBar && bsSentAt_ != 0) {
+    engine_->noteAppRoundTrip(appProgram(), isWayland(), elapsed);
+  }
 
   // Adaptive sleep via EWMA of measured round-trip times.
   auto &timing = uinputTiming();
@@ -2717,7 +3040,7 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   }
   double multiplier;
   uint64_t minDelay, maxDelay;
-  if (inChromiumAddressBar()) {
+  if (inAddrBar) {
     multiplier = timing.addrBarBsRtMultiplier;
     minDelay = timing.addrBarCommitDelayMinUsec;
     maxDelay = timing.addrBarCommitDelayMaxUsec;
@@ -2777,6 +3100,35 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
                         : std::max(elapsed, bsRtEwma_ / 2);
   uint64_t sleepUsec = std::clamp(static_cast<uint64_t>(baseRt * multiplier),
                                   minDelay, maxDelay);
+  // X11 non-Chromium: ramp the sleep cap down for apps whose loopback is
+  // already slow.  A fast loopback (ghostty 2-12ms) proves nothing about
+  // the deletion drain — the full 20ms cap stays.  A slow loopback means
+  // the app applied AND rendered each deletion before the anchor returned
+  // (sterm: one frame per deletion, RT ≈ 16.7ms × deletions) — the cap on
+  // top only adds lag, so shrink it toward the 5ms minimum.  Chromium
+  // keeps its own floors (the renderer lags the browser-process anchor);
+  // Wayland keeps its tuned pure-EWMA timing.
+  if (!isWayland() && !isChromiumCached()) {
+    uint64_t rtRef = bsRtEwma_;
+    uint64_t capUsec;
+    if (rtRef >= kTerminalFloorFullRtUsec) {
+      capUsec = kTerminalSleepCapMinUsec;
+    } else if (rtRef <= kTerminalFloorMaxAtRtUsec) {
+      capUsec = kTerminalSleepCapMaxUsec;
+    } else {
+      capUsec = kTerminalSleepCapMaxUsec -
+                (kTerminalSleepCapMaxUsec - kTerminalSleepCapMinUsec) *
+                    (rtRef - kTerminalFloorMaxAtRtUsec) /
+                    (kTerminalFloorFullRtUsec - kTerminalFloorMaxAtRtUsec);
+    }
+    sleepUsec = std::min(sleepUsec, capUsec);
+    // Multi-deletion replacements keep the full 20ms headroom: the commit
+    // replaces several chars and must not land while the app is still
+    // reconciling the last deletion (partial-commit loss observed at 5ms).
+    if (realBs >= 2) {
+      sleepUsec = std::max(sleepUsec, kMultiBsSleepFloorUsec);
+    }
+  }
   // First word after a focus switch: the renderer is settling — heavy
   // first replaces (long words, "ứng") lose chars at the normal sleep.
   // One-time extra headroom for the first second of the IC.  The
@@ -2816,13 +3168,31 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
                          static_cast<uint64_t>(realBs) * 15000);
   }
   if (realBs > 0 && !isWayland() && isTerminalAppCached()) {
-    // X11 terminals acknowledge the uinput sync key quickly, but their PTY
-    // and rendering path may still be draining the deletion when the
-    // commitString arrives.  Use the dynamic terminal verdict (capability
-    // or shell-child scan, with the name list only as fallback) and give a
-    // bounded queue-drain interval per real deletion.
-    sleepUsec = std::max(sleepUsec,
-                         static_cast<uint64_t>(realBs) * 15000);
+    // X11 terminals: adaptive per-BS queue-drain floor.  Terminals
+    // acknowledge the uinput sync key quickly, but their PTY and rendering
+    // path may still be draining the deletion when the commitString
+    // arrives.  A FAST loopback (ghostty: RT 2-12ms) proves nothing about
+    // that drain, so it keeps the full floor.  An app whose loopback is
+    // ALREADY slow (sterm: RT 30-100ms) has its deletion applied by the
+    // time the anchor returns — stacking the full floor on top double-pays
+    // ("ộn" slept 45ms behind an 83ms RT, 2026-09-14).  Ramp the floor
+    // down linearly between the two: slow apps shed it, fast apps keep
+    // today's behavior byte-for-byte.  Uses the per-IC EWMA (AutoDelay
+    // seeds it from the app's history when enabled).
+    uint64_t rtRef = bsRtEwma_;
+    uint64_t floorPerBs;
+    if (rtRef >= kTerminalFloorFullRtUsec) {
+      floorPerBs = 0;
+    } else if (rtRef <= kTerminalFloorMaxAtRtUsec) {
+      floorPerBs = kTerminalFloorPerBsUsec;
+    } else {
+      floorPerBs = kTerminalFloorPerBsUsec *
+                   (kTerminalFloorFullRtUsec - rtRef) /
+                   (kTerminalFloorFullRtUsec - kTerminalFloorMaxAtRtUsec);
+    }
+    if (floorPerBs > 0) {
+      sleepUsec = std::max(sleepUsec, floorPerBs * realBs);
+    }
   }
 
   // Terminal exclusion uses the NAME list + cap bit only: the shell-scan
@@ -2846,12 +3216,27 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     sleepUsec = std::max(sleepUsec, kUinputSlowModeSleepUsec);
   }
 
+  // Manual per-app override: the user's value replaces the whole adaptive
+  // assembly (clamp, ramps, floors, first-word settle) — applied verbatim.
+  const skey::AppDelayOverride ov = appDelayOverrideResolved();
+  if (ov.preCommitMs >= 0) {
+    sleepUsec = static_cast<uint64_t>(
+                    std::min(ov.preCommitMs, skey::kMaxPreCommitMs)) *
+                1000;
+  }
+  // Persist the sleep actually applied (override or adaptive) so the
+  // settings dialog can show the app's current delay.
+  engine_->noteAppSleep(appProgram(), isWayland(), sleepUsec);
+
   SKEY_DEBUG() << "Uinput: sync BS, RT " << (elapsed / 1000) << "ms (ewma "
                << (bsRtEwma_ / 1000) << "ms), sleep " << (sleepUsec / 1000)
                << "ms then commit '" << commitText << "'"
-               << (inChromiumAddressBar() ? " [addrbar]" : "")
+               << (inAddrBar ? " [addrbar]" : "")
                << (isChromiumCached() ? " [chromium]" : "")
-               << (slowMode ? " [slow]" : "");
+               << (slowMode ? " [slow]" : "")
+               << engine_->appDelayDebugTag(appProgram(), isWayland())
+               << engine_->appDelayOverrideDebugTag(appProgram(),
+                                                    isWayland());
 
   usleep(sleepUsec);
 
@@ -2884,9 +3269,11 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   if (!isWayland()) {
     uinputCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC, now(CLOCK_MONOTONIC), 0,
-        [this, commitText = std::move(commitText)](EventSourceTime *,
-                                                   uint64_t) {
+        [this, commitText = std::move(commitText), postMs = ov.postCommitMs](
+            EventSourceTime *, uint64_t) {
           uinputCommitTimer_.reset();
+          SKEY_DEBUG() << "Uinput: deferred commit '" << commitText
+                       << "' sent";
           if (!commitText.empty()) {
             if (isFirefoxOrSnap()) {
               uinputKeyForwarded_ = true;
@@ -2913,6 +3300,9 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
             committedLen_ = static_cast<int>(utf8::length(commitText));
             reclaimReady_ = false;
           }
+          // Manual post-commit pause (captured at schedule time — the
+          // config may have been reloaded since).
+          postCommitPause(postMs);
           if (!bufferedUinputKeys_.empty()) {
             replayBufferedUinputKeys();
           }
@@ -2946,6 +3336,8 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     committedLen_ = static_cast<int>(utf8::length(commitText));
     reclaimReady_ = false;
   }
+  // Manual post-commit pause (Wayland inline path).
+  postCommitPause(ov.postCommitMs);
   if (!bufferedUinputKeys_.empty()) {
     replayBufferedUinputKeys();
   }
@@ -4231,6 +4623,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                     this->commitText(text);
                   committedLen_ = uinputPendingFinalLen_;
                   uinputPendingFinalLen_ = 0;
+                  postCommitPause(appDelayOverrideResolved().postCommitMs);
                   if (!bufferedUinputKeys_.empty())
                     replayBufferedUinputKeys();
                   return true;
@@ -4331,6 +4724,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                     this->commitText(text);
                   committedLen_ = uinputPendingFinalLen_;
                   uinputPendingFinalLen_ = 0;
+                  postCommitPause(appDelayOverrideResolved().postCommitMs);
                   if (!bufferedUinputKeys_.empty())
                     replayBufferedUinputKeys();
                   return true;
@@ -4457,6 +4851,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                     this->commitText(text);
                   committedLen_ = uinputPendingFinalLen_;
                   uinputPendingFinalLen_ = 0;
+                  postCommitPause(appDelayOverrideResolved().postCommitMs);
                   if (!bufferedUinputKeys_.empty())
                     replayBufferedUinputKeys();
                   return true;
@@ -4887,6 +5282,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                     this->commitText(text);
                   committedLen_ = uinputPendingFinalLen_;
                   uinputPendingFinalLen_ = 0;
+                  postCommitPause(appDelayOverrideResolved().postCommitMs);
                   if (!bufferedUinputKeys_.empty())
                     replayBufferedUinputKeys();
                   return true;
@@ -5346,6 +5742,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
               committedLen_ = static_cast<int>(utf8::length(text));
             }
           }
+          postCommitPause(appDelayOverrideResolved().postCommitMs);
           if (!bufferedUinputKeys_.empty())
             replayBufferedUinputKeys();
           return true;
@@ -5369,6 +5766,7 @@ void SKeyState::flushAddrBarReplacement() {
                  << pendingUinputCommit_ << "'";
     commitText(pendingUinputCommit_);
     pendingUinputCommit_.clear();
+    postCommitPause(appDelayOverrideResolved().postCommitMs);
     if (!bufferedUinputKeys_.empty()) {
       replayBufferedUinputKeys();
     }
@@ -5408,16 +5806,30 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
   // protocol, not forwarded keys, so the adaptive BS-based delay is not
   // needed and would leave the deleted state visible for a full frame.
   if (delayUsec == 0) {
-    delayUsec = (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
-                    ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
-                    : dbusDeferredDefaultUsec;
+    // Manual per-app override wins over the adaptive formula (explicit
+    // caller delays — native deletes, X11 Chromium — are preserved:
+    // those paths have no forwarded BS, so a pre-commit pause is
+    // meaningless there).
+    if (appDelayOverrideResolved().preCommitMs >= 0) {
+      delayUsec = static_cast<uint64_t>(std::min(
+                      appDelayOverrideResolved().preCommitMs,
+                      skey::kMaxPreCommitMs)) *
+                  1000;
+    } else {
+      delayUsec =
+          (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
+              ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
+              : dbusDeferredDefaultUsec;
+    }
   }
 
+  const int postMs = appDelayOverrideResolved().postCommitMs;
   SKEY_DEBUG() << "Surr deferred: schedule '" << text << "' in "
-               << (delayUsec / 1000) << "ms";
+               << (delayUsec / 1000) << "ms"
+               << engine_->appDelayOverrideDebugTag(appProgram(), isWayland());
   deferredCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
       CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + delayUsec, 0,
-      [this](EventSourceTime *, uint64_t) {
+      [this, postMs](EventSourceTime *, uint64_t) {
         SKEY_DEBUG() << "Surr deferred: timer commit '" << deferredCommitText_
                      << "'";
         std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
@@ -5427,6 +5839,8 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
         pendingFlushSuffix_.clear();
         deferredCommitTimer_.reset();
         commitText(toCommit);
+        // Manual post-commit pause (captured at schedule time).
+        postCommitPause(postMs);
         return true;
       });
 }
@@ -5444,8 +5858,15 @@ void SKeyState::flushDeferredCommit() {
   // schedule and stretches the visible BS→commit flicker at word
   // boundaries.
   uint64_t minGapUsec;
-  if (!isWayland() && isChromiumCached() && isChromiumBrowser(appProgram()) &&
-      !inChromiumAddressBar()) {
+  if (appDelayOverrideResolved().preCommitMs >= 0) {
+    // Manual per-app override — wins even over the fixed X11-Chromium
+    // delay (the dialog warns when the value drops below 10ms).
+    minGapUsec = static_cast<uint64_t>(std::min(
+                     appDelayOverrideResolved().preCommitMs,
+                     skey::kMaxPreCommitMs)) *
+                 1000;
+  } else if (!isWayland() && isChromiumCached() &&
+             isChromiumBrowser(appProgram()) && !inChromiumAddressBar()) {
     minGapUsec = x11ChromiumSurrDelayUsec();
   } else {
     minGapUsec = (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
@@ -5463,7 +5884,8 @@ void SKeyState::flushDeferredCommit() {
       deferredCommitTimer_.reset();
       deferredCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
           CLOCK_MONOTONIC, nowUs + remaining, 0,
-          [this](EventSourceTime *, uint64_t) {
+          [this, postMs = appDelayOverrideResolved().postCommitMs](
+              EventSourceTime *, uint64_t) {
             SKEY_DEBUG() << "Surr deferred: delayed flush commit '"
                          << deferredCommitText_ << "'";
             std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
@@ -5473,6 +5895,8 @@ void SKeyState::flushDeferredCommit() {
             pendingFlushSuffix_.clear();
             deferredCommitTimer_.reset();
             commitText(toCommit);
+            // Manual post-commit pause (captured at schedule time).
+            postCommitPause(postMs);
             return true;
           });
       return;
@@ -5875,6 +6299,7 @@ void SKeyState::armUinputSafetyTimer() {
         uinputPendingFinalLen_ = 0;
         if (!text.empty())
           this->commitText(text);
+        postCommitPause(appDelayOverrideResolved().postCommitMs);
         if (!bufferedUinputKeys_.empty())
           replayBufferedUinputKeys();
         return true;
