@@ -3750,6 +3750,27 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       // Wayland keeps 0 — its tracking uses the surrounding text.
       if (viet_.getRawInput().empty()) {
         committedLen_ = isWayland() ? 0 : -1;
+        // This path is reached when the FullReplace keep-state word is
+        // deleted by a user Backspace after Chrome has already completed
+        // its focus-cycle callbacks. addrBarDidFullReplace_/KeepState are
+        // then no longer set, so the old word can otherwise remain armed
+        // through the next retype and produce "aâ". Empty raw input means
+        // the visible tracked word is gone: discard all reclaim and
+        // first-word history now.
+        if (!isWayland() && inChromiumAddressBar()) {
+          SKEY_DEBUG() << "AddrBar BS emptied composition: clear stale word history";
+          clearLastWord();
+          reclaimReady_ = false;
+          sepAlreadyDeleted_ = false;
+          wordWasBackspaced_ = true;
+          addrBarHadSpace_ = false;
+          addrBarHadFirstWord_ = false;
+          addrBarDidFullReplace_ = false;
+          addrBarKeepState_ = false;
+          addrBarIsFirstWord_ = true;
+          addrBarContentUnknown_ = true;
+          addrBarExpectCycle_ = false;
+        }
       } else {
         committedLen_ = static_cast<int>(utf8::length(viet_.getComposed()));
       }
@@ -3975,12 +3996,64 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       // A backspace may desync the engine from the screen — arm the
       // a11y desync guard for the next keys.
       addrBarSawBsInWord_ = true;
+      // FullReplace commits the composed character through the IM while
+      // Chrome may keep the IC alive. Once the user presses Backspace with
+      // no live raw input, the visible word is being deleted outside the
+      // engine. Do not leave first-word/last-word state armed: the next
+      // tone sequence would otherwise treat the deleted character as a
+      // reclaim candidate and append to it ("â" → Backspace → "â" =>
+      // "aâ"). Mark the address-bar contents unknown and start a fresh
+      // composition model before the next key.
+      // Check <=1 because the decrement immediately above has not yet
+      // happened; a one-character composed word reaches zero on this BS.
+      if (!isWayland() && committedLen_ <= 1) {
+        SKEY_DEBUG() << "AddrBar idle BS: clear stale word history";
+        viet_.reset();
+        clearLastWord();
+        reclaimReady_ = false;
+        sepAlreadyDeleted_ = false;
+        wordWasBackspaced_ = true;
+        addrBarHadSpace_ = false;
+        addrBarHadFirstWord_ = false;
+        addrBarDidFullReplace_ = false;
+        addrBarKeepState_ = false;
+        addrBarIsFirstWord_ = true;
+        addrBarContentUnknown_ = true;
+        addrBarExpectCycle_ = false;
+        committedLen_ = -1;
+      }
       // X11 Uinput: manually decrement committedLen_ (no SurroundingText).
       // The addrBarPrevCommittedLen_ snapshot in scheduleAddrBarReplacement
       // determines FullReplace safety — no complex delete-target logic needed.
       if (!isWayland() && committedLen_ > 0) {
         committedLen_--;
         wordWasBackspaced_ = true;
+      }
+      // After committing a word plus a space, committedLen_ is deliberately
+      // zero. The first raw Backspace therefore deletes the last character
+      // in Chrome while the engine still has no live preedit. Keeping
+      // addrBarHadSpace_/lastWord armed here makes the next retype eligible
+      // for reclaim/fullReplace and leaves the old tone in the bar
+      // ("chào" + Space + erase + "chào" -> "chaào"). Treat a Backspace
+      // at this boundary as a fresh address-bar edit and drop all word
+      // history immediately; subsequent keys must start from an empty model.
+      if (addrBarHadSpace_ && committedLen_ <= 0) {
+        SKEY_DEBUG() << "AddrBar BS after space: clear word history";
+        addrBarHadSpace_ = false;
+        addrBarHadFirstWord_ = false;
+        addrBarIsFirstWord_ = true;
+        addrBarDidFullReplace_ = false;
+        addrBarKeepState_ = false;
+        addrBarContentUnknown_ = true;
+        reclaimReady_ = false;
+        sepAlreadyDeleted_ = false;
+        wordWasBackspaced_ = true;
+        clearLastWord();
+        viet_.reset();
+        committedLen_ = -1;
+        // This is a user edit, not the replacement cycle that armed the
+        // guard. Let the next activation be handled normally.
+        addrBarExpectCycle_ = false;
       }
       if (committedLen_ == 0) {
         committedLen_ = -1;
