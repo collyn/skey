@@ -7,6 +7,7 @@ set(SETTINGS_SOURCES
     settings_window.cpp
     general_tab.cpp
     app_modes_tab.cpp
+    app_delay_dialog.cpp
     macro_tab.cpp
     dict_tab.cpp
     dict_view_dialog.cpp

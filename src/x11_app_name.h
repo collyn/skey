@@ -16,4 +16,16 @@
 /// callers then fall back to the shared empty "(IBus app)" key.
 std::string x11FocusedWmClass();
 
+/// DPI of the default X display (pixels per inch).
+///
+/// Used to scale caret-geometry heuristics: fixed pixel thresholds assume
+/// 96 DPI and break on scaled displays (125%/150%/200%), where Chrome's
+/// omnibox caret is proportionally larger.  Resolution order:
+///   1. Xft.dpi from the root window's RESOURCE_MANAGER (the standard
+///      override that desktop environments set for scaled displays),
+///   2. physical screen size (width_pixels × 25.4 / width_mm),
+///   3. 96.0 when neither is available or no X server is reachable.
+/// The result is clamped to [30, 500] and cached per process.
+double x11DisplayDpi();
+
 #endif // FCITX5_SKEY_X11_APP_NAME_H

@@ -573,6 +573,12 @@ void InfoTab::onBackup() {
       {fcitx5ConfigPath(), "fcitx5-config"},
       {userDictPath(), "user-dict.txt"},
   };
+  // AutoDelay learned statistics — optional: only created once the feature
+  // has been used, so back up only when present (keeps older backups from
+  // suddenly reporting a "missing file" warning).
+  bool haveAppDelays = QFile::exists(QString::fromStdString(appDelaysPath()));
+  bool haveAppDelayOverrides =
+      QFile::exists(QString::fromStdString(appDelayOverridesPath()));
 
   QStringList missing;
   for (auto &f : files) {
@@ -580,6 +586,14 @@ void InfoTab::onBackup() {
                      tmpDir.path() + "/" + f.destName))
       missing << f.destName;
   }
+  if (haveAppDelays &&
+      !QFile::copy(QString::fromStdString(appDelaysPath()),
+                   tmpDir.path() + "/" + "skey-app-delays.conf"))
+    missing << "skey-app-delays.conf";
+  if (haveAppDelayOverrides &&
+      !QFile::copy(QString::fromStdString(appDelayOverridesPath()),
+                   tmpDir.path() + "/" + "skey-app-delay-overrides.conf"))
+    missing << "skey-app-delay-overrides.conf";
 
   // Custom icons (imported via the Icons tab) — back up the whole dir so
   // a restore brings the icons back with the config that references them.
@@ -677,6 +691,22 @@ void InfoTab::onRestore() {
   if (QFile::exists(dictSrc)) {
     QFile::remove(QString::fromStdString(userDictPath()));
     if (!QFile::copy(dictSrc, QString::fromStdString(userDictPath())))
+      allOk = false;
+  }
+  // AutoDelay learned statistics are machine-specific — restore only when
+  // present, skip silently otherwise.  Manual overrides follow the same
+  // optional-file shape.
+  const QString delaysSrc = tmpDir.path() + "/skey-app-delays.conf";
+  if (QFile::exists(delaysSrc)) {
+    QFile::remove(QString::fromStdString(appDelaysPath()));
+    if (!QFile::copy(delaysSrc, QString::fromStdString(appDelaysPath())))
+      allOk = false;
+  }
+  const QString overridesSrc = tmpDir.path() + "/skey-app-delay-overrides.conf";
+  if (QFile::exists(overridesSrc)) {
+    QFile::remove(QString::fromStdString(appDelayOverridesPath()));
+    if (!QFile::copy(overridesSrc,
+                     QString::fromStdString(appDelayOverridesPath())))
       allOk = false;
   }
   const QDir iconSrcDir(tmpDir.path() + "/icons");

@@ -1,6 +1,7 @@
 #ifndef FCITX5_SKEY_ENGINE_H
 #define FCITX5_SKEY_ENGINE_H
 
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -20,6 +21,8 @@
 #include "charset.h"
 #include "vietnamese.h"
 #include "a11y_monitor.h"
+#include "sheets_cell_tracker.h"
+#include "app_delay_key.h"
 
 namespace fcitx {
 
@@ -115,6 +118,11 @@ private:
     SKeyOutputMode detectAutoMode() const;
     bool connectUinputServer();
     void sendBackspaceUinput(int count, uint32_t flags = 0);
+
+    /// Copy of the current app's manual override (all -1 when none).
+    skey::AppDelayOverride appDelayOverrideResolved() const;
+    /// Pause after a commitText — manual postCommitMs only, no-op otherwise.
+    void postCommitPause(int postMs) const;
     bool handlePendingUinputBackspace(KeyEvent &keyEvent);
     void replayBufferedUinputKeys();
     void commitBuffer();
@@ -147,6 +155,7 @@ private:
     void scheduleAddrBarReplacement(int bs, const std::string &text,
                                      int oldComposedLen = 0,
                                      int triggerKeySym = 0,
+                                     int triggerKeyTime = 0,
                                      const std::string &fullComposed = {},
                                      bool oldComposedIsAscii = false,
                                      const std::string &oldComposed = {});
@@ -176,6 +185,9 @@ private:
     // suppress trigger-driven mode re-detection while the verdict is
     // stable.  CLOCK_MONOTONIC, 0 = inactive.
     uint64_t triggerBackoffUntilUsec_ = 0;
+    uint64_t cellSelectionSerial_ = 0;
+    SheetsCellSnapshot sheetsCellSnapshot_;
+    bool checkCellSelection();
     // CLOCK_MONOTONIC timestamp of the most recent activate() — the
     // first word after a focus switch gets extra settle headroom
     // (kFirstWordSettleUsec) because the renderer is still settling.
@@ -260,9 +272,15 @@ private:
     bool uinputKeyForwarded_ = false;
     // KeySym of the key that triggered the current address bar replacement.
     // X11 may re-deliver this key after Chrome's spurious focus cycles;
-    // we drop it within a 200ms window to avoid double-processing.
+    // we drop it to avoid double-processing.  A replayed X event carries
+    // its ORIGINAL server timestamp, while a deliberate second press gets
+    // a fresh one — the guard drops only replayed events (time match) or
+    // presses landing within kAddrBarGuardFreshWindowUsec of the arm; a
+    // deliberate double-tone-key undo ("bar", "config") passes through.
     int addrBarLastTriggerKey_ = 0;
     uint64_t addrBarTriggerDeadline_ = 0;  // CLOCK_MONOTONIC deadline
+    int addrBarTriggerKeyTime_ = 0;        // X event time of the armed key
+    uint64_t addrBarGuardArmedUsec_ = 0;   // CLOCK_MONOTONIC arm moment
     // True when the next replacement is for the first word after focus or
     // after backspacing to empty.  Only the first word may trigger Chrome
     // autocomplete; subsequent words (after space) don't need extra BS.
@@ -273,6 +291,12 @@ private:
     // extra BS that deletes text before the cursor.
     bool addrBarHadSpace_ = false;
     std::unique_ptr<EventSourceTime> addrBarCycleTimer_;
+    // One-shot timer for the X11 Chromium mid-replacement churn guard (see
+    // deactivate()): armed when a Deactivate lands while injected uinput BS
+    // are still in flight.  A reactivation within 500ms cancels it — the
+    // sync-anchor BS then completes the commit.  No reactivation means a
+    // genuine focus loss and the timer discards the replacement state.
+    std::unique_ptr<EventSourceTime> uinputCycleTimer_;
     // CLOCK_MONOTONIC timestamp of the most recent deactivate().
     // Used in activate() to detect spurious focus cycles that arrive
     // when addrBarExpectCycle_ was not armed — if reactivation happens
@@ -333,6 +357,15 @@ private:
     bool addrBarSawBsInWord_ = false;
 };
 
+/// Per-app uinput sync-anchor round-trip statistics for the opt-in
+/// AutoDelay feature.  Populated from real typing only (no probes);
+/// see SKeyEngine::noteAppRoundTrip.
+struct AppDelayStat {
+    uint64_t rtEwmaUsec = 0; // 0 = no sample yet
+    uint32_t samples = 0;
+    uint64_t lastSleepUsec = 0; // last BS→commit sleep actually applied
+};
+
 /// Main fcitx5 engine class.
 class SKeyEngine : public InputMethodEngineV2 {
 public:
@@ -367,6 +400,35 @@ public:
     void setInputMethod(SKeyInputMethod method);
     void saveAppMode(const std::string &app, SKeyOutputMode mode);
     void saveAppExcluded(const std::string &app, bool excluded);
+
+    // ── AutoDelay (opt-in): per-app round-trip statistics ───────────────
+    /// Record one measured uinput sync-anchor round trip for `prog`.
+    /// Cheap and side-effect free — called on every replacement whether or
+    /// not the AutoDelay option is on, so enabling it mid-session starts
+    /// from warm data.  Samples outside [kAppDelayMinSampleUsec,
+    /// kAppDelayMaxSampleUsec] are rejected as noise/stalls.
+    void noteAppRoundTrip(const std::string &prog, bool wayland,
+                          uint64_t rtUsec);
+    /// Per-app round-trip estimate (usec); 0 when unknown / fewer than
+    /// kAppDelayMinSamples recorded.
+    uint64_t appDelayRt(const std::string &prog, bool wayland) const;
+    /// Record the last BS→commit sleep actually applied for `prog`
+    /// (persisted so the settings dialog can show the current value).
+    void noteAppSleep(const std::string &prog, bool wayland,
+                      uint64_t sleepUsec);
+    /// Debug suffix for the sleep-decision log line: " [auto Nms/M]",
+    /// " [auto cold]" (no usable sample yet), or empty when OFF.
+    std::string appDelayDebugTag(const std::string &prog, bool wayland) const;
+
+    /// Manual per-app delay override (conf/skey-app-delay-overrides.conf).
+    /// nullptr when the app has no override.  Independent of AutoDelay.
+    const skey::AppDelayOverride *appDelayOverride(const std::string &prog,
+                                                   bool wayland) const;
+    /// Debug suffix " [override pace=N pre=N post=N]" (auto fields print as
+    /// "auto"); empty when the app has no override.
+    std::string appDelayOverrideDebugTag(const std::string &prog,
+                                         bool wayland) const;
+
     void updateMenuActions();
     A11yMonitor *a11yMonitor() const { return a11yMonitor_.get(); }
     const Key &modeMenuKey() const { return modeMenuKey_; }
@@ -386,6 +448,27 @@ private:
     // Pending preedit text saved on focus loss, keyed by program name.
     // Survives IC destruction — committed when the program is reactivated.
     std::map<std::string, std::string> pendingPreedits_;
+
+    // ── AutoDelay (opt-in) ─────────────────────────────────────────────
+    // Per-app round-trip statistics, keyed by appDelayKey() (app name +
+    // "@x"/"@w" display-class suffix).  Engine-level: survives IC
+    // destruction and focus changes.  Persisted to
+    // conf/skey-app-delays.conf only while the option is on.
+    std::map<std::string, AppDelayStat> appDelayStats_;
+    bool appDelaysDirty_ = false;
+    uint32_t appDelaysSinceSave_ = 0;
+    uint64_t appDelaysSavedAtUsec_ = 0;
+    void loadAppDelays();
+    void saveAppDelays();
+    void maybeSaveAppDelays(bool force = false);
+
+    // ── Manual per-app delay overrides (conf/skey-app-delay-overrides.conf)
+    // Keyed by appDelayKey() (app name + "@x"/"@w").  Loaded on every
+    // reloadConfig() (tiny file); consulted per replacement — the values
+    // are applied verbatim over the adaptive computation, whatever the
+    // AutoDelay option says.
+    std::map<std::string, skey::AppDelayOverride> appDelayOverrides_;
+    void loadAppDelayOverrides();
 
     // Tray menu: Input Method selector
     SimpleAction imAction_;

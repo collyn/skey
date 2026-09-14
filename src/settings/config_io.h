@@ -1,6 +1,8 @@
 #ifndef SKEY_SETTINGS_CONFIG_IO_H
 #define SKEY_SETTINGS_CONFIG_IO_H
 
+#include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -12,6 +14,8 @@ std::string configDir();
 /// Individual config file paths (exposed for backup/restore)
 std::string skeyConfPath();
 std::string appModesPath();
+std::string appDelaysPath();
+std::string appDelayOverridesPath();
 std::string macroPath();
 std::string fcitx5ConfigPath();
 
@@ -31,6 +35,7 @@ struct SKeyConfig {
     bool showPreedit  = true;
     std::string chromiumAddressBarMode = "Auto";  // "Auto", "Uinput", "Surrounding Text", "Preedit", "No Vietnamese"
     bool debug        = false;
+    bool autoDelay    = false;  // learn per-app uinput round trip, seed commit delay
     bool enableMacro         = true;
     bool capitalizeMacro     = true;
     bool macroInOffMode      = false;
@@ -48,6 +53,29 @@ struct AppModesConfig {
     /// mode values: "Auto", "Uinput", "Surrounding Text", "Preedit", "Excluded"
     std::vector<std::pair<std::string, std::string>> entries;
 };
+
+/// Per-app manual delay overrides (skey-app-delay-overrides.conf).
+/// Ordered (key, value) pairs; key = sanitized "app@x"/"app@w" (see
+/// skey::appDelayKey), value = "auto" or "paceMs,preCommitMs,postCommitMs"
+/// (-1 = auto field).
+struct AppDelayOverridesConfig {
+    std::vector<std::pair<std::string, std::string>> entries;
+};
+
+/// One AutoDelay-learned statistic (skey-app-delays.conf) for the dialog
+/// hint.
+struct LearnedDelay {
+    uint64_t rtUsec = 0;
+    uint32_t samples = 0;
+    uint64_t lastSleepUsec = 0; // last BS→commit sleep the engine applied
+};
+
+AppDelayOverridesConfig readAppDelayOverridesConfig();
+bool writeAppDelayOverridesConfig(const AppDelayOverridesConfig &cfg);
+/// skey-app-delays.conf (AutoDelay statistics) for the dialog hint:
+/// key → learned round trip.  Entries with < 3 samples or out-of-range
+/// values are dropped (same validity window as the engine).
+std::map<std::string, LearnedDelay> readLearnedDelays();
 
 /// Macro entry (maps to skey-macro.conf)
 struct MacroConfig {

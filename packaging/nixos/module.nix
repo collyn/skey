@@ -125,7 +125,9 @@ in
               "-+${pkgs.acl}/bin/setfacl -m u:skey_uinput:rw /dev/uinput"
             ];
             ExecStartPost = [
-              "-+${pkgs.acl}/bin/setfacl -m u:${user}:x /run/skey-uinput-${user}"
+              # Explicit m::x: a stale/cleared ACL mask silently revokes
+              # the named-user grant (see the .service.in template).
+              "-+${pkgs.acl}/bin/setfacl -m u:${user}:x -m m::x /run/skey-uinput-${user}"
             ];
           };
         }

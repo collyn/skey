@@ -1,4 +1,5 @@
 #include "a11y_monitor.h"
+#include "sheets_cell_tracker.h"
 
 #include <cctype>
 #include <chrono>
@@ -6,6 +7,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <dbus/dbus.h>
+#include <deque>
+#include <dirent.h>
+#include <fstream>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 // AT-SPI2 role constants (from atspi-constants.h)
 static constexpr int ROLE_DOCUMENT_WEB = 95;
@@ -105,10 +113,9 @@ static std::string getAtspiBusAddress() {
     return {};
 }
 
-static DBusConnection *connectAtspiBus() {
+static DBusConnection *connectAtspiBus(const std::string &addr) {
     DBusError err;
     dbus_error_init(&err);
-    std::string addr = getAtspiBusAddress();
     DBusConnection *bus = nullptr;
 
     if (!addr.empty()) {
@@ -237,7 +244,7 @@ static int queryRole(DBusConnection *bus, const char *sender,
 
 // ── Read the accessible text of the focused entry (snapshot polling) ──
 static std::string queryText(DBusConnection *bus, const char *sender,
-                             const char *path) {
+                             const char *path, int timeoutMs = 500) {
     DBusError err;
     dbus_error_init(&err);
     DBusMessage *msg = dbus_message_new_method_call(
@@ -247,7 +254,7 @@ static std::string queryText(DBusConnection *bus, const char *sender,
     dbus_message_append_args(msg, DBUS_TYPE_INT32, &start, DBUS_TYPE_INT32,
                              &end, DBUS_TYPE_INVALID);
     DBusMessage *reply = dbus_connection_send_with_reply_and_block(
-        bus, msg, 500, &err);
+        bus, msg, timeoutMs, &err);
     dbus_message_unref(msg);
     std::string text;
     if (reply && !dbus_error_is_set(&err)) {
@@ -414,7 +421,8 @@ static constexpr int FB_COMMENT_ROLE = 39;
 static bool hasDocumentWebAncestor(DBusConnection *bus,
                                    const char *sender,
                                    const char *path,
-                                   bool &chatSig, bool &commentSig) {
+                                   bool &chatSig, bool &commentSig,
+                                   std::string &documentPath) {
     std::string curSender = sender;
     std::string curPath = path;
     chatSig = false;
@@ -439,8 +447,10 @@ static bool hasDocumentWebAncestor(DBusConnection *bus,
         if (role == FB_COMMENT_ROLE)
             commentSig = true;
         prevRole = role;
-        if (role == ROLE_DOCUMENT_WEB || role == ROLE_DOCUMENT_FRAME)
+        if (role == ROLE_DOCUMENT_WEB || role == ROLE_DOCUMENT_FRAME) {
+            documentPath = parentPath;
             return true;
+        }
 
         curSender = parentSender;
         curPath = parentPath;
@@ -526,7 +536,7 @@ static bool queryStates(DBusConnection *bus, const char *sender,
 // chrome://accessibility manually after each browser restart.
 
 static std::string queryName(DBusConnection *bus, const char *sender,
-                             const char *path) {
+                             const char *path, int timeoutMs = 500) {
     DBusError err;
     dbus_error_init(&err);
     DBusMessage *msg = dbus_message_new_method_call(
@@ -539,7 +549,7 @@ static std::string queryName(DBusConnection *bus, const char *sender,
                              DBUS_TYPE_STRING, &prop, DBUS_TYPE_INVALID);
 
     DBusMessage *reply = dbus_connection_send_with_reply_and_block(
-        bus, msg, 500, &err);
+        bus, msg, timeoutMs, &err);
     dbus_message_unref(msg);
 
     std::string name;
@@ -560,7 +570,188 @@ static std::string queryName(DBusConnection *bus, const char *sender,
     return name;
 }
 
+static std::string queryAccessibleId(DBusConnection *bus, const char *sender,
+                                     const char *path) {
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *msg = dbus_message_new_method_call(
+        sender, path, "org.a11y.atspi.Accessible", "GetAttributes");
+    if (!msg) return {};
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
+        bus, msg, 30, &err);
+    dbus_message_unref(msg);
+    std::string found;
+    DBusMessageIter root, array;
+    if (reply && dbus_message_iter_init(reply, &root) &&
+        dbus_message_iter_get_arg_type(&root) == DBUS_TYPE_ARRAY) {
+        dbus_message_iter_recurse(&root, &array);
+        while (dbus_message_iter_get_arg_type(&array) == DBUS_TYPE_DICT_ENTRY) {
+            DBusMessageIter entry;
+            dbus_message_iter_recurse(&array, &entry);
+            const char *key = nullptr, *value = nullptr;
+            if (dbus_message_iter_get_arg_type(&entry) == DBUS_TYPE_STRING) {
+                dbus_message_iter_get_basic(&entry, &key);
+                dbus_message_iter_next(&entry);
+                if (dbus_message_iter_get_arg_type(&entry) == DBUS_TYPE_STRING)
+                    dbus_message_iter_get_basic(&entry, &value);
+            }
+            if (key && value && strcmp(key, "id") == 0) {
+                found = value;
+                break;
+            }
+            dbus_message_iter_next(&array);
+        }
+    }
+    if (reply) dbus_message_unref(reply);
+    dbus_error_free(&err);
+    return found;
+}
+
+// Resolve only within the focused Sheets document, once per document. The
+// name box updates on click; the reused editor's Name updates only after keys.
+static std::string findSheetsNameBox(DBusConnection *bus, const char *sender,
+                                     const std::string &documentPath) {
+    std::deque<std::string> queue{documentPath};
+    std::unordered_set<std::string> seen;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(250);
+    while (!queue.empty() && seen.size() < 256 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::string path = std::move(queue.front());
+        queue.pop_front();
+        if (!seen.insert(path).second) continue;
+        if (queryAccessibleId(bus, sender, path.c_str()) == "t-name-box")
+            return path;
+        DBusMessage *msg = dbus_message_new_method_call(
+            sender, path.c_str(), "org.a11y.atspi.Accessible", "GetChildren");
+        if (!msg) continue;
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage *reply = dbus_connection_send_with_reply_and_block(
+            bus, msg, 30, &err);
+        dbus_message_unref(msg);
+        DBusMessageIter root, array;
+        if (reply && dbus_message_iter_init(reply, &root) &&
+            dbus_message_iter_get_arg_type(&root) == DBUS_TYPE_ARRAY) {
+            dbus_message_iter_recurse(&root, &array);
+            while (dbus_message_iter_get_arg_type(&array) == DBUS_TYPE_STRUCT) {
+                DBusMessageIter child;
+                dbus_message_iter_recurse(&array, &child);
+                const char *childBus = nullptr, *childPath = nullptr;
+                if (dbus_message_iter_get_arg_type(&child) == DBUS_TYPE_STRING) {
+                    dbus_message_iter_get_basic(&child, &childBus);
+                    dbus_message_iter_next(&child);
+                    if (dbus_message_iter_get_arg_type(&child) == DBUS_TYPE_OBJECT_PATH)
+                        dbus_message_iter_get_basic(&child, &childPath);
+                }
+                if (childBus && childPath && strcmp(childBus, sender) == 0 &&
+                    queue.size() < 512)
+                    queue.emplace_back(childPath);
+                dbus_message_iter_next(&array);
+            }
+        }
+        if (reply) dbus_message_unref(reply);
+        dbus_error_free(&err);
+    }
+    return {};
+}
+
+// Chrome ≥150 on Wayland registers NO AT-SPI stub until an assistive
+// technology announces itself, so the GetRelationSet poke below can never
+// reach it (no object to poke).  The session-wide status flag is the only
+// lever: Chrome watches org.a11y.Status.ScreenReaderEnabled on
+// org.a11y.Bus and builds its full a11y tree once it is true (verified on
+// Chrome 153/Wayland, 2026-09-14: the tree appeared in the registry a few
+// seconds after setting the property).  Idempotent — re-asserted with the
+// periodic poke.
+static void enableAtspiSessionStatus() {
+    // org.a11y.Bus lives on the SESSION bus — the AT-SPI bus connection
+    // cannot reach it (the earlier attempt failed with "name not found").
+    DBusError err;
+    dbus_error_init(&err);
+    DBusConnection *bus = dbus_bus_get(DBUS_BUS_SESSION, &err);
+    if (!bus || dbus_error_is_set(&err)) {
+        A11Y_LOG("Set org.a11y.Status: no session bus (%s)",
+                 dbus_error_is_set(&err) ? err.message : "?");
+        dbus_error_free(&err);
+        return;
+    }
+    dbus_error_free(&err);
+    const char *propNames[] = {"ScreenReaderEnabled", "IsEnabled"};
+    for (const char *propName : propNames) {
+        DBusMessage *msg = dbus_message_new_method_call(
+            "org.a11y.Bus", "/org/a11y/bus",
+            "org.freedesktop.DBus.Properties", "Set");
+        if (!msg) continue;
+        // dbus_message_iter_append_basic takes char** for STRING, so the
+        // values must be lvalues of non-const char* (nothing writes them).
+        // The status properties are BOOLEANs.
+        char *iface = const_cast<char *>("org.a11y.Status");
+        char *prop = const_cast<char *>(propName);
+        dbus_bool_t val = TRUE;
+        DBusMessageIter iter, variant;
+        dbus_message_iter_init_append(msg, &iter);
+        dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &iface);
+        dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &prop);
+        dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT,
+                                         "b", &variant);
+        dbus_message_iter_append_basic(&variant, DBUS_TYPE_BOOLEAN, &val);
+        dbus_message_iter_close_container(&iter, &variant);
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage *reply =
+            dbus_connection_send_with_reply_and_block(bus, msg, 500, &err);
+        A11Y_LOG("Set org.a11y.Status.%s=%s%s", prop, val,
+                 dbus_error_is_set(&err) ? " [failed]" : "");
+        if (reply) dbus_message_unref(reply);
+        dbus_message_unref(msg);
+        dbus_error_free(&err);
+    }
+    dbus_connection_unref(bus);
+}
+
+static bool anyChromiumProcessRunning() {
+    DIR *dir = opendir("/proc");
+    if (!dir) return false;
+    static const char *const patterns[] = {
+        "chrome", "chromium", "brave", "vivaldi", "msedge", "edge",
+        "opera", "electron",
+    };
+    bool found = false;
+    struct dirent *entry;
+    while (!found && (entry = readdir(dir)) != nullptr) {
+        if (entry->d_type != DT_DIR || !isdigit(entry->d_name[0]))
+            continue;
+        std::string commPath = std::string("/proc/") + entry->d_name + "/comm";
+        std::ifstream commFile(commPath);
+        if (!commFile.is_open()) continue;
+        std::string comm;
+        std::getline(commFile, comm);
+        for (const char *p : patterns) {
+            if (comm.find(p) != std::string::npos) {
+                found = true;
+                break;
+            }
+        }
+    }
+    closedir(dir);
+    return found;
+}
+
+// When a Chromium-family process has been running without ever appearing
+// in the registry.  The session flag is only set after a grace period —
+// on GNOME Chrome registers its stub shortly after startup, and an early
+// flag set would sync into gsettings and autostart Orca.
+static std::chrono::time_point<std::chrono::steady_clock>
+    g_chromiumUnregisteredSince =
+        std::chrono::time_point<std::chrono::steady_clock>::max();
+
 static void pokeA11yApps(DBusConnection *bus) {
+    // Per-cycle: whether a Chromium-family app is present in the registry
+    // RIGHT NOW.  Chrome keeps its a11y tree only while its process runs,
+    // so a restart makes it vanish from the registry again — a sticky
+    // "seen once" flag would then suppress the fallback forever.
+    bool sawChromiumInRegistry = false;
     DBusError err;
     dbus_error_init(&err);
     DBusMessage *msg = dbus_message_new_method_call(
@@ -608,6 +799,14 @@ static void pokeA11yApps(DBusConnection *bus) {
             // terminal).  The query is read-only and cheap; non-Chromium
             // apps just return an empty relation set.
             std::string name = queryName(bus, appBus, appPath);
+            if (name.find("chrome") != std::string::npos ||
+                name.find("chromium") != std::string::npos ||
+                name.find("brave") != std::string::npos ||
+                name.find("vivaldi") != std::string::npos ||
+                name.find("edge") != std::string::npos ||
+                name.find("opera") != std::string::npos) {
+                sawChromiumInRegistry = true;
+            }
             DBusMessage *poke = dbus_message_new_method_call(
                 appBus, appPath, "org.a11y.atspi.Accessible",
                 "GetRelationSet");
@@ -629,15 +828,85 @@ static void pokeA11yApps(DBusConnection *bus) {
     }
     dbus_message_unref(reply);
     dbus_error_free(&err);
+
+    // Fallback for environments where Chromium registers NO AT-SPI stub
+    // (Fedora/KDE Wayland + Chrome ≥150: the registry walk above never
+    // sees it, so the GetRelationSet poke has nothing to reach).  Setting
+    // the session status flag makes Chrome build its tree; the next poke
+    // cycle then finds and pokes it.  Skipped while a Chromium app IS in
+    // the registry (the poke already works there — and on GNOME the flag
+    // would autostart Orca, which the poke approach avoids).  A 30s grace
+    // period covers GNOME's startup gap (process running, stub not yet
+    // registered).
+    auto now = std::chrono::steady_clock::now();
+    if (sawChromiumInRegistry || !anyChromiumProcessRunning()) {
+        g_chromiumUnregisteredSince =
+            std::chrono::time_point<std::chrono::steady_clock>::max();
+        return;
+    }
+    if (g_chromiumUnregisteredSince ==
+        std::chrono::time_point<std::chrono::steady_clock>::max()) {
+        g_chromiumUnregisteredSince = now;
+        return;
+    }
+    if (now - g_chromiumUnregisteredSince >= std::chrono::seconds(30)) {
+        enableAtspiSessionStatus();
+    }
 }
 
 // ---------------------------------------------------------------------------
 // A11yMonitor
 // ---------------------------------------------------------------------------
 
-A11yMonitor::A11yMonitor() = default;
+A11yMonitor::A11yMonitor() {
+    dbus_threads_init_default();
+}
 
-A11yMonitor::~A11yMonitor() { stop(); }
+A11yMonitor::~A11yMonitor() {
+    stop();
+    if (sheetsQueryBus_) {
+        dbus_connection_close(sheetsQueryBus_);
+        dbus_connection_unref(sheetsQueryBus_);
+    }
+}
+
+bool A11yMonitor::currentSheetsCell(std::string &identity, std::string &cell) {
+    std::string sender, path, nameBox, address;
+    {
+        std::lock_guard<std::mutex> lock(sheetsMutex_);
+        sender = sheetsBus_;
+        path = sheetsPath_;
+        nameBox = sheetsNameBoxPath_;
+        address = sheetsBusAddress_;
+    }
+    identity.clear();
+    cell.clear();
+    if (path.empty()) return false;
+    identity = sender + path;
+    if (address.empty() || nameBox.empty()) return true;
+    if (sheetsQueryBus_ && !dbus_connection_get_is_connected(sheetsQueryBus_)) {
+        dbus_connection_close(sheetsQueryBus_);
+        dbus_connection_unref(sheetsQueryBus_);
+        sheetsQueryBus_ = nullptr;
+    }
+    if (!sheetsQueryBus_) {
+        DBusError err;
+        dbus_error_init(&err);
+        sheetsQueryBus_ = dbus_connection_open_private(address.c_str(), &err);
+        if (sheetsQueryBus_) {
+            dbus_connection_set_exit_on_disconnect(sheetsQueryBus_, false);
+            if (!dbus_bus_register(sheetsQueryBus_, &err)) {
+                dbus_connection_close(sheetsQueryBus_);
+                dbus_connection_unref(sheetsQueryBus_);
+                sheetsQueryBus_ = nullptr;
+            }
+        }
+        dbus_error_free(&err);
+    }
+    if (sheetsQueryBus_)
+        cell = queryText(sheetsQueryBus_, sender.c_str(), nameBox.c_str(), 30);
+    return true;
+}
 
 std::string A11yMonitor::atspiBusAddress() { return getAtspiBusAddress(); }
 
@@ -695,7 +964,12 @@ void A11yMonitor::threadFunc() {
     running_.store(true);
     g_debugFlag = &debug_;
 
-    DBusConnection *bus = connectAtspiBus();
+    const std::string address = getAtspiBusAddress();
+    {
+        std::lock_guard<std::mutex> lock(sheetsMutex_);
+        sheetsBusAddress_ = address;
+    }
+    DBusConnection *bus = connectAtspiBus(address);
     if (!bus) {
         running_.store(false);
         return;
@@ -725,6 +999,9 @@ void A11yMonitor::threadFunc() {
 
     registerEvent("object:state-changed:focused");
     registerEvent("focus:");
+    registerEvent("object:active-descendant-changed");
+    registerEvent("object:selection-changed");
+    registerEvent("object:property-change:accessible-name");
 
     dbus_bus_add_match(bus,
                        "type='signal',"
@@ -750,7 +1027,8 @@ void A11yMonitor::threadFunc() {
     // snapshot re-poll (we don't parse the payloads — the signal only
     // tells us "something changed, re-query now").
     for (const char *member : {"TextChanged", "TextCaretMoved",
-                               "TextSelectionChanged"}) {
+                               "TextSelectionChanged", "ActiveDescendantChanged",
+                               "SelectionChanged", "PropertyChange"}) {
         dbus_error_init(&err);
         std::string match = std::string(
                                 "type='signal',"
@@ -775,6 +1053,11 @@ void A11yMonitor::threadFunc() {
     Clock::time_point latePokeAt = kNever;
     Clock::time_point periodicPokeAt =
         Clock::now() + std::chrono::seconds(15);
+    // Monitor-thread only. Match both sender and path: paths are not globally
+    // unique, and selections in background tabs must never reset a word.
+    std::string cellContainerBus, cellContainerPath;
+    SheetsCellTracker sheetsCells;
+    std::unordered_map<std::string, std::string> sheetsNameBoxes;
 
     // Poll loop
     while (!stopRequested_.load()) {
@@ -787,6 +1070,55 @@ void A11yMonitor::threadFunc() {
             const char *member = dbus_message_get_member(msg);
 
             bool isFocusEvent = false;
+
+            // Verified on Chrome/Wayland: clicking another Sheets cell emits
+            // PropertyChange("accessible-name", ..., variant "H27") on the
+            // SAME editor, without focus or SelectionChanged events.
+            if (iface && member &&
+                strcmp(iface, "org.a11y.atspi.Event.Object") == 0 &&
+                strcmp(member, "PropertyChange") == 0) {
+                const char *sender = dbus_message_get_sender(msg);
+                const char *path = dbus_message_get_path(msg);
+                DBusMessageIter iter, value;
+                if (sender && path && dbus_message_iter_init(msg, &iter) &&
+                    dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING) {
+                    const char *property = nullptr;
+                    dbus_message_iter_get_basic(&iter, &property);
+                    if (property && strcmp(property, "accessible-name") == 0 &&
+                        dbus_message_iter_next(&iter) &&
+                        dbus_message_iter_next(&iter) &&
+                        dbus_message_iter_next(&iter) &&
+                        dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_VARIANT) {
+                        dbus_message_iter_recurse(&iter, &value);
+                        if (dbus_message_iter_get_arg_type(&value) == DBUS_TYPE_STRING) {
+                            const char *name = nullptr;
+                            dbus_message_iter_get_basic(&value, &name);
+                            if (name && sheetsCells.update(sender, path, name)) {
+                                // Diagnostic only. This event can lag behind
+                                // the first keys in the new cell; the engine
+                                // queries Name directly before each key.
+                                A11Y_LOG("CellSelection: event=accessible-name cell=%s "
+                                         "path=%s (observation only)", name, path);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (iface && member &&
+                strcmp(iface, "org.a11y.atspi.Event.Object") == 0 &&
+                (strcmp(member, "ActiveDescendantChanged") == 0 ||
+                 strcmp(member, "SelectionChanged") == 0)) {
+                const char *sender = dbus_message_get_sender(msg);
+                const char *path = dbus_message_get_path(msg);
+                if (sender && path && !cellContainerPath.empty() &&
+                    cellContainerBus == sender && cellContainerPath == path) {
+                    auto serial = cellSelectionSerial_.fetch_add(
+                                      1, std::memory_order_release) + 1;
+                    A11Y_LOG("CellSelection: event=%s serial=%llu path=%s",
+                             member, static_cast<unsigned long long>(serial), path);
+                }
+            }
 
             if (iface && member &&
                 strcmp(iface, "org.a11y.atspi.Event.Object") == 0 &&
@@ -856,8 +1188,54 @@ void A11yMonitor::threadFunc() {
                 if (sender && path) {
                     int role = queryRole(bus, sender, path);
                     bool fbChatSig = false, fbCommentSig = false;
+                    std::string documentPath;
                     bool hasDocWeb = hasDocumentWebAncestor(
-                        bus, sender, path, fbChatSig, fbCommentSig);
+                        bus, sender, path, fbChatSig, fbCommentSig, documentPath);
+                    // Chrome ≥150 reports the cell editor as either the
+                    // combo box (11) or the inner ENTRY (79, single-line) —
+                    // states alone cannot separate it from real inputs.
+                    // The accessible-id is the only reliable discriminator.
+                    const bool sheetsEditor = hasDocWeb &&
+                        (role == 11 || role == 79) &&
+                        queryAccessibleId(bus, sender, path) == "waffle-rich-text-editor";
+                    std::string nameBox;
+                    if (sheetsEditor) {
+                        const std::string key = std::string(sender) + documentPath;
+                        auto cached = sheetsNameBoxes.find(key);
+                        if (cached != sheetsNameBoxes.end()) nameBox = cached->second;
+                        if (nameBox.empty()) {
+                            nameBox = findSheetsNameBox(bus, sender, documentPath);
+                            if (!nameBox.empty()) {
+                                if (sheetsNameBoxes.size() >= 32) sheetsNameBoxes.clear();
+                                sheetsNameBoxes[key] = nameBox;
+                            }
+                        }
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(sheetsMutex_);
+                        sheetsBus_ = sheetsEditor ? sender : "";
+                        sheetsPath_ = sheetsEditor ? path : "";
+                        sheetsNameBoxPath_ = nameBox;
+                    }
+                    sheetsCells.focus(sender, path, sheetsEditor,
+                                      sheetsEditor ? queryName(bus, sender, path) : "");
+                    sheetsEditorFocused_.store(sheetsEditor,
+                                               std::memory_order_release);
+                    if (sheetsEditor)
+                        A11Y_LOG("Sheets editor tracked: role=%d path=%s nameBox=%s",
+                                 role, path, nameBox.c_str());
+                    // Sheets keeps focus on its combo box while the selected
+                    // cell changes. Also accept a web table/tree-table, but
+                    // never text editors or browser-UI autocomplete lists.
+                    if (hasDocWeb && (role == 11 /*COMBO_BOX*/ ||
+                                      role == 55 /*TABLE*/ ||
+                                      role == 66 /*TREE_TABLE*/)) {
+                        cellContainerBus = sender;
+                        cellContainerPath = path;
+                    } else {
+                        cellContainerBus.clear();
+                        cellContainerPath.clear();
+                    }
                     focusFbChatSig_.store(fbChatSig,
                                           std::memory_order_relaxed);
                     focusFbCommentSig_.store(fbCommentSig,

@@ -62,6 +62,8 @@ FCITX_CONFIGURATION(
         this, "ChromiumAddressBarMode",
         _("Thanh địa chỉ Chromium"), SKeyChromiumAddressBarMode::Auto};
     Option<bool> debug{this, "Debug", _("Ghi log debug"), false};
+    Option<bool> autoDelay{this, "AutoDelay",
+                           _("Tự động tối ưu delay theo app"), false};
 
     Option<bool> enableMacro{this, "EnableMacro", _("Bật gõ tắt"), true};
     Option<bool> capitalizeMacro{this, "CapitalizeMacro",

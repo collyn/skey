@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: fcitx5-skey 0.7.9\n"
 "Report-Msgid-Bugs-To: https://github.com/collyn/skey/issues\n"
-"POT-Creation-Date: 2026-09-07 17:30+0700\n"
+"POT-Creation-Date: 2026-09-14 23:25+0700\n"
 "PO-Revision-Date: 2026-08-28 18:36+0700\n"
 "Last-Translator: Skey contributors\n"
 "Language-Team: English\n"
@@ -16,11 +16,98 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: src/settings/app_modes_tab.cpp:42
+#: src/settings/app_delay_dialog.cpp:37
+msgid "Độ trễ nâng cao — %1"
+msgstr "Advanced delay — %1"
+
+#: src/settings/app_delay_dialog.cpp:42
+msgid ""
+"Bỏ tích \"Tùy chỉnh\" = dùng giá trị tự động (các ô chỉ hiển thị mức đang "
+"dùng). Tích vào để ghi đè bằng các giá trị bên dưới. Có hiệu lực cho cả "
+"thanh địa chỉ Chromium."
+msgstr ""
+"Unchecked \"Custom\" = automatic values (the fields only show what is "
+"currently used). Check it to override with the values below. Applies to "
+"the Chromium address bar too."
+
+#: src/settings/app_delay_dialog.cpp:75
+msgid "Lưu"
+msgstr "Save"
+
+#: src/settings/app_delay_dialog.cpp:76 src/settings/app_modes_tab.cpp:527
+msgid "Hủy"
+msgstr "Cancel"
+
+#: src/settings/app_delay_dialog.cpp:86
+msgid "Wayland"
+msgstr "Wayland"
+
+#: src/settings/app_delay_dialog.cpp:86
+msgid "X11"
+msgstr "X11"
+
+#: src/settings/app_delay_dialog.cpp:95 src/settings/app_modes_tab.cpp:60
+msgid "Tùy chỉnh"
+msgstr "Customize"
+
+#: src/settings/app_delay_dialog.cpp:97
+msgid "Tích vào để ghi đè bằng các giá trị bên dưới."
+msgstr "Check to override with the values below."
+
+#: src/settings/app_delay_dialog.cpp:102
+msgid ""
+"Khoảng cách giữa các phím Backspace bơm vào khi sửa dấu. 0ms có thể mất chữ "
+"trên Wayland."
+msgstr ""
+"Gap between injected Backspace keys when adding tone marks. 0ms can lose "
+"characters on Wayland."
+
+#: src/settings/app_delay_dialog.cpp:104
+msgid "Nhịp giữa phím BS:"
+msgstr "Backspace pacing:"
+
+#: src/settings/app_delay_dialog.cpp:107
+msgid "Chờ sau khi xóa, trước khi chèn chữ mới."
+msgstr "Wait after deleting, before inserting the new text."
+
+#: src/settings/app_delay_dialog.cpp:108
+msgid "Chờ trước commit:"
+msgstr "Wait before commit:"
+
+#: src/settings/app_delay_dialog.cpp:112
+msgid ""
+"Chờ sau khi chèn chữ, trước khi các phím gõ trong lúc chờ được phát lại."
+msgstr "Wait after inserting, before buffered keys are replayed."
+
+#: src/settings/app_delay_dialog.cpp:114
+msgid "Chờ sau commit:"
+msgstr "Wait after commit:"
+
+#: src/settings/app_delay_dialog.cpp:120
+msgid "RT học được: %1 ms (%2 mẫu)"
+msgstr "Learned RT: %1 ms (%2 samples)"
+
+#: src/settings/app_delay_dialog.cpp:124
+msgid "RT học được: chưa có dữ liệu"
+msgstr "Learned RT: no data yet"
+
+#: src/settings/app_delay_dialog.cpp:132
+msgid "Bỏ ghi đè, trở về giá trị tự động hiện tại."
+msgstr "Remove the override, return to the current automatic values."
+
+#: src/settings/app_delay_dialog.cpp:161
+msgid "Cảnh báo: chờ trước commit dưới 10ms có thể mất chữ."
+msgstr "Warning: a pre-commit wait under 10ms can lose characters."
+
+#: src/settings/app_delay_dialog.cpp:165
+msgid "Nhịp 0ms có thể mất chữ trên Wayland."
+msgstr "0ms pacing can lose characters on Wayland."
+
+#: src/settings/app_modes_tab.cpp:45
 msgid "Tìm ứng dụng…"
 msgstr "Search apps…"
 
-#: src/settings/app_modes_tab.cpp:45
+#: src/settings/app_modes_tab.cpp:48
 msgid ""
 "Cấu hình chế độ xuất riêng cho từng ứng dụng.\n"
 "Tên ứng dụng là tên file thực thi (vd: firefox, tabby, code).\n"
@@ -30,28 +117,28 @@ msgstr ""
 "The app name is the executable file name (e.g. firefox, tabby, code).\n"
 "Type to filter the list."
 
-#: src/settings/app_modes_tab.cpp:55
+#: src/settings/app_modes_tab.cpp:58
 msgid "Tên ứng dụng"
 msgstr "App name"
 
-#: src/settings/app_modes_tab.cpp:56
+#: src/settings/app_modes_tab.cpp:59
 msgid "Chế độ xuất"
 msgstr "Output mode"
 
-#: src/settings/app_modes_tab.cpp:57 src/settings/app_modes_tab.cpp:322
+#: src/settings/app_modes_tab.cpp:61 src/settings/app_modes_tab.cpp:361
 #: src/settings/dict_tab.cpp:190 src/settings/macro_tab.cpp:68
 msgid "Xóa"
 msgstr "Delete"
 
-#: src/settings/app_modes_tab.cpp:70
+#: src/settings/app_modes_tab.cpp:75
 msgid "Thêm ứng dụng"
 msgstr "Add app"
 
-#: src/settings/app_modes_tab.cpp:81
+#: src/settings/app_modes_tab.cpp:86
 msgid "Thanh địa chỉ Chromium:"
 msgstr "Chromium address bar:"
 
-#: src/settings/app_modes_tab.cpp:83
+#: src/settings/app_modes_tab.cpp:88
 msgid ""
 "Chế độ gõ cho thanh địa chỉ Chrome/Edge/Brave.\n"
 "Không ảnh hưởng đến nội dung trang web."
@@ -59,31 +146,35 @@ msgstr ""
 "Input mode for the Chrome/Edge/Brave address bar.\n"
 "Does not affect web page content."
 
-#: src/settings/app_modes_tab.cpp:92
+#: src/settings/app_modes_tab.cpp:97
 msgid "Không gõ tiếng Việt"
 msgstr "No Vietnamese"
 
-#: src/settings/app_modes_tab.cpp:305
+#: src/settings/app_modes_tab.cpp:312
 msgid "(IBus app)"
 msgstr "(IBus app)"
 
-#: src/settings/app_modes_tab.cpp:395
+#: src/settings/app_modes_tab.cpp:354
+msgid "Chỉnh tay độ trễ chèn chữ (X11/Wayland) cho ứng dụng này."
+msgstr "Manually tune the commit delay (X11/Wayland) for this app."
+
+#: src/settings/app_modes_tab.cpp:507
 msgid "Thêm ứng dụng mới"
 msgstr "Add new app"
 
-#: src/settings/app_modes_tab.cpp:403
+#: src/settings/app_modes_tab.cpp:515
 msgid "vd: firefox, tabby, code"
 msgstr "e.g. firefox, tabby, code"
 
-#: src/settings/app_modes_tab.cpp:404
+#: src/settings/app_modes_tab.cpp:516
 msgid "Tên ứng dụng:"
 msgstr "App name:"
 
-#: src/settings/app_modes_tab.cpp:411 src/settings/general_tab.cpp:41
+#: src/settings/app_modes_tab.cpp:523 src/settings/general_tab.cpp:41
 msgid "Chế độ xuất:"
 msgstr "Output mode:"
 
-#: src/settings/app_modes_tab.cpp:414 src/settings/dict_tab.cpp:49
+#: src/settings/app_modes_tab.cpp:526 src/settings/dict_tab.cpp:49
 #: src/settings/dict_tab.cpp:114 src/settings/dict_tab.cpp:124
 #: src/settings/dict_tab.cpp:248 src/settings/dict_tab.cpp:269
 #: src/settings/dict_tab.cpp:283 src/settings/macro_tab.cpp:96
@@ -91,10 +182,6 @@ msgstr "Output mode:"
 #: src/settings/macro_tab.cpp:255 src/settings/macro_tab.cpp:279
 msgid "Thêm"
 msgstr "Add"
-
-#: src/settings/app_modes_tab.cpp:415
-msgid "Hủy"
-msgstr "Cancel"
 
 #: src/settings/appearance_tab.cpp:143 src/settings/appearance_tab.cpp:331
 msgid "Chọn biểu tượng"
@@ -165,8 +252,8 @@ msgid "Hình ảnh (*.png *.svg)"
 msgstr "Images (*.png *.svg)"
 
 #: src/settings/appearance_tab.cpp:347 src/settings/info_tab.cpp:561
-#: src/settings/info_tab.cpp:602 src/settings/info_tab.cpp:636
-#: src/settings/info_tab.cpp:646 src/settings/settings_window.cpp:189
+#: src/settings/info_tab.cpp:616 src/settings/info_tab.cpp:650
+#: src/settings/info_tab.cpp:660 src/settings/settings_window.cpp:195
 msgid "Lỗi"
 msgstr "Error"
 
@@ -339,6 +426,24 @@ msgstr "Show preedit"
 #: src/settings/general_tab.cpp:119
 msgid "Ghi log debug"
 msgstr "Debug logging"
+
+#: src/settings/general_tab.cpp:123
+msgid "Tự động tối ưu delay theo app"
+msgstr "Auto-optimize delay per app"
+
+#: src/settings/general_tab.cpp:125
+msgid ""
+"Học thời gian phản hồi thật của từng ứng dụng khi gõ (chế độ Uinput) rồi tự "
+"chọn độ trễ chèn chữ phù hợp cho lần gõ kế tiếp. Có hiệu lực từ lần chuyển "
+"cửa sổ kế tiếp.\n"
+"Dữ liệu lưu ở ~/.config/fcitx5/conf/skey-app-delays.conf — xoá tệp đó để "
+"quên dữ liệu đã học."
+msgstr ""
+"Learn each app's real input response time while typing (Uinput mode) and "
+"pick the right commit delay for the next focus. Takes effect on the next "
+"window switch.\n"
+"Data is stored in ~/.config/fcitx5/conf/skey-app-delays.conf — delete that "
+"file to forget what was learned."
 
 #: src/settings/hotkey_edit.cpp:32
 msgid "Nhấn tổ hợp phím..."
@@ -654,15 +759,15 @@ msgstr "Manual update required"
 msgid "Lưu bản sao lưu cấu hình"
 msgstr "Save config backup"
 
-#: src/settings/info_tab.cpp:553 src/settings/info_tab.cpp:630
+#: src/settings/info_tab.cpp:553 src/settings/info_tab.cpp:644
 msgid "Tarball (*.tar.gz)"
 msgstr "Tarball (*.tar.gz)"
 
-#: src/settings/info_tab.cpp:562 src/settings/info_tab.cpp:637
+#: src/settings/info_tab.cpp:562 src/settings/info_tab.cpp:651
 msgid "Không thể tạo thư mục tạm."
 msgstr "Could not create a temporary directory."
 
-#: src/settings/info_tab.cpp:603
+#: src/settings/info_tab.cpp:617
 msgid ""
 "Không thể tạo tệp sao lưu:\n"
 "%1"
@@ -670,7 +775,7 @@ msgstr ""
 "Could not create the backup file:\n"
 "%1"
 
-#: src/settings/info_tab.cpp:608
+#: src/settings/info_tab.cpp:622
 msgid ""
 "Cấu hình đã được lưu vào:\n"
 "%1"
@@ -678,11 +783,11 @@ msgstr ""
 "The config has been saved to:\n"
 "%1"
 
-#: src/settings/info_tab.cpp:611
+#: src/settings/info_tab.cpp:625
 msgid "Đã sao lưu (thiếu tệp)"
 msgstr "Backed up (missing files)"
 
-#: src/settings/info_tab.cpp:612
+#: src/settings/info_tab.cpp:626
 msgid ""
 "\n"
 "\n"
@@ -692,15 +797,15 @@ msgstr ""
 "\n"
 "Not found (skipped): %1"
 
-#: src/settings/info_tab.cpp:615
+#: src/settings/info_tab.cpp:629
 msgid "Đã sao lưu"
 msgstr "Backup complete"
 
-#: src/settings/info_tab.cpp:621
+#: src/settings/info_tab.cpp:635
 msgid "Khôi phục cấu hình"
 msgstr "Restore config"
 
-#: src/settings/info_tab.cpp:622
+#: src/settings/info_tab.cpp:636
 msgid ""
 "Khôi phục sẽ ghi đè toàn bộ cấu hình hiện tại.\n"
 "Bạn có chắc muốn tiếp tục?"
@@ -708,11 +813,11 @@ msgstr ""
 "Restore will overwrite the entire current config.\n"
 "Are you sure you want to continue?"
 
-#: src/settings/info_tab.cpp:629
+#: src/settings/info_tab.cpp:643
 msgid "Chọn tệp sao lưu để khôi phục"
 msgstr "Choose a backup file to restore"
 
-#: src/settings/info_tab.cpp:647
+#: src/settings/info_tab.cpp:661
 msgid ""
 "Không thể giải nén tệp sao lưu:\n"
 "%1"
@@ -720,11 +825,11 @@ msgstr ""
 "Could not extract the backup file:\n"
 "%1"
 
-#: src/settings/info_tab.cpp:695
+#: src/settings/info_tab.cpp:725
 msgid "Cảnh báo"
 msgstr "Warning"
 
-#: src/settings/info_tab.cpp:696
+#: src/settings/info_tab.cpp:726
 msgid ""
 "Một số tệp không thể khôi phục.\n"
 "Kiểm tra lại tệp sao lưu."
@@ -732,11 +837,11 @@ msgstr ""
 "Some files could not be restored.\n"
 "Check the backup file."
 
-#: src/settings/info_tab.cpp:703
+#: src/settings/info_tab.cpp:733
 msgid "Đã khôi phục"
 msgstr "Restore complete"
 
-#: src/settings/info_tab.cpp:704
+#: src/settings/info_tab.cpp:734
 msgid "Cấu hình đã được khôi phục và áp dụng."
 msgstr "The config has been restored and applied."
 
@@ -912,23 +1017,23 @@ msgstr "Defaults"
 msgid "Đóng"
 msgstr "Close"
 
-#: src/settings/settings_window.cpp:186
+#: src/settings/settings_window.cpp:192
 msgid "Đã áp dụng"
 msgstr "Applied"
 
-#: src/settings/settings_window.cpp:187
+#: src/settings/settings_window.cpp:193
 msgid "Cấu hình đã được lưu và áp dụng."
 msgstr "The config has been saved and applied."
 
-#: src/settings/settings_window.cpp:190
+#: src/settings/settings_window.cpp:196
 msgid "Không thể ghi file cấu hình."
 msgstr "Could not write the config file."
 
-#: src/settings/settings_window.cpp:196
+#: src/settings/settings_window.cpp:202
 msgid "Khôi phục mặc định"
 msgstr "Restore defaults"
 
-#: src/settings/settings_window.cpp:197
+#: src/settings/settings_window.cpp:203
 msgid "Đặt lại tất cả cấu hình về mặc định?"
 msgstr "Reset all settings to their defaults?"
 
@@ -971,3 +1076,30 @@ msgstr "Update successful! The system has been rebuilt with nixos-rebuild."
 #: src/settings/updater.cpp:580
 msgid "Cập nhật thất bại (mã %1): %2"
 msgstr "Update failed (code %1): %2"
+
+#~ msgid ""
+#~ "Mỗi ô hiển thị giá trị đang được dùng. Sửa một ô để ghi đè giá trị đó; "
+#~ "nút \"Dùng giá trị tự động\" trả về mức hiện tại. Có hiệu lực cho cả "
+#~ "thanh địa chỉ Chromium."
+#~ msgstr ""
+#~ "Each field shows the value currently in use. Edit a field to override it; "
+#~ "the \"Use automatic values\" button restores the current levels. Applies "
+#~ "to the Chromium address bar too."
+
+#~ msgid "Dùng giá trị tự động"
+#~ msgstr "Use automatic values"
+
+#~ msgid "Tự động (hiện %1ms)"
+#~ msgstr "Auto (now %1ms)"
+
+#~ msgid "Tự động (chưa có dữ liệu)"
+#~ msgstr "Auto (no data yet)"
+
+#~ msgid "Tự động (1ms)"
+#~ msgstr "Auto (1ms)"
+
+#~ msgid "Tự động (0ms)"
+#~ msgstr "Auto (0ms)"
+
+#~ msgid "Nâng cao"
+#~ msgstr "Advanced"

@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
 
@@ -38,6 +39,7 @@ constexpr useconds_t UINPUT_INIT_WAIT_US = 1000000;
 // interruptible; paceFd is watched for readability (reserved for a
 // future cancel protocol).
 constexpr int BACKSPACE_GAP_MS = 1;
+constexpr int kMaxGapMs = 100; // v3 per-request pacing clamp
 
 std::atomic<bool> running{true};
 
@@ -170,6 +172,41 @@ bool setupFsSocketDir(const std::string &dir) {
     return false;
   }
   return true;
+}
+
+// Self-healing ACL grant: the fs socket dir is owned by this process
+// (systemd RuntimeDirectory, or this very mkdir on a manual run), and the
+// owner can always modify the ACL, so an unprivileged setfacl works.
+// The unit's ExecStartPost applies the same grant, but any later chmod of
+// the directory (e.g. systemd re-applying RuntimeDirectoryMode when the
+// template is re-instantiated) clears the ACL mask and silently revokes
+// the named-user traverse grant ("user:huy:--x #effective:---" observed,
+// 2026-09-12) — clients then get EACCES and degrade to the abstract
+// socket.  Re-applying the grant here, after every other start-time
+// operation, keeps the fs socket path reachable.  Best-effort: without
+// the acl package the fs socket still binds, and EACCES clients fall back
+// to the abstract socket as before.
+void applyDirAcl(const std::string &dir, const std::string &user) {
+  // Reject names that could smuggle extra ACL entries or paths.
+  if (user.empty() ||
+      user.find_first_of(", \t/\n") != std::string::npos) {
+    return;
+  }
+  std::string userAcl = "u:" + user + ":x";
+  pid_t pid = fork();
+  if (pid < 0) {
+    return;
+  }
+  if (pid > 0) {
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return;
+  }
+  // Child: grant traverse to exactly the target user, with an explicit
+  // mask so a stale/cleared mask cannot silently revoke the grant.
+  execlp("setfacl", "setfacl", "-m", userAcl.c_str(), "-m", "m::x",
+         dir.c_str(), static_cast<char *>(nullptr));
+  _exit(127); // no acl package / exec failure — parent continues anyway
 }
 
 // Bind the filesystem socket.  Never fatal: on any failure the fd is reset so
@@ -314,7 +351,7 @@ public:
 
   // N backspaces, one write() each (press+SYN+release+SYN), poll() gap
   // between them — see BACKSPACE_GAP_MS for why the gap is load-bearing.
-  void backspaces(int count, int paceFd) const {
+  void backspaces(int count, int paceFd, int gapMs) const {
     for (int i = 0; i < count; ++i) {
       input_event ev[4]{};
       ev[0].type = EV_KEY;
@@ -333,7 +370,7 @@ public:
       (void)ignored;
       if (i + 1 < count) {
         pollfd pfd{paceFd, POLLIN, 0};
-        poll(&pfd, 1, BACKSPACE_GAP_MS);
+        poll(&pfd, 1, gapMs);
       }
     }
   }
@@ -390,6 +427,9 @@ int main(int argc, char **argv) {
     return 1;
   }
   if (setupFsSocketDir(fsSocketDir(targetUser))) {
+    // Apply the client traverse ACL AFTER every other start-time
+    // operation on the dir — see applyDirAcl() for why.
+    applyDirAcl(fsSocketDir(targetUser), targetUser);
     bindFsSocket(fsServer, fsSocketPath(targetUser), target->pw_uid,
                  target->pw_gid);
   }
@@ -469,17 +509,29 @@ int main(int argc, char **argv) {
       }
 
       // Protocol:
-      //   v1 (8+ bytes):  int32_t count + uint32_t textLen + text
-      //   v2 (12+ bytes): int32_t count + uint32_t flags  + uint32_t textLen + text
+      //   v1 (8+ bytes):   int32_t count + uint32_t textLen + text
+      //   v2 (12+ bytes):  int32_t count + uint32_t flags  + uint32_t textLen + text
+      //   v3 (16+ bytes):  v2 + uint32_t paceUsec (gap between injected BS)
       //   flags bit 0: send Escape before BS (dismisses Chrome autocomplete)
       // Text is deprecated — replacement text used to be typed via
       // Ctrl+Shift+U hex, but the engine now commits through
       // ic_->commitString().  It is parsed for backward compatibility
       // and never typed.
+      // Compatibility: a v3 engine against a v2 server degrades to the
+      // default pacing (v2 branch ignores the trailing field), and a v2
+      // engine against this server takes the v2 branch below.  The v3
+      // branch MUST precede the n>=12 check — that one accepts any
+      // longer message and would silently swallow the pace field.
       int32_t count = 0;
       uint32_t flags = 0;
+      uint32_t gapUsec = 0;
       if (n == static_cast<ssize_t>(sizeof(int32_t))) {
         memcpy(&count, buf, sizeof(count));
+      } else if (n >= static_cast<ssize_t>(16)) {
+        // v3: count + flags + textLen + paceUsec (+ text)
+        memcpy(&count, buf, sizeof(count));
+        memcpy(&flags, buf + 4, sizeof(flags));
+        memcpy(&gapUsec, buf + 12, sizeof(gapUsec));
       } else if (n >= static_cast<ssize_t>(sizeof(int32_t) +
                                            sizeof(uint32_t) +
                                            sizeof(uint32_t))) {
@@ -493,15 +545,19 @@ int main(int argc, char **argv) {
       } else {
         continue;
       }
+      int gapMs = gapUsec == 0
+                      ? BACKSPACE_GAP_MS
+                      : std::clamp(static_cast<int>(gapUsec / 1000), 0,
+                                   kMaxGapMs);
 
       // Flags: bit 0 = send Escape to dismiss autocomplete before BS
       if ((flags & 1) != 0) {
         uinput.escape();
-        poll(nullptr, 0, BACKSPACE_GAP_MS);
+        poll(nullptr, 0, gapMs);
       }
 
       count = std::clamp(count, 1, 64);
-      uinput.backspaces(count, client.get());
+      uinput.backspaces(count, client.get(), gapMs);
     }
   }
 
