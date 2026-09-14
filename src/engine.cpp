@@ -4932,6 +4932,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
   if (bs > 0) {
     int totalBs = bs;
     std::string commitText = text;
+    bool addrBarNoSnapshot = false;
 
     if (!isWayland()) {
       // ── X11: AT-SPI2 word-at-start check, heuristic fallback ──
@@ -4948,6 +4949,11 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
       // FullReplace heuristics below.
       bool a11yDecided = false;
       bool wordAtStart = false;
+      // On some X11/Chrome/AT-SPI combinations (notably Linux Mint), no
+      // usable omnibox snapshot arrives before the replacement deadline.
+      // Chrome may still have an inline autocomplete selection in that
+      // state.  Remember this exact condition so the uinput server can
+      // dismiss that selection with Escape before deleting the word.
       std::string a11yText;
       int a11ySelStart = -1, a11ySelEnd = -1;
       if (!oldComposed.empty()) {
@@ -4961,7 +4967,12 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
         // start" vetoes the first-word FullReplace that dismisses
         // autofill ("aâ" corruption).  Empty/stale/timeout snapshots
         // fall through to the first-word heuristics below.
-        uint64_t waitUntil = now(CLOCK_MONOTONIC) + 30000;
+        // Subsequent words use the complete-word fallback when AT-SPI is
+        // unavailable, so an 8 ms window is enough to catch a fresh
+        // snapshot without adding a perceptible 30 ms stall.  Keep 30 ms
+        // for the first word, whose autocomplete decision needs more time.
+        uint64_t snapshotWait = addrBarHadFirstWord_ ? 8000 : 30000;
+        uint64_t waitUntil = now(CLOCK_MONOTONIC) + snapshotWait;
         for (;;) {
           if (!mon) {
             break;
@@ -4996,6 +5007,12 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
           mon->waitForSnapshotUpdate(waitUntil - now(CLOCK_MONOTONIC));
         }
       }
+      // A stale text value can survive while the selection coordinates are
+      // unavailable, so emptiness of a11yText alone is not a reliable
+      // availability test.  Treat any missing coordinate as no usable
+      // snapshot; a collapsed, fully specified caret remains safe.
+      addrBarNoSnapshot = !a11yDecided &&
+                          (a11ySelStart < 0 || a11ySelEnd < 0);
       if (wordAtStart) {
         // The +1 BS dismisses Chrome's inline autofill (a selection
         // extending past the typed word).  When the snapshot explicitly
@@ -5219,10 +5236,21 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
     // Sync BS handler uses this to restore committedLen_ after BS
     // pass-through decrements it (same as general uinput path).
     uinputPendingFinalLen_ = static_cast<int>(utf8::length(commitText));
-    // No Escape on either platform — extra BS handles autocomplete
-    // dismissal.  Escape causes spurious Chrome focus cycles on X11
-    // that corrupt the replacement.
+    // Normally the suffix replacement is enough.  A few X11 Chrome builds
+    // expose no usable AT-SPI snapshot and can re-deliver the trigger key
+    // during omnibox churn.  For a subsequent word, replace the complete
+    // tracked word instead of committing only the tone suffix: deleting the
+    // two tracked raw letters and committing "bả" preserves the separator
+    // before it and avoids both "baả" and "addressbar".
     uint32_t uinputFlags = 0;
+    if (!isWayland() && addrBarNoSnapshot && addrBarHadFirstWord_ &&
+        oldComposedLen > 0) {
+      totalBs = oldComposedLen;
+      commitText = fullComposed;
+      SKEY_DEBUG() << "AddrBar: no a11y snapshot for subsequent word, "
+                   << "full replacement BS=" << totalBs << " commit='"
+                   << commitText << "'";
+    }
     expectedUinputBackspaces_ = totalBs;
     seenUinputBackspaces_ = 0;
     pendingUinputCommit_ = commitText;
