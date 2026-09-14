@@ -1,4 +1,5 @@
 #include "a11y_monitor.h"
+#include "sheets_cell_tracker.h"
 
 #include <cctype>
 #include <chrono>
@@ -6,6 +7,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <dbus/dbus.h>
+#include <deque>
+#include <unordered_map>
+#include <unordered_set>
 
 // AT-SPI2 role constants (from atspi-constants.h)
 static constexpr int ROLE_DOCUMENT_WEB = 95;
@@ -105,10 +109,9 @@ static std::string getAtspiBusAddress() {
     return {};
 }
 
-static DBusConnection *connectAtspiBus() {
+static DBusConnection *connectAtspiBus(const std::string &addr) {
     DBusError err;
     dbus_error_init(&err);
-    std::string addr = getAtspiBusAddress();
     DBusConnection *bus = nullptr;
 
     if (!addr.empty()) {
@@ -237,7 +240,7 @@ static int queryRole(DBusConnection *bus, const char *sender,
 
 // ── Read the accessible text of the focused entry (snapshot polling) ──
 static std::string queryText(DBusConnection *bus, const char *sender,
-                             const char *path) {
+                             const char *path, int timeoutMs = 500) {
     DBusError err;
     dbus_error_init(&err);
     DBusMessage *msg = dbus_message_new_method_call(
@@ -247,7 +250,7 @@ static std::string queryText(DBusConnection *bus, const char *sender,
     dbus_message_append_args(msg, DBUS_TYPE_INT32, &start, DBUS_TYPE_INT32,
                              &end, DBUS_TYPE_INVALID);
     DBusMessage *reply = dbus_connection_send_with_reply_and_block(
-        bus, msg, 500, &err);
+        bus, msg, timeoutMs, &err);
     dbus_message_unref(msg);
     std::string text;
     if (reply && !dbus_error_is_set(&err)) {
@@ -414,7 +417,8 @@ static constexpr int FB_COMMENT_ROLE = 39;
 static bool hasDocumentWebAncestor(DBusConnection *bus,
                                    const char *sender,
                                    const char *path,
-                                   bool &chatSig, bool &commentSig) {
+                                   bool &chatSig, bool &commentSig,
+                                   std::string &documentPath) {
     std::string curSender = sender;
     std::string curPath = path;
     chatSig = false;
@@ -439,8 +443,10 @@ static bool hasDocumentWebAncestor(DBusConnection *bus,
         if (role == FB_COMMENT_ROLE)
             commentSig = true;
         prevRole = role;
-        if (role == ROLE_DOCUMENT_WEB || role == ROLE_DOCUMENT_FRAME)
+        if (role == ROLE_DOCUMENT_WEB || role == ROLE_DOCUMENT_FRAME) {
+            documentPath = parentPath;
             return true;
+        }
 
         curSender = parentSender;
         curPath = parentPath;
@@ -526,7 +532,7 @@ static bool queryStates(DBusConnection *bus, const char *sender,
 // chrome://accessibility manually after each browser restart.
 
 static std::string queryName(DBusConnection *bus, const char *sender,
-                             const char *path) {
+                             const char *path, int timeoutMs = 500) {
     DBusError err;
     dbus_error_init(&err);
     DBusMessage *msg = dbus_message_new_method_call(
@@ -539,7 +545,7 @@ static std::string queryName(DBusConnection *bus, const char *sender,
                              DBUS_TYPE_STRING, &prop, DBUS_TYPE_INVALID);
 
     DBusMessage *reply = dbus_connection_send_with_reply_and_block(
-        bus, msg, 500, &err);
+        bus, msg, timeoutMs, &err);
     dbus_message_unref(msg);
 
     std::string name;
@@ -558,6 +564,92 @@ static std::string queryName(DBusConnection *bus, const char *sender,
     if (reply) dbus_message_unref(reply);
     dbus_error_free(&err);
     return name;
+}
+
+static std::string queryAccessibleId(DBusConnection *bus, const char *sender,
+                                     const char *path) {
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *msg = dbus_message_new_method_call(
+        sender, path, "org.a11y.atspi.Accessible", "GetAttributes");
+    if (!msg) return {};
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
+        bus, msg, 30, &err);
+    dbus_message_unref(msg);
+    std::string found;
+    DBusMessageIter root, array;
+    if (reply && dbus_message_iter_init(reply, &root) &&
+        dbus_message_iter_get_arg_type(&root) == DBUS_TYPE_ARRAY) {
+        dbus_message_iter_recurse(&root, &array);
+        while (dbus_message_iter_get_arg_type(&array) == DBUS_TYPE_DICT_ENTRY) {
+            DBusMessageIter entry;
+            dbus_message_iter_recurse(&array, &entry);
+            const char *key = nullptr, *value = nullptr;
+            if (dbus_message_iter_get_arg_type(&entry) == DBUS_TYPE_STRING) {
+                dbus_message_iter_get_basic(&entry, &key);
+                dbus_message_iter_next(&entry);
+                if (dbus_message_iter_get_arg_type(&entry) == DBUS_TYPE_STRING)
+                    dbus_message_iter_get_basic(&entry, &value);
+            }
+            if (key && value && strcmp(key, "id") == 0) {
+                found = value;
+                break;
+            }
+            dbus_message_iter_next(&array);
+        }
+    }
+    if (reply) dbus_message_unref(reply);
+    dbus_error_free(&err);
+    return found;
+}
+
+// Resolve only within the focused Sheets document, once per document. The
+// name box updates on click; the reused editor's Name updates only after keys.
+static std::string findSheetsNameBox(DBusConnection *bus, const char *sender,
+                                     const std::string &documentPath) {
+    std::deque<std::string> queue{documentPath};
+    std::unordered_set<std::string> seen;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(250);
+    while (!queue.empty() && seen.size() < 256 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::string path = std::move(queue.front());
+        queue.pop_front();
+        if (!seen.insert(path).second) continue;
+        if (queryAccessibleId(bus, sender, path.c_str()) == "t-name-box")
+            return path;
+        DBusMessage *msg = dbus_message_new_method_call(
+            sender, path.c_str(), "org.a11y.atspi.Accessible", "GetChildren");
+        if (!msg) continue;
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage *reply = dbus_connection_send_with_reply_and_block(
+            bus, msg, 30, &err);
+        dbus_message_unref(msg);
+        DBusMessageIter root, array;
+        if (reply && dbus_message_iter_init(reply, &root) &&
+            dbus_message_iter_get_arg_type(&root) == DBUS_TYPE_ARRAY) {
+            dbus_message_iter_recurse(&root, &array);
+            while (dbus_message_iter_get_arg_type(&array) == DBUS_TYPE_STRUCT) {
+                DBusMessageIter child;
+                dbus_message_iter_recurse(&array, &child);
+                const char *childBus = nullptr, *childPath = nullptr;
+                if (dbus_message_iter_get_arg_type(&child) == DBUS_TYPE_STRING) {
+                    dbus_message_iter_get_basic(&child, &childBus);
+                    dbus_message_iter_next(&child);
+                    if (dbus_message_iter_get_arg_type(&child) == DBUS_TYPE_OBJECT_PATH)
+                        dbus_message_iter_get_basic(&child, &childPath);
+                }
+                if (childBus && childPath && strcmp(childBus, sender) == 0 &&
+                    queue.size() < 512)
+                    queue.emplace_back(childPath);
+                dbus_message_iter_next(&array);
+            }
+        }
+        if (reply) dbus_message_unref(reply);
+        dbus_error_free(&err);
+    }
+    return {};
 }
 
 static void pokeA11yApps(DBusConnection *bus) {
@@ -635,9 +727,55 @@ static void pokeA11yApps(DBusConnection *bus) {
 // A11yMonitor
 // ---------------------------------------------------------------------------
 
-A11yMonitor::A11yMonitor() = default;
+A11yMonitor::A11yMonitor() {
+    dbus_threads_init_default();
+}
 
-A11yMonitor::~A11yMonitor() { stop(); }
+A11yMonitor::~A11yMonitor() {
+    stop();
+    if (sheetsQueryBus_) {
+        dbus_connection_close(sheetsQueryBus_);
+        dbus_connection_unref(sheetsQueryBus_);
+    }
+}
+
+bool A11yMonitor::currentSheetsCell(std::string &identity, std::string &cell) {
+    std::string sender, path, nameBox, address;
+    {
+        std::lock_guard<std::mutex> lock(sheetsMutex_);
+        sender = sheetsBus_;
+        path = sheetsPath_;
+        nameBox = sheetsNameBoxPath_;
+        address = sheetsBusAddress_;
+    }
+    identity.clear();
+    cell.clear();
+    if (path.empty()) return false;
+    identity = sender + path;
+    if (address.empty() || nameBox.empty()) return true;
+    if (sheetsQueryBus_ && !dbus_connection_get_is_connected(sheetsQueryBus_)) {
+        dbus_connection_close(sheetsQueryBus_);
+        dbus_connection_unref(sheetsQueryBus_);
+        sheetsQueryBus_ = nullptr;
+    }
+    if (!sheetsQueryBus_) {
+        DBusError err;
+        dbus_error_init(&err);
+        sheetsQueryBus_ = dbus_connection_open_private(address.c_str(), &err);
+        if (sheetsQueryBus_) {
+            dbus_connection_set_exit_on_disconnect(sheetsQueryBus_, false);
+            if (!dbus_bus_register(sheetsQueryBus_, &err)) {
+                dbus_connection_close(sheetsQueryBus_);
+                dbus_connection_unref(sheetsQueryBus_);
+                sheetsQueryBus_ = nullptr;
+            }
+        }
+        dbus_error_free(&err);
+    }
+    if (sheetsQueryBus_)
+        cell = queryText(sheetsQueryBus_, sender.c_str(), nameBox.c_str(), 30);
+    return true;
+}
 
 std::string A11yMonitor::atspiBusAddress() { return getAtspiBusAddress(); }
 
@@ -695,7 +833,12 @@ void A11yMonitor::threadFunc() {
     running_.store(true);
     g_debugFlag = &debug_;
 
-    DBusConnection *bus = connectAtspiBus();
+    const std::string address = getAtspiBusAddress();
+    {
+        std::lock_guard<std::mutex> lock(sheetsMutex_);
+        sheetsBusAddress_ = address;
+    }
+    DBusConnection *bus = connectAtspiBus(address);
     if (!bus) {
         running_.store(false);
         return;
@@ -725,6 +868,9 @@ void A11yMonitor::threadFunc() {
 
     registerEvent("object:state-changed:focused");
     registerEvent("focus:");
+    registerEvent("object:active-descendant-changed");
+    registerEvent("object:selection-changed");
+    registerEvent("object:property-change:accessible-name");
 
     dbus_bus_add_match(bus,
                        "type='signal',"
@@ -750,7 +896,8 @@ void A11yMonitor::threadFunc() {
     // snapshot re-poll (we don't parse the payloads — the signal only
     // tells us "something changed, re-query now").
     for (const char *member : {"TextChanged", "TextCaretMoved",
-                               "TextSelectionChanged"}) {
+                               "TextSelectionChanged", "ActiveDescendantChanged",
+                               "SelectionChanged", "PropertyChange"}) {
         dbus_error_init(&err);
         std::string match = std::string(
                                 "type='signal',"
@@ -775,6 +922,11 @@ void A11yMonitor::threadFunc() {
     Clock::time_point latePokeAt = kNever;
     Clock::time_point periodicPokeAt =
         Clock::now() + std::chrono::seconds(15);
+    // Monitor-thread only. Match both sender and path: paths are not globally
+    // unique, and selections in background tabs must never reset a word.
+    std::string cellContainerBus, cellContainerPath;
+    SheetsCellTracker sheetsCells;
+    std::unordered_map<std::string, std::string> sheetsNameBoxes;
 
     // Poll loop
     while (!stopRequested_.load()) {
@@ -787,6 +939,55 @@ void A11yMonitor::threadFunc() {
             const char *member = dbus_message_get_member(msg);
 
             bool isFocusEvent = false;
+
+            // Verified on Chrome/Wayland: clicking another Sheets cell emits
+            // PropertyChange("accessible-name", ..., variant "H27") on the
+            // SAME editor, without focus or SelectionChanged events.
+            if (iface && member &&
+                strcmp(iface, "org.a11y.atspi.Event.Object") == 0 &&
+                strcmp(member, "PropertyChange") == 0) {
+                const char *sender = dbus_message_get_sender(msg);
+                const char *path = dbus_message_get_path(msg);
+                DBusMessageIter iter, value;
+                if (sender && path && dbus_message_iter_init(msg, &iter) &&
+                    dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING) {
+                    const char *property = nullptr;
+                    dbus_message_iter_get_basic(&iter, &property);
+                    if (property && strcmp(property, "accessible-name") == 0 &&
+                        dbus_message_iter_next(&iter) &&
+                        dbus_message_iter_next(&iter) &&
+                        dbus_message_iter_next(&iter) &&
+                        dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_VARIANT) {
+                        dbus_message_iter_recurse(&iter, &value);
+                        if (dbus_message_iter_get_arg_type(&value) == DBUS_TYPE_STRING) {
+                            const char *name = nullptr;
+                            dbus_message_iter_get_basic(&value, &name);
+                            if (name && sheetsCells.update(sender, path, name)) {
+                                // Diagnostic only. This event can lag behind
+                                // the first keys in the new cell; the engine
+                                // queries Name directly before each key.
+                                A11Y_LOG("CellSelection: event=accessible-name cell=%s "
+                                         "path=%s (observation only)", name, path);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (iface && member &&
+                strcmp(iface, "org.a11y.atspi.Event.Object") == 0 &&
+                (strcmp(member, "ActiveDescendantChanged") == 0 ||
+                 strcmp(member, "SelectionChanged") == 0)) {
+                const char *sender = dbus_message_get_sender(msg);
+                const char *path = dbus_message_get_path(msg);
+                if (sender && path && !cellContainerPath.empty() &&
+                    cellContainerBus == sender && cellContainerPath == path) {
+                    auto serial = cellSelectionSerial_.fetch_add(
+                                      1, std::memory_order_release) + 1;
+                    A11Y_LOG("CellSelection: event=%s serial=%llu path=%s",
+                             member, static_cast<unsigned long long>(serial), path);
+                }
+            }
 
             if (iface && member &&
                 strcmp(iface, "org.a11y.atspi.Event.Object") == 0 &&
@@ -856,8 +1057,54 @@ void A11yMonitor::threadFunc() {
                 if (sender && path) {
                     int role = queryRole(bus, sender, path);
                     bool fbChatSig = false, fbCommentSig = false;
+                    std::string documentPath;
                     bool hasDocWeb = hasDocumentWebAncestor(
-                        bus, sender, path, fbChatSig, fbCommentSig);
+                        bus, sender, path, fbChatSig, fbCommentSig, documentPath);
+                    // Chrome ≥150 reports the cell editor as either the
+                    // combo box (11) or the inner ENTRY (79, single-line) —
+                    // states alone cannot separate it from real inputs.
+                    // The accessible-id is the only reliable discriminator.
+                    const bool sheetsEditor = hasDocWeb &&
+                        (role == 11 || role == 79) &&
+                        queryAccessibleId(bus, sender, path) == "waffle-rich-text-editor";
+                    std::string nameBox;
+                    if (sheetsEditor) {
+                        const std::string key = std::string(sender) + documentPath;
+                        auto cached = sheetsNameBoxes.find(key);
+                        if (cached != sheetsNameBoxes.end()) nameBox = cached->second;
+                        if (nameBox.empty()) {
+                            nameBox = findSheetsNameBox(bus, sender, documentPath);
+                            if (!nameBox.empty()) {
+                                if (sheetsNameBoxes.size() >= 32) sheetsNameBoxes.clear();
+                                sheetsNameBoxes[key] = nameBox;
+                            }
+                        }
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(sheetsMutex_);
+                        sheetsBus_ = sheetsEditor ? sender : "";
+                        sheetsPath_ = sheetsEditor ? path : "";
+                        sheetsNameBoxPath_ = nameBox;
+                    }
+                    sheetsCells.focus(sender, path, sheetsEditor,
+                                      sheetsEditor ? queryName(bus, sender, path) : "");
+                    sheetsEditorFocused_.store(sheetsEditor,
+                                               std::memory_order_release);
+                    if (sheetsEditor)
+                        A11Y_LOG("Sheets editor tracked: role=%d path=%s nameBox=%s",
+                                 role, path, nameBox.c_str());
+                    // Sheets keeps focus on its combo box while the selected
+                    // cell changes. Also accept a web table/tree-table, but
+                    // never text editors or browser-UI autocomplete lists.
+                    if (hasDocWeb && (role == 11 /*COMBO_BOX*/ ||
+                                      role == 55 /*TABLE*/ ||
+                                      role == 66 /*TREE_TABLE*/)) {
+                        cellContainerBus = sender;
+                        cellContainerPath = path;
+                    } else {
+                        cellContainerBus.clear();
+                        cellContainerPath.clear();
+                    }
                     focusFbChatSig_.store(fbChatSig,
                                           std::memory_order_relaxed);
                     focusFbCommentSig_.store(fbCommentSig,

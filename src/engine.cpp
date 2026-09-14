@@ -1311,6 +1311,13 @@ SKeyState::SKeyState(SKeyEngine *engine, InputContext *ic)
 void SKeyState::commitText(const std::string &utf8) {
   if (utf8.empty())
     return;
+  // A replacement timer may fire after a click but before the next key.
+  // Never insert the previous cell's pending text into the newly selected
+  // cell. Use the same synchronous boundary check as keyEvent().
+  if (checkCellSelection()) {
+    SKEY_DEBUG() << "CellSelection: discard stale commit";
+    return;
+  }
   ic_->commitString(skey::convertCharset(utf8, charset_));
 }
 
@@ -1807,6 +1814,23 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   if (a11yChromiumTerminal()) {
     SKEY_DEBUG() << "Auto: Chromium integrated terminal (a11y) → Uinput";
     return SKeyOutputMode::Uinput;
+  }
+
+  // Google Sheets cell editor.  Must run before the caps-based decisions:
+  // Sheets caps arrive stale on re-focus (bare 0x72 or weak-hint 0x80072)
+  // and both would route SurroundingText.  Chrome ≥150 reports the editor
+  // as ENTRY with single-line — the old line-state discriminator
+  // (editable=0 + no line state) no longer matches, and a11yFreshWebEditor
+  // would happily call it a real input.  The monitor identifies it by
+  // accessible-id (waffle-rich-text-editor) instead; the freshness
+  // requirement keeps stale snapshots from hijacking other apps.
+  if (isChromiumBrowser(appProgram())) {
+    auto *mon = engine_->a11yMonitor();
+    if (mon && mon->sheetsEditorFocused() &&
+        mon->isFocusSnapshotFresh(5000000)) {
+      SKEY_DEBUG() << "Auto: Google Sheets cell editor → Uinput";
+      return SKeyOutputMode::Uinput;
+    }
   }
 
   // Sticky Uinput: Chromium browsers (e.g. Google Sheets) may initially
@@ -3211,6 +3235,54 @@ void SKeyState::reset() {
   clearUI();
 }
 
+bool SKeyState::checkCellSelection() {
+  // A web grid can change cells without an fcitx focus/reset cycle. Consume
+  // the selection generation before saving/reclaiming the word or processing
+  // even a looped-back injected Backspace. Preserve the outstanding count so
+  // those old injected keys are still swallowed by the normal loopback guard.
+  if (auto *mon = engine_->a11yMonitor()) {
+    const auto serial = mon->cellSelectionSerial();
+    bool changed = serial != cellSelectionSerial_;
+    cellSelectionSerial_ = serial;
+    if (isChromiumBrowser(appProgram()) && useUinputMode()) {
+      std::string identity, cell;
+      if (mon->currentSheetsCell(identity, cell)) {
+        // Async PropertyChange can arrive AFTER g/o of the new cell. Never
+        // reset from that generation in Sheets: compare an authoritative read
+        // before processing the key, and retain the baseline on query failure.
+        changed = sheetsCellSnapshot_.observe(identity, cell);
+        if (changed)
+          SKEY_DEBUG() << "Sheets: new cell=" << cell << " (name box, synchronous)";
+      }
+      if (changed) {
+        SKEY_DEBUG() << "CellSelection: reset word '" << viet_.getComposed()
+                     << "' serial=" << serial;
+        viet_.reset();
+        committedLen_ = 0;
+        clearLastWord();
+        surrResetTentative_ = false;
+        bufferedUinputKeys_.clear();
+        uinputCommitTimer_.reset();
+        uinputSafetyTimer_.reset();
+        uinputCycleTimer_.reset();
+        uinputDeleting_ = false;
+        pendingUinputCommit_.clear();
+        expectedUinputBackspaces_ = 0;
+        seenUinputBackspaces_ = 0;
+        uinputPendingFinalLen_ = 0;
+        deferredCommitTimer_.reset();
+        deferredCommitText_.clear();
+        deferredPrefix_.clear();
+        pendingFlushSuffix_.clear();
+        addrBarLastTriggerKey_ = 0;
+        addrBarTriggerDeadline_ = 0;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 void SKeyState::keyEvent(KeyEvent &keyEvent) {
   if (keyEvent.isRelease()) {
     return;
@@ -3220,6 +3292,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
   // Refresh per-app mode in case IC is shared across apps
   refreshAppMode();
+  checkCellSelection();
 
   // Lazy re-attach validation: a Surr-mode reset kept the word state
   // (see reset()) — confirm or discard it on this first key.  Real

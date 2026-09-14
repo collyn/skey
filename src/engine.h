@@ -20,6 +20,7 @@
 #include "charset.h"
 #include "vietnamese.h"
 #include "a11y_monitor.h"
+#include "sheets_cell_tracker.h"
 
 namespace fcitx {
 
@@ -176,6 +177,9 @@ private:
     // suppress trigger-driven mode re-detection while the verdict is
     // stable.  CLOCK_MONOTONIC, 0 = inactive.
     uint64_t triggerBackoffUntilUsec_ = 0;
+    uint64_t cellSelectionSerial_ = 0;
+    SheetsCellSnapshot sheetsCellSnapshot_;
+    bool checkCellSelection();
     // CLOCK_MONOTONIC timestamp of the most recent activate() — the
     // first word after a focus switch gets extra settle headroom
     // (kFirstWordSettleUsec) because the renderer is still settling.

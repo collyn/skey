@@ -51,6 +51,11 @@ target_compile_features(test_vietnamese PRIVATE cxx_std_17)
 target_include_directories(test_vietnamese PRIVATE "${SKEY_ENGINE_DIR}")
 # Enable CTest integration
 add_test(NAME VietnameseTyping COMMAND test_vietnamese)
+add_executable(test_sheets_cell_tracker test_sheets_cell_tracker.cpp vietnamese.cpp viet_recompose.cpp viet_undo.cpp viet_restore.cpp charset.cpp)
+target_link_libraries(test_sheets_cell_tracker skey_engine pthread dl)
+target_include_directories(test_sheets_cell_tracker PRIVATE "${SKEY_ENGINE_DIR}")
+target_compile_features(test_sheets_cell_tracker PRIVATE cxx_std_17)
+add_test(NAME SheetsCellTracking COMMAND test_sheets_cell_tracker)
 enable_testing()
 
 install(TARGETS skey DESTINATION "${FCITX_INSTALL_ADDONDIR}")

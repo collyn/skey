@@ -9,6 +9,8 @@
 #include <string>
 #include <thread>
 
+struct DBusConnection;
+
 /// Monitors AT-SPI2 accessibility focus events to detect whether
 /// the currently focused element is a browser address bar or web content.
 /// Runs a background thread that listens for D-Bus signals from the
@@ -149,6 +151,28 @@ public:
         return running_.load(std::memory_order_relaxed);
     }
 
+    // Selection of an item in the focused web grid/combo box changed.
+    // TextSelectionChanged is deliberately excluded (our own typing emits it).
+    uint64_t cellSelectionSerial() const {
+        return cellSelectionSerial_.load(std::memory_order_acquire);
+    }
+
+    // True when the most recent focus event landed on the Google Sheets cell
+    // editor, identified by accessible-id "waffle-rich-text-editor". Chrome
+    // ≥150 reports it as ENTRY (79) with single-line — role/states alone are
+    // indistinguishable from real inputs, so the id is the only discriminator.
+    // Consumer must check snapshot freshness like any other a11y signal.
+    bool sheetsEditorFocused() const {
+        return sheetsEditorFocused_.load(std::memory_order_acquire);
+    }
+
+    // Main-thread only. Read the current Sheets cell before processing a key,
+    // using a separate connection so the focus thread's queue cannot delay it.
+    // True means Sheets is focused; an empty cell means the query failed or
+    // Chrome has not supplied a coordinate. Reads t-name-box (not the reused
+    // editor's delayed Name). The call has a 30ms reply timeout.
+    bool currentSheetsCell(std::string &identity, std::string &cell);
+
     /// Enable/disable debug logging to /tmp/skey_a11y.log
     void setDebug(bool enabled) {
         debug_.store(enabled, std::memory_order_relaxed);
@@ -175,6 +199,11 @@ private:
     std::atomic<bool> focusSingleLine_{false};
     std::atomic<bool> textEntryFocused_{false};
     std::atomic<uint64_t> focusSnapshotUsec_{0};
+    std::atomic<uint64_t> cellSelectionSerial_{0};
+    std::atomic<bool> sheetsEditorFocused_{false};
+    mutable std::mutex sheetsMutex_;
+    std::string sheetsBus_, sheetsPath_, sheetsNameBoxPath_, sheetsBusAddress_;
+    DBusConnection *sheetsQueryBus_ = nullptr; // main-thread owned
     // Focused text-entry identity (guarded — strings are not atomic).
     mutable std::mutex focusEntryMutex_;
     std::string focusEntryBus_;
