@@ -8,8 +8,12 @@
 #include <cstring>
 #include <dbus/dbus.h>
 #include <deque>
+#include <dirent.h>
+#include <fstream>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 // AT-SPI2 role constants (from atspi-constants.h)
 static constexpr int ROLE_DOCUMENT_WEB = 95;
@@ -652,7 +656,102 @@ static std::string findSheetsNameBox(DBusConnection *bus, const char *sender,
     return {};
 }
 
+// Chrome ≥150 on Wayland registers NO AT-SPI stub until an assistive
+// technology announces itself, so the GetRelationSet poke below can never
+// reach it (no object to poke).  The session-wide status flag is the only
+// lever: Chrome watches org.a11y.Status.ScreenReaderEnabled on
+// org.a11y.Bus and builds its full a11y tree once it is true (verified on
+// Chrome 153/Wayland, 2026-09-14: the tree appeared in the registry a few
+// seconds after setting the property).  Idempotent — re-asserted with the
+// periodic poke.
+static void enableAtspiSessionStatus() {
+    // org.a11y.Bus lives on the SESSION bus — the AT-SPI bus connection
+    // cannot reach it (the earlier attempt failed with "name not found").
+    DBusError err;
+    dbus_error_init(&err);
+    DBusConnection *bus = dbus_bus_get(DBUS_BUS_SESSION, &err);
+    if (!bus || dbus_error_is_set(&err)) {
+        A11Y_LOG("Set org.a11y.Status: no session bus (%s)",
+                 dbus_error_is_set(&err) ? err.message : "?");
+        dbus_error_free(&err);
+        return;
+    }
+    dbus_error_free(&err);
+    const char *propNames[] = {"ScreenReaderEnabled", "IsEnabled"};
+    for (const char *propName : propNames) {
+        DBusMessage *msg = dbus_message_new_method_call(
+            "org.a11y.Bus", "/org/a11y/bus",
+            "org.freedesktop.DBus.Properties", "Set");
+        if (!msg) continue;
+        // dbus_message_iter_append_basic takes char** for STRING, so the
+        // values must be lvalues of non-const char* (nothing writes them).
+        // The status properties are BOOLEANs.
+        char *iface = const_cast<char *>("org.a11y.Status");
+        char *prop = const_cast<char *>(propName);
+        dbus_bool_t val = TRUE;
+        DBusMessageIter iter, variant;
+        dbus_message_iter_init_append(msg, &iter);
+        dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &iface);
+        dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &prop);
+        dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT,
+                                         "b", &variant);
+        dbus_message_iter_append_basic(&variant, DBUS_TYPE_BOOLEAN, &val);
+        dbus_message_iter_close_container(&iter, &variant);
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage *reply =
+            dbus_connection_send_with_reply_and_block(bus, msg, 500, &err);
+        A11Y_LOG("Set org.a11y.Status.%s=%s%s", prop, val,
+                 dbus_error_is_set(&err) ? " [failed]" : "");
+        if (reply) dbus_message_unref(reply);
+        dbus_message_unref(msg);
+        dbus_error_free(&err);
+    }
+    dbus_connection_unref(bus);
+}
+
+static bool anyChromiumProcessRunning() {
+    DIR *dir = opendir("/proc");
+    if (!dir) return false;
+    static const char *const patterns[] = {
+        "chrome", "chromium", "brave", "vivaldi", "msedge", "edge",
+        "opera", "electron",
+    };
+    bool found = false;
+    struct dirent *entry;
+    while (!found && (entry = readdir(dir)) != nullptr) {
+        if (entry->d_type != DT_DIR || !isdigit(entry->d_name[0]))
+            continue;
+        std::string commPath = std::string("/proc/") + entry->d_name + "/comm";
+        std::ifstream commFile(commPath);
+        if (!commFile.is_open()) continue;
+        std::string comm;
+        std::getline(commFile, comm);
+        for (const char *p : patterns) {
+            if (comm.find(p) != std::string::npos) {
+                found = true;
+                break;
+            }
+        }
+    }
+    closedir(dir);
+    return found;
+}
+
+// When a Chromium-family process has been running without ever appearing
+// in the registry.  The session flag is only set after a grace period —
+// on GNOME Chrome registers its stub shortly after startup, and an early
+// flag set would sync into gsettings and autostart Orca.
+static std::chrono::time_point<std::chrono::steady_clock>
+    g_chromiumUnregisteredSince =
+        std::chrono::time_point<std::chrono::steady_clock>::max();
+
 static void pokeA11yApps(DBusConnection *bus) {
+    // Per-cycle: whether a Chromium-family app is present in the registry
+    // RIGHT NOW.  Chrome keeps its a11y tree only while its process runs,
+    // so a restart makes it vanish from the registry again — a sticky
+    // "seen once" flag would then suppress the fallback forever.
+    bool sawChromiumInRegistry = false;
     DBusError err;
     dbus_error_init(&err);
     DBusMessage *msg = dbus_message_new_method_call(
@@ -700,6 +799,14 @@ static void pokeA11yApps(DBusConnection *bus) {
             // terminal).  The query is read-only and cheap; non-Chromium
             // apps just return an empty relation set.
             std::string name = queryName(bus, appBus, appPath);
+            if (name.find("chrome") != std::string::npos ||
+                name.find("chromium") != std::string::npos ||
+                name.find("brave") != std::string::npos ||
+                name.find("vivaldi") != std::string::npos ||
+                name.find("edge") != std::string::npos ||
+                name.find("opera") != std::string::npos) {
+                sawChromiumInRegistry = true;
+            }
             DBusMessage *poke = dbus_message_new_method_call(
                 appBus, appPath, "org.a11y.atspi.Accessible",
                 "GetRelationSet");
@@ -721,6 +828,30 @@ static void pokeA11yApps(DBusConnection *bus) {
     }
     dbus_message_unref(reply);
     dbus_error_free(&err);
+
+    // Fallback for environments where Chromium registers NO AT-SPI stub
+    // (Fedora/KDE Wayland + Chrome ≥150: the registry walk above never
+    // sees it, so the GetRelationSet poke has nothing to reach).  Setting
+    // the session status flag makes Chrome build its tree; the next poke
+    // cycle then finds and pokes it.  Skipped while a Chromium app IS in
+    // the registry (the poke already works there — and on GNOME the flag
+    // would autostart Orca, which the poke approach avoids).  A 30s grace
+    // period covers GNOME's startup gap (process running, stub not yet
+    // registered).
+    auto now = std::chrono::steady_clock::now();
+    if (sawChromiumInRegistry || !anyChromiumProcessRunning()) {
+        g_chromiumUnregisteredSince =
+            std::chrono::time_point<std::chrono::steady_clock>::max();
+        return;
+    }
+    if (g_chromiumUnregisteredSince ==
+        std::chrono::time_point<std::chrono::steady_clock>::max()) {
+        g_chromiumUnregisteredSince = now;
+        return;
+    }
+    if (now - g_chromiumUnregisteredSince >= std::chrono::seconds(30)) {
+        enableAtspiSessionStatus();
+    }
 }
 
 // ---------------------------------------------------------------------------
