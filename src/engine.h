@@ -148,6 +148,7 @@ private:
     void scheduleAddrBarReplacement(int bs, const std::string &text,
                                      int oldComposedLen = 0,
                                      int triggerKeySym = 0,
+                                     int triggerKeyTime = 0,
                                      const std::string &fullComposed = {},
                                      bool oldComposedIsAscii = false,
                                      const std::string &oldComposed = {});
@@ -264,9 +265,15 @@ private:
     bool uinputKeyForwarded_ = false;
     // KeySym of the key that triggered the current address bar replacement.
     // X11 may re-deliver this key after Chrome's spurious focus cycles;
-    // we drop it within a 200ms window to avoid double-processing.
+    // we drop it to avoid double-processing.  A replayed X event carries
+    // its ORIGINAL server timestamp, while a deliberate second press gets
+    // a fresh one — the guard drops only replayed events (time match) or
+    // presses landing within kAddrBarGuardFreshWindowUsec of the arm; a
+    // deliberate double-tone-key undo ("bar", "config") passes through.
     int addrBarLastTriggerKey_ = 0;
     uint64_t addrBarTriggerDeadline_ = 0;  // CLOCK_MONOTONIC deadline
+    int addrBarTriggerKeyTime_ = 0;        // X event time of the armed key
+    uint64_t addrBarGuardArmedUsec_ = 0;   // CLOCK_MONOTONIC arm moment
     // True when the next replacement is for the first word after focus or
     // after backspacing to empty.  Only the first word may trigger Chrome
     // autocomplete; subsequent words (after space) don't need extra BS.

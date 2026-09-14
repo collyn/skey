@@ -1623,6 +1623,11 @@ static constexpr uint64_t kBareCapsDecisionWindowUsec = 2000000; // 2s
 // own keystroke is treated as the app's reaction (zen fires one after
 // every key), not a focus change.
 static constexpr uint64_t kSurrReattachWindowUsec = 500000; // 500ms
+// Trigger-key re-delivery guard: a press of the armed key within this
+// window of the arm moment is treated as a re-delivery even when the
+// event carries a fresh timestamp (frontend re-synthesized replay).
+// Deliberate double-tone-key undos need ~100ms+ human reaction time.
+static constexpr uint64_t kAddrBarGuardFreshWindowUsec = 100000; // 100ms
 // Word-boundary mode re-eval trigger back-off: once the trigger has
 // re-evaluated and the verdict is stable, further trigger-driven
 // re-detection is suppressed for this long (in-window input changes
@@ -3276,6 +3281,8 @@ bool SKeyState::checkCellSelection() {
         pendingFlushSuffix_.clear();
         addrBarLastTriggerKey_ = 0;
         addrBarTriggerDeadline_ = 0;
+        addrBarTriggerKeyTime_ = 0;
+        addrBarGuardArmedUsec_ = 0;
         return true;
       }
     }
@@ -3443,15 +3450,31 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // Chromium-family, not just the address bar).  Chrome's spurious focus
   // cycles cause X11 to re-send the key that triggered the last
   // replacement or was last forwarded, even after uinput deletion
-  // completed.  The 50ms guard deadline keeps deliberate double-presses
-  // working.
+  // completed.  A replayed X event keeps its ORIGINAL server timestamp —
+  // only a replay or a press landing immediately after the arm is
+  // dropped.  A deliberate second press of the same key (double-tone-key
+  // undo: "bar", "config") arrives with a fresh timestamp and passes,
+  // regardless of how long the X11 churn deadline stays armed.
   if (isChromiumCached() && addrBarLastTriggerKey_ != 0 &&
       now(CLOCK_MONOTONIC) < addrBarTriggerDeadline_) {
     if (keyEvent.key().sym() == static_cast<uint32_t>(addrBarLastTriggerKey_)) {
-      SKEY_DEBUG() << "AddrBar: drop re-delivered trigger key 0x" << std::hex
-                   << keyEvent.key().sym();
-      keyEvent.filterAndAccept();
-      return;
+      const uint64_t t = now(CLOCK_MONOTONIC);
+      const bool replayedEvent =
+          addrBarTriggerKeyTime_ != 0 &&
+          keyEvent.time() == addrBarTriggerKeyTime_;
+      const bool freshAfterArm =
+          addrBarGuardArmedUsec_ != 0 &&
+          t < addrBarGuardArmedUsec_ + kAddrBarGuardFreshWindowUsec;
+      if (replayedEvent || freshAfterArm) {
+        SKEY_DEBUG() << "AddrBar: drop re-delivered trigger key 0x" << std::hex
+                     << keyEvent.key().sym() << std::dec
+                     << (replayedEvent ? " [replayed event]" : " [fresh arm]");
+        keyEvent.filterAndAccept();
+        return;
+      }
+      SKEY_DEBUG() << "AddrBar: fresh deliberate press of trigger key 0x"
+                   << std::hex << keyEvent.key().sym() << std::dec
+                   << ", processing";
     }
   }
 
@@ -4194,6 +4217,17 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           ic_->commitString(" ");
         }
         keyEvent.filterAndAccept();
+      } else if (inChromiumAddressBar() && useUinputMode()) {
+        // Uinput addrbar: every composed char is already on screen (letters
+        // go out via raw forwards or replacement commits) — commitBuffer
+        // would duplicate them.  The lone-tone-key state left by a
+        // double-tone-key undo ("bả" + r → "bar") keeps rawInput alive, but
+        // its char is on screen too; it dies with the viet_.reset() below.
+        // Send the space through commitString — it lands reliably; a raw
+        // forwarded space is eaten by Chrome's post-replacement churn.
+        clearUI();
+        ic_->commitString(" ");
+        keyEvent.filterAndAccept();
       } else {
         commitBuffer();
         clearUI();
@@ -4392,6 +4426,11 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         std::string txt;
         int ss = -1, se = -1;
         auto *mon = engine_->a11yMonitor();
+        // A snapshot that predates the guard (e.g. taken mid-deletion of
+        // the previous replacement) is not desync evidence — the verdict
+        // below requires a poll NEWER than this stamp.
+        const uint64_t snapBefore =
+            mon ? mon->a11ySnapshotUsec() : 0;
         uint64_t waitUntil = now(CLOCK_MONOTONIC) + 30000;
         for (;;) {
           if (!mon || !mon->a11yState(txt, ss, se, kA11ySnapshotMaxAgeUsec))
@@ -4414,7 +4453,13 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         bool placeholderOnly = (txt == "\xEF\xBF\xBD"); // U+FFFC = Chromium's
                                                         // a11y placeholder for
                                                         // an EMPTY editable
-        if (mon && !txt.empty() && !placeholderOnly &&
+        // The desync verdict needs a snapshot that postdates the guard:
+        // a stale-but-fresh snapshot of the mid-deletion state (bar text
+        // "b" while the committed word "bả" is already on screen) must
+        // not reset the composition ("bar" retype → "bảr", 2026-09-14).
+        const bool snapshotAdvanced =
+            mon && mon->a11ySnapshotUsec() > snapBefore;
+        if (mon && snapshotAdvanced && !txt.empty() && !placeholderOnly &&
             txt.find(comp) == std::string::npos) {
           SKEY_DEBUG() << "AddrBar: desync — bar text '" << txt
                        << "' lacks composed '" << comp << "', resetting";
@@ -4462,6 +4507,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           if (isChromiumCached() && !oldComposed.empty()) {
             addrBarLastTriggerKey_ = static_cast<int>(sym);
             addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 100000;
+            addrBarTriggerKeyTime_ = keyEvent.time();
+            addrBarGuardArmedUsec_ = now(CLOCK_MONOTONIC);
           }
           // Save the finalized word so reclaim can restore the correct
           // word when the user later backspaces through its separator.
@@ -4546,6 +4593,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 }
                 addrBarLastTriggerKey_ = static_cast<int>(sym);
                 addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 50000;
+                addrBarTriggerKeyTime_ = keyEvent.time();
+                addrBarGuardArmedUsec_ = now(CLOCK_MONOTONIC);
               }
               SKEY_DEBUG() << "Uinput: forward append '" << keyUtf8 << "'";
               // fcitx5 will call reset() after unfiltered key; the
@@ -4591,7 +4640,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 scheduleAddrBarReplacement(
                     deleteLen, addPart,
                     static_cast<int>(utf8::length(oldComposed)),
-                    static_cast<int>(sym), newComposed, oldAscii, oldComposed);
+                    static_cast<int>(sym), keyEvent.time(), newComposed,
+                    oldAscii, oldComposed);
                 return;
               }
               // X11 NATIVE terminals: NO forwardKey shortcut anymore.
@@ -4645,6 +4695,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               oldComposed != newComposed) {
             addrBarLastTriggerKey_ = static_cast<int>(sym);
             addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 100000;
+            addrBarTriggerKeyTime_ = keyEvent.time();
+            addrBarGuardArmedUsec_ = now(CLOCK_MONOTONIC);
           }
           surroundingCommit(oldComposed, newComposed);
         } else {
@@ -4786,6 +4838,7 @@ void SKeyState::commitBuffer() {
 void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
                                            int oldComposedLen,
                                            int triggerKeySym,
+                                           int triggerKeyTime,
                                            const std::string &fullComposed,
                                            bool oldComposedIsAscii,
                                            const std::string &oldComposed) {
@@ -4853,7 +4906,13 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
             mon->waitForSnapshotUpdate(waitUntil - now(CLOCK_MONOTONIC));
             continue;
           }
-          if (a11yText.size() >= oldComposed.size() &&
+          // The prefix compare alone is ambiguous: with "bar ba" in the
+          // bar, oldComposed "ba" matches the prefix "ba" of "bar..." and
+          // the FullReplace fires for a NON-first word — its +1 autofill
+          // BS then eats the space ("bar bar" → "barbar", 2026-09-14).
+          // The engine's first-word tracking is authoritative: a previous
+          // word in this bar means the current one is NOT at the start.
+          if (!addrBarHadFirstWord_ && a11yText.size() >= oldComposed.size() &&
               a11yText.compare(0, oldComposed.size(), oldComposed) == 0) {
             wordAtStart = true;
             a11yDecided = true;
@@ -5081,6 +5140,8 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
       addrBarLastTriggerKey_ = triggerKeySym;
       addrBarTriggerDeadline_ =
           now(CLOCK_MONOTONIC) + (isWayland() ? 100000 : 1500000);
+      addrBarTriggerKeyTime_ = triggerKeyTime;
+      addrBarGuardArmedUsec_ = now(CLOCK_MONOTONIC);
     }
     // Sync BS handler uses this to restore committedLen_ after BS
     // pass-through decrements it (same as general uinput path).
@@ -5094,6 +5155,10 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
     pendingUinputCommit_ = commitText;
     uinputDeleting_ = true;
     sendBackspaceUinput(totalBs + 1, uinputFlags); // +1 sync BS
+    // The sync-anchor BS proves the deletions reached Chrome — the
+    // screen state is known-good again, so the backspace-desync guard
+    // (armed by a previous user BS) must not fire on stale snapshots.
+    addrBarSawBsInWord_ = false;
     // Safety: force-commit if BS events are lost
     uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC,
@@ -5125,6 +5190,9 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
         });
   } else if (!text.empty()) {
     this->commitText(text);
+    // Pure-commit replacement (no deletion): tracking matches the screen
+    // again — disarm the backspace-desync guard (see dispatch above).
+    addrBarSawBsInWord_ = false;
   }
 }
 
@@ -5363,7 +5431,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           committedLen_ = newLen;
           scheduleAddrBarReplacement(
               deleteLen, addedPart, static_cast<int>(utf8::length(oldComposed)),
-              0, newComposed, false, oldComposed);
+              0, 0, newComposed, false, oldComposed);
           return;
         }
         // X11 terminals: the X server serializes key delivery and the

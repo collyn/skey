@@ -131,6 +131,14 @@ public:
     bool a11yState(std::string &text, int &selStart, int &selEnd,
                    uint64_t maxAgeUsec) const;
 
+    /// CLOCK_MONOTONIC usec stamp of the last background text snapshot
+    /// (0 = none yet).  Lets the engine require a snapshot that postdates
+    /// a moment of interest instead of trusting stale-but-fresh content.
+    uint64_t a11ySnapshotUsec() const {
+        std::lock_guard<std::mutex> lock(a11ySnapshotMutex_);
+        return a11ySnapshotUsec_;
+    }
+
     /// Enable/disable the snapshot polling.  The engine enables it only
     /// while the current input context is the Chromium address bar on
     /// X11 — polling any other focused entry is wasted DBus traffic.
