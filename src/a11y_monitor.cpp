@@ -422,7 +422,8 @@ static bool hasDocumentWebAncestor(DBusConnection *bus,
                                    const char *sender,
                                    const char *path,
                                    bool &chatSig, bool &commentSig,
-                                   std::string &documentPath) {
+                                   std::string &documentPath,
+                                   std::string &framePath) {
     std::string curSender = sender;
     std::string curPath = path;
     chatSig = false;
@@ -451,6 +452,11 @@ static bool hasDocumentWebAncestor(DBusConnection *bus,
             documentPath = parentPath;
             return true;
         }
+        // Gecko (Firefox) does not expose the web document as an ancestor
+        // of the Google Docs grid combo box (webDoc=0) — the WINDOW frame
+        // (role 23) carries the tab title and serves as the title source.
+        if (role == 23 /*FRAME*/ && framePath.empty())
+            framePath = parentPath;
 
         curSender = parentSender;
         curPath = parentPath;
@@ -1091,9 +1097,10 @@ void A11yMonitor::threadFunc() {
                 if (sender && path) {
                     int role = queryRole(bus, sender, path);
                     bool fbChatSig = false, fbCommentSig = false;
-                    std::string documentPath;
+                    std::string documentPath, framePath;
                     bool hasDocWeb = hasDocumentWebAncestor(
-                        bus, sender, path, fbChatSig, fbCommentSig, documentPath);
+                        bus, sender, path, fbChatSig, fbCommentSig,
+                        documentPath, framePath);
                     // Chrome ≥150 reports the cell editor as either the
                     // combo box (11) or the inner ENTRY (79, single-line) —
                     // states alone cannot separate it from real inputs.
@@ -1127,6 +1134,41 @@ void A11yMonitor::threadFunc() {
                     if (sheetsEditor)
                         A11Y_LOG("Sheets editor tracked: role=%d path=%s nameBox=%s",
                                  role, path, nameBox.c_str());
+                    // Google Docs-suite page: the tab title is the document's
+                    // Name (Chrome) or the window frame's Name (Gecko — the
+                    // document is not an ancestor there, webDoc=0).  Firefox
+                    // on these heavy canvas pages drops consecutive native
+                    // deletes — the engine routes them to Uinput like
+                    // Chrome's Sheets.
+                    {
+                        bool docsPage = false;
+                        std::string titlePath = documentPath;
+                        if (titlePath.empty())
+                            titlePath = framePath;
+                        if (!titlePath.empty()) {
+                            std::string title =
+                                queryName(bus, sender, titlePath.c_str());
+                            std::string lower;
+                            lower.reserve(title.size());
+                            for (unsigned char c : title)
+                                lower.push_back(static_cast<char>(std::tolower(c)));
+                            if (lower.find("google") != std::string::npos) {
+                                static const char *const kws[] = {
+                                    "trang tính", "trang trình bày", "tài liệu",
+                                    "biểu mẫu", "sheets", "docs", "slides",
+                                    "forms", "jamboard",
+                                };
+                                for (const char *kw : kws) {
+                                    if (lower.find(kw) != std::string::npos) {
+                                        docsPage = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        googleDocsDocFocused_.store(docsPage,
+                                                    std::memory_order_release);
+                    }
                     // Sheets keeps focus on its combo box while the selected
                     // cell changes. Also accept a web table/tree-table, but
                     // never text editors or browser-UI autocomplete lists.

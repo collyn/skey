@@ -174,6 +174,15 @@ public:
         return sheetsEditorFocused_.load(std::memory_order_acquire);
     }
 
+    // True when the focused web document is a Google Docs-suite page
+    // (document Name like "Google Trang tính" / "Google Docs" / "Google
+    // Slides" — the tab title Gecko exposes as the document name).  Used to
+    // route Firefox on these heavy canvas pages to Uinput like Chrome's
+    // Sheets (multi-char replacements drop deletions there).
+    bool googleDocsDocumentFocused() const {
+        return googleDocsDocFocused_.load(std::memory_order_acquire);
+    }
+
     // Main-thread only. Read the current Sheets cell before processing a key,
     // using a separate connection so the focus thread's queue cannot delay it.
     // True means Sheets is focused; an empty cell means the query failed or
@@ -218,6 +227,7 @@ private:
     std::atomic<uint64_t> focusSnapshotUsec_{0};
     std::atomic<uint64_t> cellSelectionSerial_{0};
     std::atomic<bool> sheetsEditorFocused_{false};
+    std::atomic<bool> googleDocsDocFocused_{false};
     mutable std::mutex sheetsMutex_;
     std::string sheetsBus_, sheetsPath_, sheetsNameBoxPath_, sheetsBusAddress_;
     DBusConnection *sheetsQueryBus_ = nullptr; // main-thread owned

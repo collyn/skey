@@ -259,6 +259,9 @@ static constexpr uint64_t kFbX11SurrDeferredUsec = 15000;
 // queue-drain headroom before the commit lands (a fixed 15ms floor made
 // single-deletion replacements visibly flicker).
 static constexpr uint64_t kWaylandNativeCommitDelayPerBsUsec = 6000;
+// Firefox multi-char replacements: renderer-side drain per injected BS
+// (see the sleep block in the uinput replacement path).
+static constexpr uint64_t kFirefoxMultiBsDelayPerBsUsec = 20000;
 static constexpr uint64_t kWaylandNativeCommitDelayMaxUsec = 30000;
 // Floor applied on the next commit after loopbacks were slow once.
 static constexpr uint64_t kSlowLoopbackCommitDelayFloorUsec = 15000;
@@ -1675,8 +1678,14 @@ void SKeyState::refreshAppMode() {
 // (as opposed to web content). Two detection paths: the native Url capability
 // (Wayland) and the AT-SPI2 accessibility monitor (X11).
 bool SKeyState::inChromiumAddressBar() const {
-  // Method 1: Wayland — Chrome sends CapabilityFlag::Url natively
-  if (ic_->capabilityFlags().test(CapabilityFlag::Url)) {
+  // Method 1: Wayland — Chrome sends CapabilityFlag::Url natively.  The
+  // capability itself is generic (Firefox also sends it for ITS URL bar),
+  // and the omnibox machinery behind this flag (autofill-dismissal BS,
+  // FullReplace heuristics) is Chrome-specific — corrupts Firefox's URL
+  // bar ("mất chữ đằng trước", 2026-09-15).  Require a real Chromium
+  // browser; Firefox's URL bar goes through the normal paths.
+  if (isChromiumCached() &&
+      ic_->capabilityFlags().test(CapabilityFlag::Url)) {
     return true;
   }
   // Method 2: X11 — use AT-SPI2 accessibility monitor.
@@ -1995,6 +2004,16 @@ bool SKeyState::a11yBrowserNonEntryNarrow() const {
          !mon->isFocusSingleLine() && !mon->isFocusMultiline();
 }
 
+bool SKeyState::a11yGoogleDocsFocused() const {
+  // No freshness gate: clicking cells inside the Docs grid fires NO a11y
+  // focus events (the grid combo box keeps focus), so the snapshot can be
+  // minutes old when typing starts.  The isFirefoxOrSnap() call-site gate
+  // already protects against cross-app staleness, and Firefox fires fresh
+  // focus events on page navigation which recompute the flag.
+  auto *mon = engine_->a11yMonitor();
+  return mon && mon->googleDocsDocumentFocused();
+}
+
 bool SKeyState::a11yChromiumTerminal() const {
   // Integrated terminal inside a standalone Chromium app (antigravity-ide):
   // fresh a11y snapshot of a single-line text entry NOT inside a web
@@ -2118,6 +2137,17 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
       SKEY_DEBUG() << "Auto: Google Sheets cell editor → Uinput";
       return SKeyOutputMode::Uinput;
     }
+  }
+
+  // Google Docs-suite pages in Firefox (Sheets / Docs / Slides by document
+  // title): Gecko's canvas editor provides surrounding text, but multi-char
+  // tone replacements drop consecutive deletions on these heavy pages
+  // ("chào các bạn" → "chào các baạn", 2026-09-15) — route to Uinput like
+  // Chrome's Sheets.  Must run before the caps-based decisions: bare caps
+  // (0x72) fall through to SurroundingText here.
+  if (isFirefoxOrSnap() && a11yGoogleDocsFocused()) {
+    SKEY_DEBUG() << "Auto: Google Docs page (Firefox) → Uinput";
+    return SKeyOutputMode::Uinput;
   }
 
   // Sticky Uinput: Chromium browsers (e.g. Google Sheets) may initially
@@ -3176,6 +3206,15 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     sleepUsec = std::max(sleepUsec, static_cast<uint64_t>(realBs) *
                                         kWaylandNativeCommitDelayPerBsUsec);
   }
+  if (realBs >= 2 && isWayland() && isFirefoxOrSnap()) {
+    // Firefox's renderer applies injected BS asynchronously — the sync
+    // anchor proves dispatch to the browser process, not renderer
+    // application.  With two consecutive deletes the commit landed
+    // BETWEEN them ("bạn" → "baạ" on Google Sheets, 2026-09-15).  Scale
+    // the drain headroom per deletion for multi-char replacements.
+    sleepUsec = std::max(sleepUsec, static_cast<uint64_t>(realBs) *
+                                        kFirefoxMultiBsDelayPerBsUsec);
+  }
   if (realBs > 0 && !isWayland() && isOfficeSuiteApp(appProgram())) {
     // X11 office suites (LibreOffice VCL, WPS, OnlyOffice): injected keys
     // are queued and processed ASYNCHRONOUSLY by VCL — the sync anchor
@@ -3803,6 +3842,8 @@ void SKeyState::resetForCellChange() {
   deferredCommitText_.clear();
   deferredPrefix_.clear();
   pendingFlushSuffix_.clear();
+  deferredNativeDeleteLen_ = 0;
+  deferredDeletedTail_.clear();
   addrBarLastTriggerKey_ = 0;
   addrBarTriggerDeadline_ = 0;
   addrBarTriggerKeyTime_ = 0;
@@ -3869,11 +3910,14 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // Uinput yet.
   bool a11yNonEntry = a11yBrowserNonEntryNarrow();
   bool a11yTerminal = a11yChromiumTerminal();
+  bool a11yDocs = a11yGoogleDocsFocused();
   bool triggerHit =
       modeDecisionPending_ || a11yFreshWebEditor() ||
       (a11yNonEntry &&
        (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)) ||
       (a11yTerminal &&
+       (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)) ||
+      (a11yDocs &&
        (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput));
   // Back-off: the a11y triggers above re-evaluate the mode at every word
   // boundary even when the verdict is stable (measured 31 detectAutoMode
@@ -5015,7 +5059,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       // 2026-09-15).  Chromium excluded — its surrounding cache stays
       // stale after BS storms / key re-delivery, and its replace path's
       // stale-cache fallback + cell tracker already cover those cases.
-      if (useSurroundingText() && !useUinputMode() && !isChromiumCached() &&
+      if (useSurroundingText() && !isChromiumCached() &&
           !viet_.getRawInput().empty() && surrPrevKeyUsec_ > 0 &&
           now(CLOCK_MONOTONIC) - surrPrevKeyUsec_ >= kSurrVerifyQuietUsec) {
         const auto &surrounding = ic_->surroundingText();
@@ -5886,11 +5930,15 @@ bool SKeyState::hasDeferredCommitPending() const {
 
 void SKeyState::scheduleDeferredCommit(const std::string &text,
                                        const std::string &stablePrefix,
-                                       uint64_t delayUsec) {
+                                       uint64_t delayUsec,
+                                       int nativeDeleteLen,
+                                       const std::string &deletedTail) {
   deferredCommitTimer_.reset();
   deferredCommitText_ = text;
   deferredPrefix_ = stablePrefix;
   pendingFlushSuffix_.clear();
+  deferredNativeDeleteLen_ = nativeDeleteLen;
+  deferredDeletedTail_ = deletedTail;
 
   // Delay after BackSpace to ensure the app has processed the BS key
   // events before we commit new text via commitString.
@@ -5939,6 +5987,7 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
       [this, postMs](EventSourceTime *, uint64_t) {
         SKEY_DEBUG() << "Surr deferred: timer commit '" << deferredCommitText_
                      << "'";
+        repairNativeDeletes();
         std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
         deferredCommitText_.clear();
         deferredPrefix_.clear();
@@ -5995,6 +6044,7 @@ void SKeyState::flushDeferredCommit() {
               EventSourceTime *, uint64_t) {
             SKEY_DEBUG() << "Surr deferred: delayed flush commit '"
                          << deferredCommitText_ << "'";
+            repairNativeDeletes();
             std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
             deferredCommitText_.clear();
             deferredPrefix_.clear();
@@ -6012,6 +6062,7 @@ void SKeyState::flushDeferredCommit() {
 
   // Safe to commit now — BS has been processed.
   SKEY_DEBUG() << "Surr deferred: flush commit '" << deferredCommitText_ << "'";
+  repairNativeDeletes();
   std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
   deferredCommitText_.clear();
   deferredPrefix_.clear();
@@ -6031,6 +6082,7 @@ void SKeyState::forceFlushDeferredCommit() {
   // stale deferred commits from corrupting new word composition.
   SKEY_DEBUG() << "Surr deferred: force flush commit '" << deferredCommitText_
                << "'";
+  repairNativeDeletes();
   std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
   deferredCommitText_.clear();
   deferredPrefix_.clear();
@@ -6038,6 +6090,65 @@ void SKeyState::forceFlushDeferredCommit() {
   pendingFlushSuffix_.clear();
   deferredCommitTimer_.reset();
   commitText(toCommit);
+}
+
+int SKeyState::missingNativeDeleteChars() {
+  if (deferredNativeDeleteLen_ <= 0 || deferredDeletedTail_.empty())
+    return 0;
+  const auto &surr = ic_->surroundingText();
+  if (!surr.isValid())
+    return -1; // cannot verify — caller commits as-is
+  const int tailLen = static_cast<int>(utf8::length(deferredDeletedTail_));
+  // Longest suffix of the deleted tail still present before the cursor =
+  // the number of chars the app failed to delete.
+  for (int k = tailLen; k >= 1; --k) {
+    size_t start = deferredDeletedTail_.size();
+    int chars = 0;
+    while (start > 0 && chars < k) {
+      --start;
+      while (start > 0 &&
+             (static_cast<unsigned char>(deferredDeletedTail_[start]) & 0xC0) ==
+                 0x80)
+        --start;
+      ++chars;
+    }
+    if (surroundingCacheEndsWith(surr, deferredDeletedTail_.substr(start)))
+      return k;
+  }
+  return 0; // nothing of the tail remains — deletes fully applied
+}
+
+void SKeyState::repairNativeDeletes() {
+  if (deferredNativeDeleteLen_ <= 0)
+    return;
+  bool confirmedMissing = false;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    const int missing = missingNativeDeleteChars();
+    if (missing <= 0)
+      break;
+    if (!confirmedMissing) {
+      // The first "missing" sighting may be a stale push that was in
+      // flight while our deletes landed — give the app's real
+      // post-delete push time to supersede it before touching the text
+      // (an over-eager re-delete eats chars BEFORE the word, the
+      // Firefox URL-bar corruption).
+      usleep(20000);
+      confirmedMissing = true;
+      continue; // re-check without deleting
+    }
+    for (int i = 0; i < missing; ++i) {
+      // Deliberately do NOT mirror the delete into the local surrounding
+      // cache: the next verification must read the state the APP pushed
+      // back, not our own edit (mirroring made the re-check trivially
+      // pass while Firefox had still dropped the deletes).
+      ic_->deleteSurroundingText(-1, 1);
+    }
+    SKEY_DEBUG() << "Surr: native delete missing " << missing
+                 << " char(s), re-deleted (attempt " << attempt << ")";
+    usleep(20000);
+  }
+  deferredNativeDeleteLen_ = 0;
+  deferredDeletedTail_.clear();
 }
 
 uint64_t SKeyState::x11ChromiumSurrDelayUsec() const {
@@ -6277,8 +6388,12 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           if (!addedPart.empty()) {
             if (isWayland() && (isChromiumCached() || isFirefoxOrSnap())) {
               SKEY_DEBUG() << "Surr: deferred commit '" << addedPart << "'";
+              // Pass the deletion state so the commit-time verification
+              // can re-issue dropped deletes (Firefox/Docs applies only
+              // one of two consecutive delete_surrounding_text calls).
               scheduleDeferredCommit(addedPart, stablePrefix,
-                                     kNativeDeleteDeferredUsec);
+                                     kNativeDeleteDeferredUsec, deleteLen,
+                                     deletedPart);
             } else {
               SKEY_DEBUG() << "Surr: direct commit '" << addedPart << "'";
               commitText(addedPart);
