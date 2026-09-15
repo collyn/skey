@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: fcitx5-skey 0.8.3\n"
 "Report-Msgid-Bugs-To: https://github.com/collyn/skey/issues\n"
-"POT-Creation-Date: 2026-09-14 23:25+0700\n"
+"POT-Creation-Date: 2026-09-15 18:05+0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -32,7 +32,7 @@ msgstr ""
 msgid "Lưu"
 msgstr ""
 
-#: src/settings/app_delay_dialog.cpp:76 src/settings/app_modes_tab.cpp:527
+#: src/settings/app_delay_dialog.cpp:76 src/settings/app_modes_tab.cpp:528
 msgid "Hủy"
 msgstr ""
 
@@ -87,15 +87,15 @@ msgstr ""
 msgid "RT học được: chưa có dữ liệu"
 msgstr ""
 
-#: src/settings/app_delay_dialog.cpp:132
+#: src/settings/app_delay_dialog.cpp:134
 msgid "Bỏ ghi đè, trở về giá trị tự động hiện tại."
 msgstr ""
 
-#: src/settings/app_delay_dialog.cpp:161
+#: src/settings/app_delay_dialog.cpp:168
 msgid "Cảnh báo: chờ trước commit dưới 10ms có thể mất chữ."
 msgstr ""
 
-#: src/settings/app_delay_dialog.cpp:165
+#: src/settings/app_delay_dialog.cpp:172
 msgid "Nhịp 0ms có thể mất chữ trên Wayland."
 msgstr ""
 
@@ -118,7 +118,7 @@ msgstr ""
 msgid "Chế độ xuất"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:61 src/settings/app_modes_tab.cpp:361
+#: src/settings/app_modes_tab.cpp:61 src/settings/app_modes_tab.cpp:362
 #: src/settings/dict_tab.cpp:190 src/settings/macro_tab.cpp:68
 msgid "Xóa"
 msgstr ""
@@ -145,27 +145,27 @@ msgstr ""
 msgid "(IBus app)"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:354
+#: src/settings/app_modes_tab.cpp:355
 msgid "Chỉnh tay độ trễ chèn chữ (X11/Wayland) cho ứng dụng này."
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:507
+#: src/settings/app_modes_tab.cpp:508
 msgid "Thêm ứng dụng mới"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:515
+#: src/settings/app_modes_tab.cpp:516
 msgid "vd: firefox, tabby, code"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:516
+#: src/settings/app_modes_tab.cpp:517
 msgid "Tên ứng dụng:"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:523 src/settings/general_tab.cpp:41
+#: src/settings/app_modes_tab.cpp:524 src/settings/general_tab.cpp:43
 msgid "Chế độ xuất:"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:526 src/settings/dict_tab.cpp:49
+#: src/settings/app_modes_tab.cpp:527 src/settings/dict_tab.cpp:49
 #: src/settings/dict_tab.cpp:114 src/settings/dict_tab.cpp:124
 #: src/settings/dict_tab.cpp:248 src/settings/dict_tab.cpp:269
 #: src/settings/dict_tab.cpp:283 src/settings/macro_tab.cpp:96
@@ -320,95 +320,108 @@ msgstr ""
 msgid "%1 từ (✦ = từ cá nhân)"
 msgstr ""
 
-#: src/settings/general_tab.cpp:34
+#: src/settings/general_tab.cpp:36
 msgid "Kiểu gõ:"
 msgstr ""
 
-#: src/settings/general_tab.cpp:58
+#: src/settings/general_tab.cpp:60
 msgid "Bảng mã:"
 msgstr ""
 
-#: src/settings/general_tab.cpp:61
+#: src/settings/general_tab.cpp:63
 msgid "Tiếng Việt"
 msgstr ""
 
-#: src/settings/general_tab.cpp:62
+#: src/settings/general_tab.cpp:64
 msgid "English"
 msgstr ""
 
-#: src/settings/general_tab.cpp:63
+#: src/settings/general_tab.cpp:65
 msgid "Ngôn ngữ:"
 msgstr ""
 
-#: src/settings/general_tab.cpp:67
+#: src/settings/general_tab.cpp:69
 msgid "Nhấn tổ hợp phím để thay đổi, Backspace để gỡ bỏ"
 msgstr ""
 
-#: src/settings/general_tab.cpp:68
+#: src/settings/general_tab.cpp:70
 msgid "Phím chuyển bộ gõ:"
 msgstr ""
 
-#: src/settings/general_tab.cpp:72
+#: src/settings/general_tab.cpp:74
 msgid "Phím tắt để mở menu chế độ (mặc định: `), Backspace để gỡ bỏ"
 msgstr ""
 
-#: src/settings/general_tab.cpp:73
+#: src/settings/general_tab.cpp:75
 msgid "Phím menu chế độ:"
 msgstr ""
 
-#: src/settings/general_tab.cpp:89
+#: src/settings/general_tab.cpp:91
 msgid "Gõ w thành ư"
 msgstr ""
 
-#: src/settings/general_tab.cpp:91
+#: src/settings/general_tab.cpp:93
 msgid "Chỉ Telex: gõ phím w đơn lẻ sẽ ra chữ ư."
 msgstr ""
 
-#: src/settings/general_tab.cpp:95
+#: src/settings/general_tab.cpp:97
 msgid "Gõ ][ thành ư ơ"
 msgstr ""
 
-#: src/settings/general_tab.cpp:97
+#: src/settings/general_tab.cpp:99
 msgid "Chỉ Telex: gõ [ ra ơ và ] ra ư (giống UniKey)."
 msgstr ""
 
-#: src/settings/general_tab.cpp:101
+#: src/settings/general_tab.cpp:103
 msgid "Đánh dấu tự do"
 msgstr ""
 
-#: src/settings/general_tab.cpp:105
+#: src/settings/general_tab.cpp:107
 msgid "Tự động khôi phục"
 msgstr ""
 
-#: src/settings/general_tab.cpp:108
+#: src/settings/general_tab.cpp:110
 msgid "Dùng từ điển"
 msgstr ""
 
-#: src/settings/general_tab.cpp:110
+#: src/settings/general_tab.cpp:112
 msgid ""
 "Tự động khôi phục kiểm tra từ thật trong từ điển tiếng Việt thay vì luật âm "
 "tiết (khôi phục cả những âm tiết hợp lệ nhưng không phải từ, ví dụ \"lước\")."
 msgstr ""
 
-#: src/settings/general_tab.cpp:116
+#: src/settings/general_tab.cpp:118
 msgid "Hiện preedit"
 msgstr ""
 
-#: src/settings/general_tab.cpp:119
+#: src/settings/general_tab.cpp:121
 msgid "Ghi log debug"
 msgstr ""
 
-#: src/settings/general_tab.cpp:123
+#: src/settings/general_tab.cpp:125
 msgid "Tự động tối ưu delay theo app"
 msgstr ""
 
-#: src/settings/general_tab.cpp:125
+#: src/settings/general_tab.cpp:127
 msgid ""
 "Học thời gian phản hồi thật của từng ứng dụng khi gõ (chế độ Uinput) rồi tự "
 "chọn độ trễ chèn chữ phù hợp cho lần gõ kế tiếp. Có hiệu lực từ lần chuyển "
 "cửa sổ kế tiếp.\n"
 "Dữ liệu lưu ở ~/.config/fcitx5/conf/skey-app-delays.conf — xoá tệp đó để "
 "quên dữ liệu đã học."
+msgstr ""
+
+#: src/settings/general_tab.cpp:141
+msgid "Bật A11y (trợ năng)"
+msgstr ""
+
+#: src/settings/general_tab.cpp:149
+msgid ""
+"SKey cần cây trợ năng (A11y) của trình duyệt để theo dõi con trỏ — cần cho "
+"Google Sheets (đổi ô), thanh địa chỉ và các ô nhập trên web. Khi bật, mỗi "
+"lần khởi động SKey sẽ kích hoạt khóa gsettings \"toolkit-accessibility\" "
+"(toàn hệ thống) để Chrome/Chromium dựng cây trợ năng — trình duyệt chỉ đọc "
+"khóa này lúc khởi động. Tắt nếu bạn tự quản lý trợ năng của hệ thống."
 msgstr ""
 
 #: src/settings/hotkey_edit.cpp:32

@@ -188,6 +188,14 @@ private:
     uint64_t cellSelectionSerial_ = 0;
     SheetsCellSnapshot sheetsCellSnapshot_;
     bool checkCellSelection();
+    // Shared reset body for cell-change detection (a11y path and the
+    // blind caret-jump fallback).  Clears the in-flight word and all
+    // pending uinput/deferred commit machinery.
+    void resetForCellChange();
+    // IME caret rect at the previous key (see kSheetsCaretJumpX/Y).
+    // -1 = no baseline yet (fresh focus/IC).
+    int lastKeyCaretX_ = -1;
+    int lastKeyCaretY_ = -1;
     // CLOCK_MONOTONIC timestamp of the most recent activate() — the
     // first word after a focus switch gets extra settle headroom
     // (kFirstWordSettleUsec) because the renderer is still settling.
@@ -327,6 +335,10 @@ private:
     // key against the surrounding text.
     bool surrResetTentative_ = false;
     uint64_t surrLastKeyUsec_ = 0; // last keyEvent time (CLOCK_MONOTONIC)
+    // keyEvent time of the key BEFORE the current one — the Surr-mode
+    // settled-mismatch check (kSurrVerifyQuietUsec) compares against this,
+    // not surrLastKeyUsec_ (already updated for the current key).
+    uint64_t surrPrevKeyUsec_ = 0;
     bool addrBarDidFullReplace_ = false; // FullReplace done, reset engine on commit
     bool addrBarHadFirstWord_ = false;  // First word already done, block fullReplace
     bool addrBarKeepState_ = false;     // Keep-state active, reset engine on BS

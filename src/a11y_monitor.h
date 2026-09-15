@@ -186,6 +186,14 @@ public:
         debug_.store(enabled, std::memory_order_relaxed);
     }
 
+    /// When true (default), the monitor sets the system-wide
+    /// toolkit-accessibility gsettings key at startup so Chromium-family
+    /// browsers expose their a11y trees (Chrome reads it at launch only).
+    /// Driven by the engine's AutoEnableA11y config option.
+    void setAutoEnableA11y(bool enabled) {
+        autoEnableA11y_.store(enabled, std::memory_order_relaxed);
+    }
+
 private:
     void threadFunc();
 
@@ -195,6 +203,7 @@ private:
     std::atomic<bool> browserUIFocused_{false};
     std::atomic<bool> passwordFocused_{false};
     std::atomic<bool> debug_{false};
+    std::atomic<bool> autoEnableA11y_{true};
     // Snapshot of the last focus event (see getters above).
     std::atomic<bool> focusInWebDoc_{false};
     std::atomic<int> focusRole_{0};

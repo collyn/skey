@@ -312,6 +312,23 @@ static constexpr uint64_t kMultiBsSleepFloorUsec = 20000;
 // snapshot instead.
 static constexpr uint64_t kA11ySnapshotMaxAgeUsec = 400000;
 
+// Blind-a11y cell-change fallback (Wayland Uinput, Chromium browser): the
+// first key after the user clicks another Google Sheets cell teleports the
+// IME caret.  In-cell typing advances it a few px per char and the uinput
+// BS loopback moves it back by one char, so these per-axis jumps can only
+// mean the caret moved to another cell (or a click inside the text — which
+// legitimately ends the tracked word).  Sheets default cell ≈100px wide,
+// rows ≈21px tall.  Inert when the app never sends cursor rects.
+static constexpr int kSheetsCaretJumpX = 64;
+static constexpr int kSheetsCaretJumpY = 16;
+// Surr-mode model verification: a surrounding-text mismatch at a letter
+// key only proves the caret moved when the cache has had time to settle —
+// right after our own commits the app may simply not have pushed the
+// updated surrounding yet.  Below this quiet window the mismatch is
+// treated as lag and the replace path's existing stale-cache fallback
+// handles it.
+static constexpr uint64_t kSurrVerifyQuietUsec = 250000;
+
 static bool isUtf8ContinuationByte(char ch) {
   return (static_cast<unsigned char>(ch) & 0xC0) == 0x80;
 }
@@ -923,6 +940,7 @@ SKeyEngine::SKeyEngine(Instance *instance)
   // Both address-bar modes (Preedit / No Vietnamese) rely on it.
   a11yMonitor_ = std::make_unique<A11yMonitor>();
   a11yMonitor_->setDebug(*config_.debug);
+  a11yMonitor_->setAutoEnableA11y(*config_.autoEnableA11y);
   a11yMonitor_->start();
 
   SKEY_INFO() << "SKey Vietnamese Input Method loaded";
@@ -1421,8 +1439,10 @@ void SKeyEngine::reloadConfig() {
   }
   readAsIni(config_, "conf/skey.conf");
   g_skeyDebugEnabled = readDebugFromFile();
-  if (a11yMonitor_)
+  if (a11yMonitor_) {
     a11yMonitor_->setDebug(g_skeyDebugEnabled);
+    a11yMonitor_->setAutoEnableA11y(*config_.autoEnableA11y);
+  }
   // AutoDelay: load learned per-app statistics only while the option is
   // on — zero I/O otherwise.  reloadConfig() runs on every activate, so a
   // mid-session toggle takes effect at the next focus change.  The merge
@@ -3686,6 +3706,10 @@ void SKeyState::reset() {
     committedLen_ = 0;
   }
   modeCacheValid_ = false;
+  // The caret baseline belongs to the previous focus — a fresh focus must
+  // not compare against a foreign rect (blind cell-change fallback).
+  lastKeyCaretX_ = -1;
+  lastKeyCaretY_ = -1;
   cachedIsChromium_ = -1;
   cachedIsFirefoxOrSnap_ = -1;
   cachedIsTerminalApp_ = -1;
@@ -3702,7 +3726,11 @@ bool SKeyState::checkCellSelection() {
     const auto serial = mon->cellSelectionSerial();
     bool changed = serial != cellSelectionSerial_;
     cellSelectionSerial_ = serial;
-    if (isChromiumBrowser(appProgram()) && useUinputMode()) {
+    // Cell-change detection applies to BOTH output modes: the a11y cell
+    // tracker must also fire when the user overrides Chrome to
+    // Surrounding Text (the stale-word replace corrupts the new cell the
+    // same way it does in Uinput).
+    if (isChromiumBrowser(appProgram()) && useSurroundingText()) {
       std::string identity, cell;
       if (mon->currentSheetsCell(identity, cell)) {
         // Async PropertyChange can arrive AFTER g/o of the new cell. Never
@@ -3715,32 +3743,70 @@ bool SKeyState::checkCellSelection() {
       if (changed) {
         SKEY_DEBUG() << "CellSelection: reset word '" << viet_.getComposed()
                      << "' serial=" << serial;
-        viet_.reset();
-        committedLen_ = 0;
-        clearLastWord();
-        surrResetTentative_ = false;
-        bufferedUinputKeys_.clear();
-        uinputCommitTimer_.reset();
-        uinputSafetyTimer_.reset();
-        uinputCycleTimer_.reset();
-        uinputDeleting_ = false;
-        pendingUinputCommit_.clear();
-        expectedUinputBackspaces_ = 0;
-        seenUinputBackspaces_ = 0;
-        uinputPendingFinalLen_ = 0;
-        deferredCommitTimer_.reset();
-        deferredCommitText_.clear();
-        deferredPrefix_.clear();
-        pendingFlushSuffix_.clear();
-        addrBarLastTriggerKey_ = 0;
-        addrBarTriggerDeadline_ = 0;
-        addrBarTriggerKeyTime_ = 0;
-        addrBarGuardArmedUsec_ = 0;
+        resetForCellChange();
         return true;
+      }
+
+      // Fallback when the a11y pipeline is blind (Chrome never registered
+      // its tree — e.g. CachyOS/KDE Wayland): the first key after the user
+      // clicks another cell teleports the IME caret.  In-cell typing moves
+      // it a few px per char and the uinput BS loopback one char back, so
+      // a jump of cell distance between two keys means the focus moved.
+      // Requires a word in flight — otherwise there is nothing to leak
+      // into the new cell.  Inert when the app never sends cursor rects
+      // (Wayland Chrome sends none — the a11y path above is the real
+      // channel there).  Uinput only: Surr mode has its own surrounding-
+      // based verification.
+      if (useUinputMode() && isWayland() && !mon->isFocusSnapshotFresh(5000000) &&
+          !viet_.getRawInput().empty()) {
+        const int prevX = lastKeyCaretX_, prevY = lastKeyCaretY_;
+        const auto &rect = ic_->cursorRect();
+        const int x = rect.left(), y = rect.top();
+        // Per-key rect trace while blind — proves whether Chrome sends
+        // caret rects on Wayland at all (fallback viability).
+        SKEY_DEBUG() << "Sheets: blind caret rect=(" << x << "," << y
+                     << ") prev=(" << prevX << "," << prevY << ")";
+        const bool jumped =
+            prevX >= 0 &&
+            (std::abs(x - prevX) >= kSheetsCaretJumpX ||
+             std::abs(y - prevY) >= kSheetsCaretJumpY);
+        lastKeyCaretX_ = x;
+        lastKeyCaretY_ = y;
+        if (jumped) {
+          SKEY_DEBUG() << "Sheets: blind caret jump (" << prevX << "," << prevY
+                       << ")→(" << x << "," << y << ") — reset word '"
+                       << viet_.getComposed() << "'";
+          resetForCellChange();
+          return true;
+        }
       }
     }
   }
   return false;
+}
+
+void SKeyState::resetForCellChange() {
+  viet_.reset();
+  committedLen_ = 0;
+  clearLastWord();
+  surrResetTentative_ = false;
+  bufferedUinputKeys_.clear();
+  uinputCommitTimer_.reset();
+  uinputSafetyTimer_.reset();
+  uinputCycleTimer_.reset();
+  uinputDeleting_ = false;
+  pendingUinputCommit_.clear();
+  expectedUinputBackspaces_ = 0;
+  seenUinputBackspaces_ = 0;
+  uinputPendingFinalLen_ = 0;
+  deferredCommitTimer_.reset();
+  deferredCommitText_.clear();
+  deferredPrefix_.clear();
+  pendingFlushSuffix_.clear();
+  addrBarLastTriggerKey_ = 0;
+  addrBarTriggerDeadline_ = 0;
+  addrBarTriggerKeyTime_ = 0;
+  addrBarGuardArmedUsec_ = 0;
 }
 
 void SKeyState::keyEvent(KeyEvent &keyEvent) {
@@ -3748,6 +3814,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
+  surrPrevKeyUsec_ = surrLastKeyUsec_;
   surrLastKeyUsec_ = now(CLOCK_MONOTONIC);
 
   // Refresh per-app mode in case IC is shared across apps
@@ -4937,6 +5004,32 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         viet_.clearEnglishBypass();
       }
 
+      // Surr-mode model verification: for apps that maintain surrounding
+      // text, it IS the screen state.  When it is valid but no longer ends
+      // with the word being tracked, and the cache has had time to settle
+      // (not merely lagging behind our own commits), the caret moved away
+      // from the word — e.g. a Google Sheets cell click, where the click
+      // fires no fcitx event at all.  Reset the model so this key starts a
+      // fresh word instead of replacing text that is no longer at the
+      // caret (Firefox/Sheets: cell 2 got "oxg" from a stale-word replace,
+      // 2026-09-15).  Chromium excluded — its surrounding cache stays
+      // stale after BS storms / key re-delivery, and its replace path's
+      // stale-cache fallback + cell tracker already cover those cases.
+      if (useSurroundingText() && !useUinputMode() && !isChromiumCached() &&
+          !viet_.getRawInput().empty() && surrPrevKeyUsec_ > 0 &&
+          now(CLOCK_MONOTONIC) - surrPrevKeyUsec_ >= kSurrVerifyQuietUsec) {
+        const auto &surrounding = ic_->surroundingText();
+        if (surrounding.isValid() &&
+            !surroundingCacheEndsWith(surrounding, viet_.getComposed())) {
+          SKEY_DEBUG() << "Surr: word '" << viet_.getComposed()
+                       << "' not at caret, resetting model";
+          viet_.reset();
+          committedLen_ = 0;
+          clearLastWord();
+          surrResetTentative_ = false;
+        }
+      }
+
       // Flush any pending address bar replacement before processing
       // a new key, so the screen state matches viet_'s expectation.
       flushAddrBarReplacement();
@@ -5216,6 +5309,20 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             }
             committedLen_ = static_cast<int>(utf8::length(newComposed));
             return;
+          }
+          // First letter of a word in Chromium Surr mode (Wayland): Chrome
+          // drops IM commits that arrive while its editor is still opening
+          // after a focus switch — the first click's word never appears
+          // ("phải click 2 lần mới ra chữ", 2026-09-15).  Forward the key
+          // RAW instead: the real keystroke opens the editor AND inserts
+          // the char through Chrome's key pipeline, exactly like the
+          // Uinput append path.  Subsequent letters commit normally (the
+          // editor is open by then).  Address bar excluded (omnibox has
+          // its own machinery).
+          if (isWayland() && isChromiumCached() && !useUinputMode() &&
+              !inChromiumAddressBar() && oldComposed.empty()) {
+            committedLen_ = static_cast<int>(utf8::length(newComposed));
+            return; // forward raw key, unfiltered
           }
           // SurroundingText path in Chromium: set trigger-key guard so
           // X11 re-delivery after forwardKey-induced focus cycles is dropped.

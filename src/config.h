@@ -58,6 +58,9 @@ FCITX_CONFIGURATION(
     Option<bool> dict{this, "Dict",
                       _("Dùng từ điển"), false};
     Option<bool> showPreedit{this, "ShowPreedit", _("Hiện preedit"), true};
+    Option<bool> autoEnableA11y{this, "AutoEnableA11y",
+                                _("Tự bật trợ năng (A11y) cho trình duyệt"),
+                                true};
     Option<SKeyChromiumAddressBarMode> chromiumAddressBarMode{
         this, "ChromiumAddressBarMode",
         _("Thanh địa chỉ Chromium"), SKeyChromiumAddressBarMode::Auto};

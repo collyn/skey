@@ -33,6 +33,7 @@ struct SKeyConfig {
     bool autoRestore  = true;
     bool dict         = false;  // auto-restore checks the word list, not rules
     bool showPreedit  = true;
+    bool autoEnableA11y = true; // auto-set toolkit-accessibility at start
     std::string chromiumAddressBarMode = "Auto";  // "Auto", "Uinput", "Surrounding Text", "Preedit", "No Vietnamese"
     bool debug        = false;
     bool autoDelay    = false;  // learn per-app uinput round trip, seed commit delay
