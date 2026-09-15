@@ -82,10 +82,27 @@ static std::string getAtspiBusAddress() {
     dbus_error_init(&err);
     DBusConnection *session = dbus_bus_get(DBUS_BUS_SESSION, &err);
     if (session && !dbus_error_is_set(&err)) {
-        DBusMessage *msg = dbus_message_new_method_call(
-            "org.a11y.atspi.Bus", "/org/a11y/atspi/bus",
-            "org.a11y.atspi.Bus", "GetAddress");
-        if (msg) {
+        // Two launcher generations serve GetAddress on the session bus:
+        //  - org.a11y.atspi.Bus /org/a11y/atspi/bus (older at-spi2-core)
+        //  - org.a11y.Bus /org/a11y/bus with the org.a11y.Bus interface
+        //    (current at-spi2-core — Mint 22.3 only serves this one, and
+        //    asking the old name there fails, blinding the monitor,
+        //    2026-09-15).
+        struct {
+            const char *name;
+            const char *path;
+            const char *iface;
+        } const variants[] = {
+            {"org.a11y.atspi.Bus", "/org/a11y/atspi/bus",
+             "org.a11y.atspi.Bus"},
+            {"org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus"},
+        };
+        for (const auto &v : variants) {
+            dbus_error_free(&err);
+            dbus_error_init(&err);
+            DBusMessage *msg = dbus_message_new_method_call(
+                v.name, v.path, v.iface, "GetAddress");
+            if (!msg) continue;
             DBusMessage *reply = dbus_connection_send_with_reply_and_block(
                 session, msg, 2000, &err);
             dbus_message_unref(msg);
