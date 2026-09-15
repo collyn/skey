@@ -2926,6 +2926,14 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags) {
         std::min(ov->paceMs, skey::kMaxPaceMs)) *
                1000;
   }
+  if (paceUsec == 1000 && isWayland() && isFirefoxOrSnap() && count >= 3) {
+    // Firefox's renderer drops consecutive injected BS under load on heavy
+    // canvas pages (Sheets: "bạn" → "baạn" when typing fast — the echo
+    // only proves dispatch, not application, 2026-09-15).  Pace them so
+    // each deletion lands before the next BS arrives.  Manual per-app
+    // overrides win over this default.
+    paceUsec = 10000;
+  }
   int32_t count32 = count;
   uint32_t textLen = 0;
   std::vector<char> msg(sizeof(int32_t) + sizeof(uint32_t) * 3); // 16 bytes
@@ -6391,9 +6399,16 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
               // Pass the deletion state so the commit-time verification
               // can re-issue dropped deletes (Firefox/Docs applies only
               // one of two consecutive delete_surrounding_text calls).
+              // Chromium excluded: its surrounding pushes cannot be
+              // trusted to ack deletes (chatgpt.com on Fedora kept
+              // serving the stale pre-delete text — the repair then
+              // over-deleted "chà" → "ào" and blocked 60ms per tone key,
+              // 2026-09-15).
               scheduleDeferredCommit(addedPart, stablePrefix,
-                                     kNativeDeleteDeferredUsec, deleteLen,
-                                     deletedPart);
+                                     kNativeDeleteDeferredUsec,
+                                     isFirefoxOrSnap() ? deleteLen : 0,
+                                     isFirefoxOrSnap() ? deletedPart
+                                                       : std::string());
             } else {
               SKEY_DEBUG() << "Surr: direct commit '" << addedPart << "'";
               commitText(addedPart);
@@ -6487,6 +6502,18 @@ void SKeyState::armUinputSafetyTimer() {
   auto &timing = uinputTiming();
   uint64_t budget =
       uinputSafetyRetried_ ? timing.safetyRetryUsec : timing.safetyTimeoutUsec;
+  // Slow-loopback apps (X11 terminals like sterm: 30-100ms per injected BS
+  // echo) need a budget that scales with the batch — the fixed 150ms fired
+  // mid-stream and force-committed into still-draining deletions, then
+  // stalled 600ms on the retry extension ("rất delay và hay sai chữ",
+  // sterm 2026-09-15).  The sync completes on the echoes themselves; this
+  // only prevents the premature force-commit.
+  if (!isWayland() && expectedUinputBackspaces_ > 0) {
+    const uint64_t perBs = std::min<uint64_t>(bsRtEwma_ * 2, 150000);
+    budget += static_cast<uint64_t>(expectedUinputBackspaces_) * perBs;
+    if (budget > 800000)
+      budget = 800000;
+  }
   uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
       CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + budget, 0,
       [this](EventSourceTime *, uint64_t) {
