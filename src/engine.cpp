@@ -463,13 +463,13 @@ static std::string userPkgDataDir() {
 // Matches actual Chromium-family browser programs.
 // Used ONLY for address-bar detection — electron/tabby must NOT match here
 // or non-browser Electron apps are misidentified as Chrome address bar.
-// Office suites with broken SurroundingText implementations (X11-only
-// routing exception, user decision 2026-09-08): LibreOffice's VCL and
-// WPS/OnlyOffice process the fallback's forwarded BS asynchronously and
-// type wrong through Surr.  The a11y signals cannot distinguish them
-// from healthy apps (Telegram has the identical invalid-surrounding
-// signature), so these are name-matched — the pragmatic exception to
-// the input-driven philosophy.
+// Office suites with broken SurroundingText implementations (routing
+// exception on both platforms, user decision 2026-09-08 X11 / 2026-09-16
+// Wayland): LibreOffice's VCL and WPS/OnlyOffice process the fallback's
+// forwarded BS asynchronously and type wrong through Surr.  The a11y
+// signals cannot distinguish them from healthy apps (Telegram has the
+// identical invalid-surrounding signature), so these are name-matched —
+// the pragmatic exception to the input-driven philosophy.
 static bool isOfficeSuiteApp(const std::string &prog) {
   std::string p = prog;
   std::transform(p.begin(), p.end(), p.begin(), ::tolower);
@@ -659,7 +659,7 @@ static bool isTerminalAppName(const std::string &prog) {
       "konsole",        "org.kde.konsole",
       "alacritty",      "kitty",
       "gnome-terminal", "xfce4-terminal",
-      "st-",
+      "st-",            "sterm",
       "terminator",     "terminology",
       "wezterm",        "ghostty", "foot",
       "urxvt",          "rxvt",
@@ -2166,12 +2166,14 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     clearEngineBareCapsSticky();
   }
 
-  // Office suites (X11): LibreOffice/WPS/OnlyOffice advertise the
-  // SurroundingText cap but type wrong through it (async key processing
-  // breaks the fallback; a11y cannot tell them from healthy apps) —
-  // hardcoded exception per the user's call, X11-only.
-  if (!isWayland() && isOfficeSuiteApp(appProgram())) {
-    SKEY_DEBUG() << "Auto: office suite (X11) → Uinput";
+  // Office suites (both platforms): LibreOffice/WPS/OnlyOffice advertise
+  // the SurroundingText cap but type wrong through it (async key
+  // processing breaks the fallback; a11y cannot tell them from healthy
+  // apps) — hardcoded exception per the user's call.  X11-only until
+  // 2026-09-16, extended to Wayland on the user's call: same broken
+  // Surr implementation, same result.
+  if (isOfficeSuiteApp(appProgram())) {
+    SKEY_DEBUG() << "Auto: office suite → Uinput";
     return SKeyOutputMode::Uinput;
   }
 
@@ -3223,14 +3225,16 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     sleepUsec = std::max(sleepUsec, static_cast<uint64_t>(realBs) *
                                         kFirefoxMultiBsDelayPerBsUsec);
   }
-  if (realBs > 0 && !isWayland() && isOfficeSuiteApp(appProgram())) {
-    // X11 office suites (LibreOffice VCL, WPS, OnlyOffice): injected keys
-    // are queued and processed ASYNCHRONOUSLY by VCL — the sync anchor
-    // proves the BS were dispatched, not processed, and the adaptive
-    // sleep (9-12ms observed) commits while the queued BS are still
-    // draining ("chào các bạn" → "chào các baạ": the late BS ate the
-    // final 'n' of the committed "ạn", 2026-09-13).  Scale the headroom
-    // per deletion like the Wayland native path.
+  if (realBs > 0 && isOfficeSuiteApp(appProgram())) {
+    // Office suites (LibreOffice VCL, WPS, OnlyOffice): injected keys
+    // are queued and processed ASYNCHRONOUSLY by the toolkit — the sync
+    // anchor proves the BS were dispatched, not processed, and the
+    // adaptive sleep (9-12ms observed) commits while the queued BS are
+    // still draining ("chào các bạn" → "chào các baạ": the late BS ate
+    // the final 'n' of the committed "ạn", 2026-09-13).  Scale the
+    // headroom per deletion like the Wayland native path.  Applies on
+    // Wayland too (2026-09-16): Uinput is now the Auto route there and
+    // the async drain is a toolkit property, not a session-type one.
     sleepUsec = std::max(sleepUsec,
                          static_cast<uint64_t>(realBs) * 15000);
   }
@@ -6317,29 +6321,35 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             SKEY_DEBUG() << "Surr: deferred BS-forward '" << addedPart << "'";
             scheduleDeferredCommit(addedPart, stablePrefix,
                                    kX11BsForwardDeferredUsec);
-          } else if (!isWayland() && laggingPush) {
-            // X11 apps whose surrounding pushes LAG behind the commits
+          } else if (laggingPush) {
+            // Apps whose surrounding pushes LAG behind the commits
             // (Telegram on Qt: every tone key saw "surrounding cache
             // stale" — the push still showed the text from before the
-            // last commit).  Forwarded BS (XTEST) and commitString (XIM)
-            // are NOT serialized against each other on X11: when the
-            // app's IM pipeline is busy, the commit can be applied
-            // BEFORE the BS are processed, and the replacement then
-            // self-cancels — "da" + "đa" minus BS×2 leaves "da", so
-            // "đấy" ends up as "day" (or the commit is lost entirely
-            // and the word vanishes).  Defer like the office-suite path
-            // so the BS land first.
+            // last commit).  Forwarded BS and commitString are NOT
+            // serialized against each other: on X11 (XTEST vs XIM) and
+            // on Wayland (compositor virtual-keyboard vs text-input
+            // protocol) the commit can be applied BEFORE the BS are
+            // processed, and the replacement then self-cancels — "da" +
+            // "đa" minus BS×2 leaves "da", so "đấy" ends up as "day"
+            // (or the commit is lost entirely and the word vanishes).
+            // X11-only until 2026-09-16; the same race reproduced on
+            // Wayland with the flatpak Telegram ("được rồi đấy" →
+            // "được rồi day").  Defer so the BS land first: fixed 10ms
+            // on X11, adaptive on Wayland (same as the browser path).
             SKEY_DEBUG() << "Surr: deferred BS-forward (lagging push) '"
                          << addedPart << "'";
             scheduleDeferredCommit(addedPart, stablePrefix,
-                                   kX11BsForwardDeferredUsec);
+                                   isWayland() ? 0
+                                               : kX11BsForwardDeferredUsec);
           } else {
             // X11 apps that never push surrounding text (the pre-Qt
             // Telegram — surrounding always invalid) and non-Chromium
-            // Wayland apps process forwarded BS + commit in order —
-            // commit immediately, no extra latency (validated lag-free
-            // path; the blanket deferral added a felt 10ms per tone
-            // key, 2026-09-08).
+            // Wayland apps with FRESH pushes process forwarded BS +
+            // commit in order — commit immediately, no extra latency
+            // (validated lag-free path; the blanket deferral added a
+            // felt 10ms per tone key, 2026-09-08).  Wayland apps with
+            // lagging pushes are handled by the deferred branch above
+            // (2026-09-16).
             commitText(addedPart);
           }
         }
