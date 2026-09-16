@@ -259,6 +259,9 @@ static constexpr uint64_t kFbX11SurrDeferredUsec = 15000;
 // queue-drain headroom before the commit lands (a fixed 15ms floor made
 // single-deletion replacements visibly flicker).
 static constexpr uint64_t kWaylandNativeCommitDelayPerBsUsec = 6000;
+// Firefox multi-char replacements: renderer-side drain per injected BS
+// (see the sleep block in the uinput replacement path).
+static constexpr uint64_t kFirefoxMultiBsDelayPerBsUsec = 20000;
 static constexpr uint64_t kWaylandNativeCommitDelayMaxUsec = 30000;
 // Floor applied on the next commit after loopbacks were slow once.
 static constexpr uint64_t kSlowLoopbackCommitDelayFloorUsec = 15000;
@@ -311,6 +314,23 @@ static constexpr uint64_t kMultiBsSleepFloorUsec = 20000;
 // text + selection in the background and the engine reads its atomic
 // snapshot instead.
 static constexpr uint64_t kA11ySnapshotMaxAgeUsec = 400000;
+
+// Blind-a11y cell-change fallback (Wayland Uinput, Chromium browser): the
+// first key after the user clicks another Google Sheets cell teleports the
+// IME caret.  In-cell typing advances it a few px per char and the uinput
+// BS loopback moves it back by one char, so these per-axis jumps can only
+// mean the caret moved to another cell (or a click inside the text — which
+// legitimately ends the tracked word).  Sheets default cell ≈100px wide,
+// rows ≈21px tall.  Inert when the app never sends cursor rects.
+static constexpr int kSheetsCaretJumpX = 64;
+static constexpr int kSheetsCaretJumpY = 16;
+// Surr-mode model verification: a surrounding-text mismatch at a letter
+// key only proves the caret moved when the cache has had time to settle —
+// right after our own commits the app may simply not have pushed the
+// updated surrounding yet.  Below this quiet window the mismatch is
+// treated as lag and the replace path's existing stale-cache fallback
+// handles it.
+static constexpr uint64_t kSurrVerifyQuietUsec = 250000;
 
 static bool isUtf8ContinuationByte(char ch) {
   return (static_cast<unsigned char>(ch) & 0xC0) == 0x80;
@@ -443,13 +463,13 @@ static std::string userPkgDataDir() {
 // Matches actual Chromium-family browser programs.
 // Used ONLY for address-bar detection — electron/tabby must NOT match here
 // or non-browser Electron apps are misidentified as Chrome address bar.
-// Office suites with broken SurroundingText implementations (X11-only
-// routing exception, user decision 2026-09-08): LibreOffice's VCL and
-// WPS/OnlyOffice process the fallback's forwarded BS asynchronously and
-// type wrong through Surr.  The a11y signals cannot distinguish them
-// from healthy apps (Telegram has the identical invalid-surrounding
-// signature), so these are name-matched — the pragmatic exception to
-// the input-driven philosophy.
+// Office suites with broken SurroundingText implementations (routing
+// exception on both platforms, user decision 2026-09-08 X11 / 2026-09-16
+// Wayland): LibreOffice's VCL and WPS/OnlyOffice process the fallback's
+// forwarded BS asynchronously and type wrong through Surr.  The a11y
+// signals cannot distinguish them from healthy apps (Telegram has the
+// identical invalid-surrounding signature), so these are name-matched —
+// the pragmatic exception to the input-driven philosophy.
 static bool isOfficeSuiteApp(const std::string &prog) {
   std::string p = prog;
   std::transform(p.begin(), p.end(), p.begin(), ::tolower);
@@ -639,7 +659,7 @@ static bool isTerminalAppName(const std::string &prog) {
       "konsole",        "org.kde.konsole",
       "alacritty",      "kitty",
       "gnome-terminal", "xfce4-terminal",
-      "st-",
+      "st-",            "sterm",
       "terminator",     "terminology",
       "wezterm",        "ghostty", "foot",
       "urxvt",          "rxvt",
@@ -923,6 +943,7 @@ SKeyEngine::SKeyEngine(Instance *instance)
   // Both address-bar modes (Preedit / No Vietnamese) rely on it.
   a11yMonitor_ = std::make_unique<A11yMonitor>();
   a11yMonitor_->setDebug(*config_.debug);
+  a11yMonitor_->setAutoEnableA11y(*config_.autoEnableA11y);
   a11yMonitor_->start();
 
   SKEY_INFO() << "SKey Vietnamese Input Method loaded";
@@ -1421,8 +1442,10 @@ void SKeyEngine::reloadConfig() {
   }
   readAsIni(config_, "conf/skey.conf");
   g_skeyDebugEnabled = readDebugFromFile();
-  if (a11yMonitor_)
+  if (a11yMonitor_) {
     a11yMonitor_->setDebug(g_skeyDebugEnabled);
+    a11yMonitor_->setAutoEnableA11y(*config_.autoEnableA11y);
+  }
   // AutoDelay: load learned per-app statistics only while the option is
   // on — zero I/O otherwise.  reloadConfig() runs on every activate, so a
   // mid-session toggle takes effect at the next focus change.  The merge
@@ -1655,8 +1678,14 @@ void SKeyState::refreshAppMode() {
 // (as opposed to web content). Two detection paths: the native Url capability
 // (Wayland) and the AT-SPI2 accessibility monitor (X11).
 bool SKeyState::inChromiumAddressBar() const {
-  // Method 1: Wayland — Chrome sends CapabilityFlag::Url natively
-  if (ic_->capabilityFlags().test(CapabilityFlag::Url)) {
+  // Method 1: Wayland — Chrome sends CapabilityFlag::Url natively.  The
+  // capability itself is generic (Firefox also sends it for ITS URL bar),
+  // and the omnibox machinery behind this flag (autofill-dismissal BS,
+  // FullReplace heuristics) is Chrome-specific — corrupts Firefox's URL
+  // bar ("mất chữ đằng trước", 2026-09-15).  Require a real Chromium
+  // browser; Firefox's URL bar goes through the normal paths.
+  if (isChromiumCached() &&
+      ic_->capabilityFlags().test(CapabilityFlag::Url)) {
     return true;
   }
   // Method 2: X11 — use AT-SPI2 accessibility monitor.
@@ -1975,6 +2004,16 @@ bool SKeyState::a11yBrowserNonEntryNarrow() const {
          !mon->isFocusSingleLine() && !mon->isFocusMultiline();
 }
 
+bool SKeyState::a11yGoogleDocsFocused() const {
+  // No freshness gate: clicking cells inside the Docs grid fires NO a11y
+  // focus events (the grid combo box keeps focus), so the snapshot can be
+  // minutes old when typing starts.  The isFirefoxOrSnap() call-site gate
+  // already protects against cross-app staleness, and Firefox fires fresh
+  // focus events on page navigation which recompute the flag.
+  auto *mon = engine_->a11yMonitor();
+  return mon && mon->googleDocsDocumentFocused();
+}
+
 bool SKeyState::a11yChromiumTerminal() const {
   // Integrated terminal inside a standalone Chromium app (antigravity-ide):
   // fresh a11y snapshot of a single-line text entry NOT inside a web
@@ -2100,6 +2139,17 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     }
   }
 
+  // Google Docs-suite pages in Firefox (Sheets / Docs / Slides by document
+  // title): Gecko's canvas editor provides surrounding text, but multi-char
+  // tone replacements drop consecutive deletions on these heavy pages
+  // ("chào các bạn" → "chào các baạn", 2026-09-15) — route to Uinput like
+  // Chrome's Sheets.  Must run before the caps-based decisions: bare caps
+  // (0x72) fall through to SurroundingText here.
+  if (isFirefoxOrSnap() && a11yGoogleDocsFocused()) {
+    SKEY_DEBUG() << "Auto: Google Docs page (Firefox) → Uinput";
+    return SKeyOutputMode::Uinput;
+  }
+
   // Sticky Uinput: Chromium browsers (e.g. Google Sheets) may initially
   // report bare caps (0x72), then add content hints on re-focus without
   // actually providing a working SurroundingText editor.
@@ -2116,12 +2166,14 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     clearEngineBareCapsSticky();
   }
 
-  // Office suites (X11): LibreOffice/WPS/OnlyOffice advertise the
-  // SurroundingText cap but type wrong through it (async key processing
-  // breaks the fallback; a11y cannot tell them from healthy apps) —
-  // hardcoded exception per the user's call, X11-only.
-  if (!isWayland() && isOfficeSuiteApp(appProgram())) {
-    SKEY_DEBUG() << "Auto: office suite (X11) → Uinput";
+  // Office suites (both platforms): LibreOffice/WPS/OnlyOffice advertise
+  // the SurroundingText cap but type wrong through it (async key
+  // processing breaks the fallback; a11y cannot tell them from healthy
+  // apps) — hardcoded exception per the user's call.  X11-only until
+  // 2026-09-16, extended to Wayland on the user's call: same broken
+  // Surr implementation, same result.
+  if (isOfficeSuiteApp(appProgram())) {
+    SKEY_DEBUG() << "Auto: office suite → Uinput";
     return SKeyOutputMode::Uinput;
   }
 
@@ -2876,6 +2928,14 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags) {
         std::min(ov->paceMs, skey::kMaxPaceMs)) *
                1000;
   }
+  if (paceUsec == 1000 && isWayland() && isFirefoxOrSnap() && count >= 3) {
+    // Firefox's renderer drops consecutive injected BS under load on heavy
+    // canvas pages (Sheets: "bạn" → "baạn" when typing fast — the echo
+    // only proves dispatch, not application, 2026-09-15).  Pace them so
+    // each deletion lands before the next BS arrives.  Manual per-app
+    // overrides win over this default.
+    paceUsec = 10000;
+  }
   int32_t count32 = count;
   uint32_t textLen = 0;
   std::vector<char> msg(sizeof(int32_t) + sizeof(uint32_t) * 3); // 16 bytes
@@ -3156,14 +3216,25 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     sleepUsec = std::max(sleepUsec, static_cast<uint64_t>(realBs) *
                                         kWaylandNativeCommitDelayPerBsUsec);
   }
-  if (realBs > 0 && !isWayland() && isOfficeSuiteApp(appProgram())) {
-    // X11 office suites (LibreOffice VCL, WPS, OnlyOffice): injected keys
-    // are queued and processed ASYNCHRONOUSLY by VCL — the sync anchor
-    // proves the BS were dispatched, not processed, and the adaptive
-    // sleep (9-12ms observed) commits while the queued BS are still
-    // draining ("chào các bạn" → "chào các baạ": the late BS ate the
-    // final 'n' of the committed "ạn", 2026-09-13).  Scale the headroom
-    // per deletion like the Wayland native path.
+  if (realBs >= 2 && isWayland() && isFirefoxOrSnap()) {
+    // Firefox's renderer applies injected BS asynchronously — the sync
+    // anchor proves dispatch to the browser process, not renderer
+    // application.  With two consecutive deletes the commit landed
+    // BETWEEN them ("bạn" → "baạ" on Google Sheets, 2026-09-15).  Scale
+    // the drain headroom per deletion for multi-char replacements.
+    sleepUsec = std::max(sleepUsec, static_cast<uint64_t>(realBs) *
+                                        kFirefoxMultiBsDelayPerBsUsec);
+  }
+  if (realBs > 0 && isOfficeSuiteApp(appProgram())) {
+    // Office suites (LibreOffice VCL, WPS, OnlyOffice): injected keys
+    // are queued and processed ASYNCHRONOUSLY by the toolkit — the sync
+    // anchor proves the BS were dispatched, not processed, and the
+    // adaptive sleep (9-12ms observed) commits while the queued BS are
+    // still draining ("chào các bạn" → "chào các baạ": the late BS ate
+    // the final 'n' of the committed "ạn", 2026-09-13).  Scale the
+    // headroom per deletion like the Wayland native path.  Applies on
+    // Wayland too (2026-09-16): Uinput is now the Auto route there and
+    // the async drain is a toolkit property, not a session-type one.
     sleepUsec = std::max(sleepUsec,
                          static_cast<uint64_t>(realBs) * 15000);
   }
@@ -3686,6 +3757,10 @@ void SKeyState::reset() {
     committedLen_ = 0;
   }
   modeCacheValid_ = false;
+  // The caret baseline belongs to the previous focus — a fresh focus must
+  // not compare against a foreign rect (blind cell-change fallback).
+  lastKeyCaretX_ = -1;
+  lastKeyCaretY_ = -1;
   cachedIsChromium_ = -1;
   cachedIsFirefoxOrSnap_ = -1;
   cachedIsTerminalApp_ = -1;
@@ -3702,7 +3777,11 @@ bool SKeyState::checkCellSelection() {
     const auto serial = mon->cellSelectionSerial();
     bool changed = serial != cellSelectionSerial_;
     cellSelectionSerial_ = serial;
-    if (isChromiumBrowser(appProgram()) && useUinputMode()) {
+    // Cell-change detection applies to BOTH output modes: the a11y cell
+    // tracker must also fire when the user overrides Chrome to
+    // Surrounding Text (the stale-word replace corrupts the new cell the
+    // same way it does in Uinput).
+    if (isChromiumBrowser(appProgram()) && useSurroundingText()) {
       std::string identity, cell;
       if (mon->currentSheetsCell(identity, cell)) {
         // Async PropertyChange can arrive AFTER g/o of the new cell. Never
@@ -3715,32 +3794,72 @@ bool SKeyState::checkCellSelection() {
       if (changed) {
         SKEY_DEBUG() << "CellSelection: reset word '" << viet_.getComposed()
                      << "' serial=" << serial;
-        viet_.reset();
-        committedLen_ = 0;
-        clearLastWord();
-        surrResetTentative_ = false;
-        bufferedUinputKeys_.clear();
-        uinputCommitTimer_.reset();
-        uinputSafetyTimer_.reset();
-        uinputCycleTimer_.reset();
-        uinputDeleting_ = false;
-        pendingUinputCommit_.clear();
-        expectedUinputBackspaces_ = 0;
-        seenUinputBackspaces_ = 0;
-        uinputPendingFinalLen_ = 0;
-        deferredCommitTimer_.reset();
-        deferredCommitText_.clear();
-        deferredPrefix_.clear();
-        pendingFlushSuffix_.clear();
-        addrBarLastTriggerKey_ = 0;
-        addrBarTriggerDeadline_ = 0;
-        addrBarTriggerKeyTime_ = 0;
-        addrBarGuardArmedUsec_ = 0;
+        resetForCellChange();
         return true;
+      }
+
+      // Fallback when the a11y pipeline is blind (Chrome never registered
+      // its tree — e.g. CachyOS/KDE Wayland): the first key after the user
+      // clicks another cell teleports the IME caret.  In-cell typing moves
+      // it a few px per char and the uinput BS loopback one char back, so
+      // a jump of cell distance between two keys means the focus moved.
+      // Requires a word in flight — otherwise there is nothing to leak
+      // into the new cell.  Inert when the app never sends cursor rects
+      // (Wayland Chrome sends none — the a11y path above is the real
+      // channel there).  Uinput only: Surr mode has its own surrounding-
+      // based verification.
+      if (useUinputMode() && isWayland() && !mon->isFocusSnapshotFresh(5000000) &&
+          !viet_.getRawInput().empty()) {
+        const int prevX = lastKeyCaretX_, prevY = lastKeyCaretY_;
+        const auto &rect = ic_->cursorRect();
+        const int x = rect.left(), y = rect.top();
+        // Per-key rect trace while blind — proves whether Chrome sends
+        // caret rects on Wayland at all (fallback viability).
+        SKEY_DEBUG() << "Sheets: blind caret rect=(" << x << "," << y
+                     << ") prev=(" << prevX << "," << prevY << ")";
+        const bool jumped =
+            prevX >= 0 &&
+            (std::abs(x - prevX) >= kSheetsCaretJumpX ||
+             std::abs(y - prevY) >= kSheetsCaretJumpY);
+        lastKeyCaretX_ = x;
+        lastKeyCaretY_ = y;
+        if (jumped) {
+          SKEY_DEBUG() << "Sheets: blind caret jump (" << prevX << "," << prevY
+                       << ")→(" << x << "," << y << ") — reset word '"
+                       << viet_.getComposed() << "'";
+          resetForCellChange();
+          return true;
+        }
       }
     }
   }
   return false;
+}
+
+void SKeyState::resetForCellChange() {
+  viet_.reset();
+  committedLen_ = 0;
+  clearLastWord();
+  surrResetTentative_ = false;
+  bufferedUinputKeys_.clear();
+  uinputCommitTimer_.reset();
+  uinputSafetyTimer_.reset();
+  uinputCycleTimer_.reset();
+  uinputDeleting_ = false;
+  pendingUinputCommit_.clear();
+  expectedUinputBackspaces_ = 0;
+  seenUinputBackspaces_ = 0;
+  uinputPendingFinalLen_ = 0;
+  deferredCommitTimer_.reset();
+  deferredCommitText_.clear();
+  deferredPrefix_.clear();
+  pendingFlushSuffix_.clear();
+  deferredNativeDeleteLen_ = 0;
+  deferredDeletedTail_.clear();
+  addrBarLastTriggerKey_ = 0;
+  addrBarTriggerDeadline_ = 0;
+  addrBarTriggerKeyTime_ = 0;
+  addrBarGuardArmedUsec_ = 0;
 }
 
 void SKeyState::keyEvent(KeyEvent &keyEvent) {
@@ -3748,6 +3867,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
+  surrPrevKeyUsec_ = surrLastKeyUsec_;
   surrLastKeyUsec_ = now(CLOCK_MONOTONIC);
 
   // Refresh per-app mode in case IC is shared across apps
@@ -3802,11 +3922,14 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // Uinput yet.
   bool a11yNonEntry = a11yBrowserNonEntryNarrow();
   bool a11yTerminal = a11yChromiumTerminal();
+  bool a11yDocs = a11yGoogleDocsFocused();
   bool triggerHit =
       modeDecisionPending_ || a11yFreshWebEditor() ||
       (a11yNonEntry &&
        (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)) ||
       (a11yTerminal &&
+       (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)) ||
+      (a11yDocs &&
        (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput));
   // Back-off: the a11y triggers above re-evaluate the mode at every word
   // boundary even when the verdict is stable (measured 31 detectAutoMode
@@ -4937,6 +5060,32 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         viet_.clearEnglishBypass();
       }
 
+      // Surr-mode model verification: for apps that maintain surrounding
+      // text, it IS the screen state.  When it is valid but no longer ends
+      // with the word being tracked, and the cache has had time to settle
+      // (not merely lagging behind our own commits), the caret moved away
+      // from the word — e.g. a Google Sheets cell click, where the click
+      // fires no fcitx event at all.  Reset the model so this key starts a
+      // fresh word instead of replacing text that is no longer at the
+      // caret (Firefox/Sheets: cell 2 got "oxg" from a stale-word replace,
+      // 2026-09-15).  Chromium excluded — its surrounding cache stays
+      // stale after BS storms / key re-delivery, and its replace path's
+      // stale-cache fallback + cell tracker already cover those cases.
+      if (useSurroundingText() && !isChromiumCached() &&
+          !viet_.getRawInput().empty() && surrPrevKeyUsec_ > 0 &&
+          now(CLOCK_MONOTONIC) - surrPrevKeyUsec_ >= kSurrVerifyQuietUsec) {
+        const auto &surrounding = ic_->surroundingText();
+        if (surrounding.isValid() &&
+            !surroundingCacheEndsWith(surrounding, viet_.getComposed())) {
+          SKEY_DEBUG() << "Surr: word '" << viet_.getComposed()
+                       << "' not at caret, resetting model";
+          viet_.reset();
+          committedLen_ = 0;
+          clearLastWord();
+          surrResetTentative_ = false;
+        }
+      }
+
       // Flush any pending address bar replacement before processing
       // a new key, so the screen state matches viet_'s expectation.
       flushAddrBarReplacement();
@@ -5216,6 +5365,20 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             }
             committedLen_ = static_cast<int>(utf8::length(newComposed));
             return;
+          }
+          // First letter of a word in Chromium Surr mode (Wayland): Chrome
+          // drops IM commits that arrive while its editor is still opening
+          // after a focus switch — the first click's word never appears
+          // ("phải click 2 lần mới ra chữ", 2026-09-15).  Forward the key
+          // RAW instead: the real keystroke opens the editor AND inserts
+          // the char through Chrome's key pipeline, exactly like the
+          // Uinput append path.  Subsequent letters commit normally (the
+          // editor is open by then).  Address bar excluded (omnibox has
+          // its own machinery).
+          if (isWayland() && isChromiumCached() && !useUinputMode() &&
+              !inChromiumAddressBar() && oldComposed.empty()) {
+            committedLen_ = static_cast<int>(utf8::length(newComposed));
+            return; // forward raw key, unfiltered
           }
           // SurroundingText path in Chromium: set trigger-key guard so
           // X11 re-delivery after forwardKey-induced focus cycles is dropped.
@@ -5779,11 +5942,15 @@ bool SKeyState::hasDeferredCommitPending() const {
 
 void SKeyState::scheduleDeferredCommit(const std::string &text,
                                        const std::string &stablePrefix,
-                                       uint64_t delayUsec) {
+                                       uint64_t delayUsec,
+                                       int nativeDeleteLen,
+                                       const std::string &deletedTail) {
   deferredCommitTimer_.reset();
   deferredCommitText_ = text;
   deferredPrefix_ = stablePrefix;
   pendingFlushSuffix_.clear();
+  deferredNativeDeleteLen_ = nativeDeleteLen;
+  deferredDeletedTail_ = deletedTail;
 
   // Delay after BackSpace to ensure the app has processed the BS key
   // events before we commit new text via commitString.
@@ -5832,6 +5999,7 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
       [this, postMs](EventSourceTime *, uint64_t) {
         SKEY_DEBUG() << "Surr deferred: timer commit '" << deferredCommitText_
                      << "'";
+        repairNativeDeletes();
         std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
         deferredCommitText_.clear();
         deferredPrefix_.clear();
@@ -5888,6 +6056,7 @@ void SKeyState::flushDeferredCommit() {
               EventSourceTime *, uint64_t) {
             SKEY_DEBUG() << "Surr deferred: delayed flush commit '"
                          << deferredCommitText_ << "'";
+            repairNativeDeletes();
             std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
             deferredCommitText_.clear();
             deferredPrefix_.clear();
@@ -5905,6 +6074,7 @@ void SKeyState::flushDeferredCommit() {
 
   // Safe to commit now — BS has been processed.
   SKEY_DEBUG() << "Surr deferred: flush commit '" << deferredCommitText_ << "'";
+  repairNativeDeletes();
   std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
   deferredCommitText_.clear();
   deferredPrefix_.clear();
@@ -5924,6 +6094,7 @@ void SKeyState::forceFlushDeferredCommit() {
   // stale deferred commits from corrupting new word composition.
   SKEY_DEBUG() << "Surr deferred: force flush commit '" << deferredCommitText_
                << "'";
+  repairNativeDeletes();
   std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
   deferredCommitText_.clear();
   deferredPrefix_.clear();
@@ -5931,6 +6102,65 @@ void SKeyState::forceFlushDeferredCommit() {
   pendingFlushSuffix_.clear();
   deferredCommitTimer_.reset();
   commitText(toCommit);
+}
+
+int SKeyState::missingNativeDeleteChars() {
+  if (deferredNativeDeleteLen_ <= 0 || deferredDeletedTail_.empty())
+    return 0;
+  const auto &surr = ic_->surroundingText();
+  if (!surr.isValid())
+    return -1; // cannot verify — caller commits as-is
+  const int tailLen = static_cast<int>(utf8::length(deferredDeletedTail_));
+  // Longest suffix of the deleted tail still present before the cursor =
+  // the number of chars the app failed to delete.
+  for (int k = tailLen; k >= 1; --k) {
+    size_t start = deferredDeletedTail_.size();
+    int chars = 0;
+    while (start > 0 && chars < k) {
+      --start;
+      while (start > 0 &&
+             (static_cast<unsigned char>(deferredDeletedTail_[start]) & 0xC0) ==
+                 0x80)
+        --start;
+      ++chars;
+    }
+    if (surroundingCacheEndsWith(surr, deferredDeletedTail_.substr(start)))
+      return k;
+  }
+  return 0; // nothing of the tail remains — deletes fully applied
+}
+
+void SKeyState::repairNativeDeletes() {
+  if (deferredNativeDeleteLen_ <= 0)
+    return;
+  bool confirmedMissing = false;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    const int missing = missingNativeDeleteChars();
+    if (missing <= 0)
+      break;
+    if (!confirmedMissing) {
+      // The first "missing" sighting may be a stale push that was in
+      // flight while our deletes landed — give the app's real
+      // post-delete push time to supersede it before touching the text
+      // (an over-eager re-delete eats chars BEFORE the word, the
+      // Firefox URL-bar corruption).
+      usleep(20000);
+      confirmedMissing = true;
+      continue; // re-check without deleting
+    }
+    for (int i = 0; i < missing; ++i) {
+      // Deliberately do NOT mirror the delete into the local surrounding
+      // cache: the next verification must read the state the APP pushed
+      // back, not our own edit (mirroring made the re-check trivially
+      // pass while Firefox had still dropped the deletes).
+      ic_->deleteSurroundingText(-1, 1);
+    }
+    SKEY_DEBUG() << "Surr: native delete missing " << missing
+                 << " char(s), re-deleted (attempt " << attempt << ")";
+    usleep(20000);
+  }
+  deferredNativeDeleteLen_ = 0;
+  deferredDeletedTail_.clear();
 }
 
 uint64_t SKeyState::x11ChromiumSurrDelayUsec() const {
@@ -5992,7 +6222,10 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       // D-Bus guarantees message ordering within a connection, so
       // commitString always arrives after the forwarded BackSpace
       // keys — no timer needed.
-      auto deleteViaBackspace = [&]() {
+      // laggingPush: the surrounding text was VALID but did not reflect
+      // the cache (stale or cursor-not-ready) — the app pushes updates
+      // asynchronously.  See the commit branch below.
+      auto deleteViaBackspace = [&](bool laggingPush) {
         // Chromium-family apps with shell children must keep the anchor
         // even when the shell scan flags them as terminals.
         // X11 native terminals also anchor through uinput even in Surr
@@ -6088,13 +6321,35 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             SKEY_DEBUG() << "Surr: deferred BS-forward '" << addedPart << "'";
             scheduleDeferredCommit(addedPart, stablePrefix,
                                    kX11BsForwardDeferredUsec);
+          } else if (laggingPush) {
+            // Apps whose surrounding pushes LAG behind the commits
+            // (Telegram on Qt: every tone key saw "surrounding cache
+            // stale" — the push still showed the text from before the
+            // last commit).  Forwarded BS and commitString are NOT
+            // serialized against each other: on X11 (XTEST vs XIM) and
+            // on Wayland (compositor virtual-keyboard vs text-input
+            // protocol) the commit can be applied BEFORE the BS are
+            // processed, and the replacement then self-cancels — "da" +
+            // "đa" minus BS×2 leaves "da", so "đấy" ends up as "day"
+            // (or the commit is lost entirely and the word vanishes).
+            // X11-only until 2026-09-16; the same race reproduced on
+            // Wayland with the flatpak Telegram ("được rồi đấy" →
+            // "được rồi day").  Defer so the BS land first: fixed 10ms
+            // on X11, adaptive on Wayland (same as the browser path).
+            SKEY_DEBUG() << "Surr: deferred BS-forward (lagging push) '"
+                         << addedPart << "'";
+            scheduleDeferredCommit(addedPart, stablePrefix,
+                                   isWayland() ? 0
+                                               : kX11BsForwardDeferredUsec);
           } else {
-            // X11 non-Chromium apps (Telegram etc.) and non-Chromium
-            // Wayland apps process forwarded BS + commit in order (the
-            // X server serializes delivery) — commit immediately, no
-            // extra latency (Telegram's validated lag-free path; the
-            // blanket deferral added a felt 10ms per tone key,
-            // 2026-09-08).
+            // X11 apps that never push surrounding text (the pre-Qt
+            // Telegram — surrounding always invalid) and non-Chromium
+            // Wayland apps with FRESH pushes process forwarded BS +
+            // commit in order — commit immediately, no extra latency
+            // (validated lag-free path; the blanket deferral added a
+            // felt 10ms per tone key, 2026-09-08).  Wayland apps with
+            // lagging pushes are handled by the deferred branch above
+            // (2026-09-16).
             commitText(addedPart);
           }
         }
@@ -6150,7 +6405,9 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           } else {
             SKEY_DEBUG() << "Surr: native surrounding not ready";
           }
-          deleteViaBackspace();
+          // Valid-but-unusable surrounding = the app pushes asynchronously
+          // and the push has not caught up with our commits yet.
+          deleteViaBackspace(/*laggingPush=*/surrounding.isValid());
         } else {
           // Delete one character at a time.  Chrome has been observed to
           // drop multi-char delete_surrounding_text requests (the commit
@@ -6170,8 +6427,19 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           if (!addedPart.empty()) {
             if (isWayland() && (isChromiumCached() || isFirefoxOrSnap())) {
               SKEY_DEBUG() << "Surr: deferred commit '" << addedPart << "'";
+              // Pass the deletion state so the commit-time verification
+              // can re-issue dropped deletes (Firefox/Docs applies only
+              // one of two consecutive delete_surrounding_text calls).
+              // Chromium excluded: its surrounding pushes cannot be
+              // trusted to ack deletes (chatgpt.com on Fedora kept
+              // serving the stale pre-delete text — the repair then
+              // over-deleted "chà" → "ào" and blocked 60ms per tone key,
+              // 2026-09-15).
               scheduleDeferredCommit(addedPart, stablePrefix,
-                                     kNativeDeleteDeferredUsec);
+                                     kNativeDeleteDeferredUsec,
+                                     isFirefoxOrSnap() ? deleteLen : 0,
+                                     isFirefoxOrSnap() ? deletedPart
+                                                       : std::string());
             } else {
               SKEY_DEBUG() << "Surr: direct commit '" << addedPart << "'";
               commitText(addedPart);
@@ -6180,7 +6448,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         }
       } else {
         SKEY_DEBUG() << "Surr: client has no surrounding text capability";
-        deleteViaBackspace();
+        deleteViaBackspace(/*laggingPush=*/false);
       }
     } else {
       // deleteLen == 0: no deletion needed, only add new suffix if any
@@ -6265,6 +6533,18 @@ void SKeyState::armUinputSafetyTimer() {
   auto &timing = uinputTiming();
   uint64_t budget =
       uinputSafetyRetried_ ? timing.safetyRetryUsec : timing.safetyTimeoutUsec;
+  // Slow-loopback apps (X11 terminals like sterm: 30-100ms per injected BS
+  // echo) need a budget that scales with the batch — the fixed 150ms fired
+  // mid-stream and force-committed into still-draining deletions, then
+  // stalled 600ms on the retry extension ("rất delay và hay sai chữ",
+  // sterm 2026-09-15).  The sync completes on the echoes themselves; this
+  // only prevents the premature force-commit.
+  if (!isWayland() && expectedUinputBackspaces_ > 0) {
+    const uint64_t perBs = std::min<uint64_t>(bsRtEwma_ * 2, 150000);
+    budget += static_cast<uint64_t>(expectedUinputBackspaces_) * perBs;
+    if (budget > 800000)
+      budget = 800000;
+  }
   uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
       CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + budget, 0,
       [this](EventSourceTime *, uint64_t) {

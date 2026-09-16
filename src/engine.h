@@ -139,12 +139,26 @@ private:
     /// dictionary option is applied.
     void loadUserDict();
     void reclaimLastWord();
+    /// Fresh a11y snapshot of a Google Docs-suite page (Sheets/Docs/Slides
+    /// by document title) — routes Firefox on these canvas pages to Uinput.
+    bool a11yGoogleDocsFocused() const;
     bool hasDeferredCommitPending() const;
     void scheduleDeferredCommit(const std::string &text,
                                 const std::string &stablePrefix = "",
-                                uint64_t delayUsec = 0);
+                                uint64_t delayUsec = 0,
+                                int nativeDeleteLen = 0,
+                                const std::string &deletedTail = "");
     void flushDeferredCommit();
     void forceFlushDeferredCommit();
+    /// Native multi-char deletes can be partially dropped (Firefox/Docs:
+    /// "bạn" → "baạn").  Returns how many chars of the deleted tail still
+    /// sit before the cursor; -1 when the surrounding text cannot be
+    /// checked.  Only meaningful for deferred native-delete commits.
+    int missingNativeDeleteChars();
+    /// Re-issue the missing native deletes (bounded retries with small
+    /// settles).  Call right before committing a deferred native-delete
+    /// replacement.
+    void repairNativeDeletes();
     void updatePreedit();
     void clearUI();
     void showModeMenu();
@@ -188,6 +202,14 @@ private:
     uint64_t cellSelectionSerial_ = 0;
     SheetsCellSnapshot sheetsCellSnapshot_;
     bool checkCellSelection();
+    // Shared reset body for cell-change detection (a11y path and the
+    // blind caret-jump fallback).  Clears the in-flight word and all
+    // pending uinput/deferred commit machinery.
+    void resetForCellChange();
+    // IME caret rect at the previous key (see kSheetsCaretJumpX/Y).
+    // -1 = no baseline yet (fresh focus/IC).
+    int lastKeyCaretX_ = -1;
+    int lastKeyCaretY_ = -1;
     // CLOCK_MONOTONIC timestamp of the most recent activate() — the
     // first word after a focus switch gets extra settle headroom
     // (kFirstWordSettleUsec) because the renderer is still settling.
@@ -236,6 +258,13 @@ private:
     std::unique_ptr<EventSourceTime> deferredCommitTimer_;
     std::string deferredCommitText_;
     std::string deferredPrefix_;
+    // Native-delete replacement state: how many chars of the word tail the
+    // app should have deleted (delete_surrounding_text) before the pending
+    // commit, and the tail string itself — used to verify the deletes
+    // actually landed and re-issue the missing ones (Firefox/Docs drops
+    // consecutive native deletes).
+    int deferredNativeDeleteLen_ = 0;
+    std::string deferredDeletedTail_;
     uint64_t deferredBsSentAt_ = 0;
     std::string pendingFlushSuffix_;
     int uinputClientFd_ = -1;
@@ -327,6 +356,10 @@ private:
     // key against the surrounding text.
     bool surrResetTentative_ = false;
     uint64_t surrLastKeyUsec_ = 0; // last keyEvent time (CLOCK_MONOTONIC)
+    // keyEvent time of the key BEFORE the current one — the Surr-mode
+    // settled-mismatch check (kSurrVerifyQuietUsec) compares against this,
+    // not surrLastKeyUsec_ (already updated for the current key).
+    uint64_t surrPrevKeyUsec_ = 0;
     bool addrBarDidFullReplace_ = false; // FullReplace done, reset engine on commit
     bool addrBarHadFirstWord_ = false;  // First word already done, block fullReplace
     bool addrBarKeepState_ = false;     // Keep-state active, reset engine on BS

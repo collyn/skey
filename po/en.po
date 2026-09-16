@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: fcitx5-skey 0.7.9\n"
 "Report-Msgid-Bugs-To: https://github.com/collyn/skey/issues\n"
-"POT-Creation-Date: 2026-09-14 23:25+0700\n"
+"POT-Creation-Date: 2026-09-15 18:05+0700\n"
 "PO-Revision-Date: 2026-08-28 18:36+0700\n"
 "Last-Translator: Skey contributors\n"
 "Language-Team: English\n"
@@ -27,14 +27,14 @@ msgid ""
 "thanh địa chỉ Chromium."
 msgstr ""
 "Unchecked \"Custom\" = automatic values (the fields only show what is "
-"currently used). Check it to override with the values below. Applies to "
-"the Chromium address bar too."
+"currently used). Check it to override with the values below. Applies to the "
+"Chromium address bar too."
 
 #: src/settings/app_delay_dialog.cpp:75
 msgid "Lưu"
 msgstr "Save"
 
-#: src/settings/app_delay_dialog.cpp:76 src/settings/app_modes_tab.cpp:527
+#: src/settings/app_delay_dialog.cpp:76 src/settings/app_modes_tab.cpp:528
 msgid "Hủy"
 msgstr "Cancel"
 
@@ -91,15 +91,15 @@ msgstr "Learned RT: %1 ms (%2 samples)"
 msgid "RT học được: chưa có dữ liệu"
 msgstr "Learned RT: no data yet"
 
-#: src/settings/app_delay_dialog.cpp:132
+#: src/settings/app_delay_dialog.cpp:134
 msgid "Bỏ ghi đè, trở về giá trị tự động hiện tại."
 msgstr "Remove the override, return to the current automatic values."
 
-#: src/settings/app_delay_dialog.cpp:161
+#: src/settings/app_delay_dialog.cpp:168
 msgid "Cảnh báo: chờ trước commit dưới 10ms có thể mất chữ."
 msgstr "Warning: a pre-commit wait under 10ms can lose characters."
 
-#: src/settings/app_delay_dialog.cpp:165
+#: src/settings/app_delay_dialog.cpp:172
 msgid "Nhịp 0ms có thể mất chữ trên Wayland."
 msgstr "0ms pacing can lose characters on Wayland."
 
@@ -125,7 +125,7 @@ msgstr "App name"
 msgid "Chế độ xuất"
 msgstr "Output mode"
 
-#: src/settings/app_modes_tab.cpp:61 src/settings/app_modes_tab.cpp:361
+#: src/settings/app_modes_tab.cpp:61 src/settings/app_modes_tab.cpp:362
 #: src/settings/dict_tab.cpp:190 src/settings/macro_tab.cpp:68
 msgid "Xóa"
 msgstr "Delete"
@@ -154,27 +154,27 @@ msgstr "No Vietnamese"
 msgid "(IBus app)"
 msgstr "(IBus app)"
 
-#: src/settings/app_modes_tab.cpp:354
+#: src/settings/app_modes_tab.cpp:355
 msgid "Chỉnh tay độ trễ chèn chữ (X11/Wayland) cho ứng dụng này."
 msgstr "Manually tune the commit delay (X11/Wayland) for this app."
 
-#: src/settings/app_modes_tab.cpp:507
+#: src/settings/app_modes_tab.cpp:508
 msgid "Thêm ứng dụng mới"
 msgstr "Add new app"
 
-#: src/settings/app_modes_tab.cpp:515
+#: src/settings/app_modes_tab.cpp:516
 msgid "vd: firefox, tabby, code"
 msgstr "e.g. firefox, tabby, code"
 
-#: src/settings/app_modes_tab.cpp:516
+#: src/settings/app_modes_tab.cpp:517
 msgid "Tên ứng dụng:"
 msgstr "App name:"
 
-#: src/settings/app_modes_tab.cpp:523 src/settings/general_tab.cpp:41
+#: src/settings/app_modes_tab.cpp:524 src/settings/general_tab.cpp:43
 msgid "Chế độ xuất:"
 msgstr "Output mode:"
 
-#: src/settings/app_modes_tab.cpp:526 src/settings/dict_tab.cpp:49
+#: src/settings/app_modes_tab.cpp:527 src/settings/dict_tab.cpp:49
 #: src/settings/dict_tab.cpp:114 src/settings/dict_tab.cpp:124
 #: src/settings/dict_tab.cpp:248 src/settings/dict_tab.cpp:269
 #: src/settings/dict_tab.cpp:283 src/settings/macro_tab.cpp:96
@@ -346,71 +346,71 @@ msgstr "Personal words only (✦)"
 msgid "%1 từ (✦ = từ cá nhân)"
 msgstr "%1 words (✦ = personal words)"
 
-#: src/settings/general_tab.cpp:34
+#: src/settings/general_tab.cpp:36
 msgid "Kiểu gõ:"
 msgstr "Input method:"
 
-#: src/settings/general_tab.cpp:58
+#: src/settings/general_tab.cpp:60
 msgid "Bảng mã:"
 msgstr "Charset:"
 
-#: src/settings/general_tab.cpp:61
+#: src/settings/general_tab.cpp:63
 msgid "Tiếng Việt"
 msgstr "Vietnamese"
 
-#: src/settings/general_tab.cpp:62
+#: src/settings/general_tab.cpp:64
 msgid "English"
 msgstr "English"
 
-#: src/settings/general_tab.cpp:63
+#: src/settings/general_tab.cpp:65
 msgid "Ngôn ngữ:"
 msgstr "Language:"
 
-#: src/settings/general_tab.cpp:67
+#: src/settings/general_tab.cpp:69
 msgid "Nhấn tổ hợp phím để thay đổi, Backspace để gỡ bỏ"
 msgstr "Press a key combination to change, Backspace to unbind"
 
-#: src/settings/general_tab.cpp:68
+#: src/settings/general_tab.cpp:70
 msgid "Phím chuyển bộ gõ:"
 msgstr "Toggle input method key:"
 
-#: src/settings/general_tab.cpp:72
+#: src/settings/general_tab.cpp:74
 msgid "Phím tắt để mở menu chế độ (mặc định: `), Backspace để gỡ bỏ"
 msgstr "Shortcut to open the mode menu (default: `), Backspace to unbind"
 
-#: src/settings/general_tab.cpp:73
+#: src/settings/general_tab.cpp:75
 msgid "Phím menu chế độ:"
 msgstr "Mode menu key:"
 
-#: src/settings/general_tab.cpp:89
+#: src/settings/general_tab.cpp:91
 msgid "Gõ w thành ư"
 msgstr "Type w as ư"
 
-#: src/settings/general_tab.cpp:91
+#: src/settings/general_tab.cpp:93
 msgid "Chỉ Telex: gõ phím w đơn lẻ sẽ ra chữ ư."
 msgstr "Telex only: typing a bare w produces ư."
 
-#: src/settings/general_tab.cpp:95
+#: src/settings/general_tab.cpp:97
 msgid "Gõ ][ thành ư ơ"
 msgstr "Type ][ as ư ơ"
 
-#: src/settings/general_tab.cpp:97
+#: src/settings/general_tab.cpp:99
 msgid "Chỉ Telex: gõ [ ra ơ và ] ra ư (giống UniKey)."
 msgstr "Telex only: [ produces ơ and ] produces ư (like UniKey)."
 
-#: src/settings/general_tab.cpp:101
+#: src/settings/general_tab.cpp:103
 msgid "Đánh dấu tự do"
 msgstr "Free marking"
 
-#: src/settings/general_tab.cpp:105
+#: src/settings/general_tab.cpp:107
 msgid "Tự động khôi phục"
 msgstr "Auto restore"
 
-#: src/settings/general_tab.cpp:108
+#: src/settings/general_tab.cpp:110
 msgid "Dùng từ điển"
 msgstr "Use dictionary"
 
-#: src/settings/general_tab.cpp:110
+#: src/settings/general_tab.cpp:112
 msgid ""
 "Tự động khôi phục kiểm tra từ thật trong từ điển tiếng Việt thay vì luật âm "
 "tiết (khôi phục cả những âm tiết hợp lệ nhưng không phải từ, ví dụ \"lước\")."
@@ -419,19 +419,19 @@ msgstr ""
 "syllable rules (restores even valid syllables that are not words, e.g. "
 "\"lước\")."
 
-#: src/settings/general_tab.cpp:116
+#: src/settings/general_tab.cpp:118
 msgid "Hiện preedit"
 msgstr "Show preedit"
 
-#: src/settings/general_tab.cpp:119
+#: src/settings/general_tab.cpp:121
 msgid "Ghi log debug"
 msgstr "Debug logging"
 
-#: src/settings/general_tab.cpp:123
+#: src/settings/general_tab.cpp:125
 msgid "Tự động tối ưu delay theo app"
 msgstr "Auto-optimize delay per app"
 
-#: src/settings/general_tab.cpp:125
+#: src/settings/general_tab.cpp:127
 msgid ""
 "Học thời gian phản hồi thật của từng ứng dụng khi gõ (chế độ Uinput) rồi tự "
 "chọn độ trễ chèn chữ phù hợp cho lần gõ kế tiếp. Có hiệu lực từ lần chuyển "
@@ -444,6 +444,25 @@ msgstr ""
 "window switch.\n"
 "Data is stored in ~/.config/fcitx5/conf/skey-app-delays.conf — delete that "
 "file to forget what was learned."
+
+#: src/settings/general_tab.cpp:141
+msgid "Bật A11y (trợ năng)"
+msgstr "Enable A11y (accessibility)"
+
+#: src/settings/general_tab.cpp:149
+msgid ""
+"SKey cần cây trợ năng (A11y) của trình duyệt để theo dõi con trỏ — cần cho "
+"Google Sheets (đổi ô), thanh địa chỉ và các ô nhập trên web. Khi bật, mỗi "
+"lần khởi động SKey sẽ kích hoạt khóa gsettings \"toolkit-accessibility\" "
+"(toàn hệ thống) để Chrome/Chromium dựng cây trợ năng — trình duyệt chỉ đọc "
+"khóa này lúc khởi động. Tắt nếu bạn tự quản lý trợ năng của hệ thống."
+msgstr ""
+"SKey needs the browser's accessibility (A11y) tree to track the caret — "
+"required for Google Sheets (cell changes), the address bar and web input "
+"fields. When enabled, SKey turns on the gsettings key \"toolkit-"
+"accessibility\" (system-wide) at every startup so Chrome/Chromium build "
+"their a11y trees — the browser only reads this key at launch. Disable if you "
+"manage the system accessibility state yourself."
 
 #: src/settings/hotkey_edit.cpp:32
 msgid "Nhấn tổ hợp phím..."
@@ -1076,30 +1095,3 @@ msgstr "Update successful! The system has been rebuilt with nixos-rebuild."
 #: src/settings/updater.cpp:580
 msgid "Cập nhật thất bại (mã %1): %2"
 msgstr "Update failed (code %1): %2"
-
-#~ msgid ""
-#~ "Mỗi ô hiển thị giá trị đang được dùng. Sửa một ô để ghi đè giá trị đó; "
-#~ "nút \"Dùng giá trị tự động\" trả về mức hiện tại. Có hiệu lực cho cả "
-#~ "thanh địa chỉ Chromium."
-#~ msgstr ""
-#~ "Each field shows the value currently in use. Edit a field to override it; "
-#~ "the \"Use automatic values\" button restores the current levels. Applies "
-#~ "to the Chromium address bar too."
-
-#~ msgid "Dùng giá trị tự động"
-#~ msgstr "Use automatic values"
-
-#~ msgid "Tự động (hiện %1ms)"
-#~ msgstr "Auto (now %1ms)"
-
-#~ msgid "Tự động (chưa có dữ liệu)"
-#~ msgstr "Auto (no data yet)"
-
-#~ msgid "Tự động (1ms)"
-#~ msgstr "Auto (1ms)"
-
-#~ msgid "Tự động (0ms)"
-#~ msgstr "Auto (0ms)"
-
-#~ msgid "Nâng cao"
-#~ msgstr "Advanced"

@@ -11,6 +11,8 @@
 #include <QGroupBox>
 #include <QLabel>
 #include <QPushButton>
+#include <QToolButton>
+#include <QToolTip>
 #include <QVBoxLayout>
 
 GeneralTab::GeneralTab(QWidget *parent) : QWidget(parent) { setupUI(); }
@@ -129,6 +131,39 @@ void GeneralTab::setupUI() {
       "xoá tệp đó để quên dữ liệu đã học."));
   checkLayout->addWidget(autoDelayCheck_, 3, 1);
 
+  // A11y checkbox + info icon: SKey needs the browsers' a11y trees; the
+  // checkbox toggles whether SKey auto-enables the system-wide
+  // toolkit-accessibility key at startup (default: on).
+  auto *a11yBox = new QWidget(checkFrame);
+  auto *a11yBoxLayout = new QHBoxLayout(a11yBox);
+  a11yBoxLayout->setContentsMargins(0, 0, 0, 0);
+  a11yBoxLayout->setSpacing(4);
+  a11yCheck_ = new QCheckBox(T("Bật A11y (trợ năng)"), a11yBox);
+  a11yBoxLayout->addWidget(a11yCheck_);
+  auto *a11yInfoButton = new QToolButton(a11yBox);
+  a11yInfoButton->setIcon(a11yInfoButton->style()->standardIcon(
+      QStyle::SP_MessageBoxInformation));
+  a11yInfoButton->setAutoRaise(true);
+  a11yInfoButton->setCursor(Qt::PointingHandCursor);
+  const QString a11yHelp = T(
+      "SKey cần cây trợ năng (A11y) của trình duyệt để theo dõi con trỏ — "
+      "cần cho Google Sheets (đổi ô), thanh địa chỉ và các ô nhập trên web. "
+      "Khi bật, mỗi lần khởi động SKey sẽ kích hoạt khóa gsettings "
+      "\"toolkit-accessibility\" (toàn hệ thống) để Chrome/Chromium dựng cây "
+      "trợ năng — trình duyệt chỉ đọc khóa này lúc khởi động. Tắt nếu bạn tự "
+      "quản lý trợ năng của hệ thống.");
+  a11yCheck_->setToolTip(a11yHelp);
+  a11yInfoButton->setToolTip(a11yHelp);
+  connect(a11yInfoButton, &QToolButton::clicked, this,
+          [a11yInfoButton, a11yHelp]() {
+            QToolTip::showText(
+                a11yInfoButton->mapToGlobal(QPoint(0, a11yInfoButton->height())),
+                a11yHelp, a11yInfoButton);
+          });
+  a11yBoxLayout->addWidget(a11yInfoButton);
+  a11yBoxLayout->addStretch();
+  checkLayout->addWidget(a11yBox, 4, 0);
+
   mainLayout->addWidget(checkFrame);
 
   mainLayout->addStretch();
@@ -167,6 +202,7 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
 
   debugCheck_->setChecked(cfg.debug);
   autoDelayCheck_->setChecked(cfg.autoDelay);
+  a11yCheck_->setChecked(cfg.autoEnableA11y);
 }
 
 SKeyConfig GeneralTab::collectConfig() const {
@@ -184,6 +220,7 @@ SKeyConfig GeneralTab::collectConfig() const {
   cfg.showPreedit = showPreeditCheck_->isChecked();
   cfg.debug = debugCheck_->isChecked();
   cfg.autoDelay = autoDelayCheck_->isChecked();
+  cfg.autoEnableA11y = a11yCheck_->isChecked();
   cfg.modeMenuKey = modeMenuKeyEdit_->fcitx5Value();
   return cfg;
 }

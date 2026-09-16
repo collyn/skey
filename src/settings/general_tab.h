@@ -42,6 +42,7 @@ private:
     QCheckBox *showPreeditCheck_;
     QCheckBox *debugCheck_;
     QCheckBox *autoDelayCheck_;
+    QCheckBox *a11yCheck_;
 };
 
 #endif // SKEY_SETTINGS_GENERAL_TAB_H
