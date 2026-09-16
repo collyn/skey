@@ -38,13 +38,29 @@ Distro Updater::detectDistro() {
             if (content.contains("ID=nixos") ||
                 content.contains("ID=\"nixos\""))
                 return Distro::NixOS;
+            // RPM-family IDs decide Fedora even when dnf is missing from
+            // PATH.  Checked before the package-manager fallback below.
+            static const char *const rpmIds[] = {"fedora", "rhel",
+                                                 "centos", "rocky",
+                                                 "almalinux", "nobara",
+                                                 "amzn"};
+            for (const char *id : rpmIds) {
+                if (content.contains(QString("ID=") + id) ||
+                    content.contains(QString("ID=\"") + id + "\""))
+                    return Distro::Fedora;
+            }
         }
     }
-    // Check package managers — order matters: dnf/rpm first because some
-    // Fedora systems may have dpkg installed for cross-build tooling,
-    // which would cause a false Debian detection.
-    if (!QStandardPaths::findExecutable("dnf").isEmpty() ||
-        !QStandardPaths::findExecutable("rpm").isEmpty())
+    // Package-manager fallback.  `rpm` alone is NOT evidence of an RPM
+    // distro: Ubuntu ships /usr/bin/rpm for packaging tooling without
+    // dnf, and classifying it as Fedora made the updater run `dnf
+    // install` — "cannot run program dnf", exit 127 (Ubuntu 26.04
+    // report, 2026-09-16).  dnf presence is still a valid dnf-based
+    // signal (also covers Fedora systems with unusual os-release).
+    // Order matters: dnf first because some Fedora systems may have
+    // dpkg installed for cross-build tooling, which would cause a false
+    // Debian detection.
+    if (!QStandardPaths::findExecutable("dnf").isEmpty())
         return Distro::Fedora;
     if (!QStandardPaths::findExecutable("dpkg").isEmpty())
         return Distro::Debian;
