@@ -6218,7 +6218,10 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       // D-Bus guarantees message ordering within a connection, so
       // commitString always arrives after the forwarded BackSpace
       // keys — no timer needed.
-      auto deleteViaBackspace = [&]() {
+      // laggingPush: the surrounding text was VALID but did not reflect
+      // the cache (stale or cursor-not-ready) — the app pushes updates
+      // asynchronously.  See the commit branch below.
+      auto deleteViaBackspace = [&](bool laggingPush) {
         // Chromium-family apps with shell children must keep the anchor
         // even when the shell scan flags them as terminals.
         // X11 native terminals also anchor through uinput even in Surr
@@ -6314,13 +6317,29 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             SKEY_DEBUG() << "Surr: deferred BS-forward '" << addedPart << "'";
             scheduleDeferredCommit(addedPart, stablePrefix,
                                    kX11BsForwardDeferredUsec);
+          } else if (!isWayland() && laggingPush) {
+            // X11 apps whose surrounding pushes LAG behind the commits
+            // (Telegram on Qt: every tone key saw "surrounding cache
+            // stale" — the push still showed the text from before the
+            // last commit).  Forwarded BS (XTEST) and commitString (XIM)
+            // are NOT serialized against each other on X11: when the
+            // app's IM pipeline is busy, the commit can be applied
+            // BEFORE the BS are processed, and the replacement then
+            // self-cancels — "da" + "đa" minus BS×2 leaves "da", so
+            // "đấy" ends up as "day" (or the commit is lost entirely
+            // and the word vanishes).  Defer like the office-suite path
+            // so the BS land first.
+            SKEY_DEBUG() << "Surr: deferred BS-forward (lagging push) '"
+                         << addedPart << "'";
+            scheduleDeferredCommit(addedPart, stablePrefix,
+                                   kX11BsForwardDeferredUsec);
           } else {
-            // X11 non-Chromium apps (Telegram etc.) and non-Chromium
-            // Wayland apps process forwarded BS + commit in order (the
-            // X server serializes delivery) — commit immediately, no
-            // extra latency (Telegram's validated lag-free path; the
-            // blanket deferral added a felt 10ms per tone key,
-            // 2026-09-08).
+            // X11 apps that never push surrounding text (the pre-Qt
+            // Telegram — surrounding always invalid) and non-Chromium
+            // Wayland apps process forwarded BS + commit in order —
+            // commit immediately, no extra latency (validated lag-free
+            // path; the blanket deferral added a felt 10ms per tone
+            // key, 2026-09-08).
             commitText(addedPart);
           }
         }
@@ -6376,7 +6395,9 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           } else {
             SKEY_DEBUG() << "Surr: native surrounding not ready";
           }
-          deleteViaBackspace();
+          // Valid-but-unusable surrounding = the app pushes asynchronously
+          // and the push has not caught up with our commits yet.
+          deleteViaBackspace(/*laggingPush=*/surrounding.isValid());
         } else {
           // Delete one character at a time.  Chrome has been observed to
           // drop multi-char delete_surrounding_text requests (the commit
@@ -6417,7 +6438,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         }
       } else {
         SKEY_DEBUG() << "Surr: client has no surrounding text capability";
-        deleteViaBackspace();
+        deleteViaBackspace(/*laggingPush=*/false);
       }
     } else {
       // deleteLen == 0: no deletion needed, only add new suffix if any
