@@ -2491,7 +2491,19 @@ bool SKeyState::isFirefoxOrSnap() const {
 }
 
 bool SKeyState::waylandNativeSurroundingProbe() const {
-  return isWayland() && !isChromiumCached() && !isTerminalAppCached();
+  // The probe exists for native Wayland apps whose caps omit the
+  // SurroundingText bit on the COMPOSITOR text-input path (kwin →
+  // waylandim).  It must not fire for the D-Bus frontend: fcitx5-gtk4 on
+  // Wayland reports display "wayland:" but carries its own accurate caps
+  // (surrounding support is only advertised when the app really provides
+  // it), and its forwardKey(BS) is an empty stub — Surr mode there means
+  // replacements never delete ("chào" → "chaào" in ghostty when the
+  // GTK_IM_MODULE=fcitx session env routed it through the dbus module,
+  // 2026-09-16; the dbus IC has no app id either, so the terminal name
+  // list can't catch it — "no SurroundingText cap, probing" → Surr).
+  // Gate on the frontend name instead of the display.
+  return isWayland() && ic_->frontendName() == "wayland" &&
+         !isChromiumCached() && !isTerminalAppCached();
 }
 
 bool SKeyState::useNativeSurroundingApi() const {
@@ -3324,20 +3336,25 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   }
 
   // ── Commit ──
-  // X11: defer the commit out of the ProcessKeyEvent call.  fcitx5's
-  // D-Bus frontend batches commits produced inside ProcessKeyEventBatch
-  // into the call's reply, and the fcitx5-gtk immodule delivers them
-  // synchronously inside filter_keypress — so GTK4 apps (ghostty) receive
-  // the commit while still inside the anchor key event, attach the text to
-  // the CONSUMED backspace, and drop it silently (ghostty KeyEncoder:
-  // backspace + utf8 → no PTY bytes; "chào" → "cho", verified 2026-09-14
-  // via dbus-monitor).  A 0-delay timer fires right after the D-Bus call
-  // returns, so the commit travels as a normal commit-string signal and
-  // reaches the app between key events.  The X11 sync anchor still
-  // guarantees the BS were applied first.  Wayland keeps the inline commit
-  // — its timing is tuned around it.
+  // Defer the commit out of the ProcessKeyEvent call whenever the frontend
+  // can trap it in a batch reply.  fcitx5's D-Bus frontend batches commits
+  // produced inside ProcessKeyEventBatch into the call's reply, and the
+  // fcitx5-gtk immodule delivers them synchronously inside filter_keypress
+  // — so GTK4 apps (ghostty) receive the commit while still inside the
+  // anchor key event, attach the text to the CONSUMED backspace, and drop
+  // it silently (ghostty KeyEncoder: backspace + utf8 → no PTY bytes;
+  // "chào" → "cho", verified 2026-09-14 via dbus-monitor).  A 0-delay
+  // timer fires right after the D-Bus call returns, so the commit travels
+  // as a normal commit-string signal and reaches the app between key
+  // events.  The X11 sync anchor still guarantees the BS were applied
+  // first.  The gate is FRONTEND-based, not display-based: fcitx5-gtk4 on
+  // Wayland reports display "wayland:" even though it talks to the D-Bus
+  // frontend (the same batch mechanism corrupts ghostty there — 2026-09-16
+  // after GTK_IM_MODULE=fcitx leaked into the session env).  The waylandim
+  // (compositor text-input) path keeps the inline commit — its timing is
+  // tuned around it.
   uinputDeleting_ = false;
-  if (!isWayland()) {
+  if (!isWayland() || ic_->frontendName() == "dbus") {
     uinputCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC, now(CLOCK_MONOTONIC), 0,
         [this, commitText = std::move(commitText), postMs = ov.postCommitMs](
