@@ -2490,6 +2490,14 @@ bool SKeyState::isFirefoxOrSnap() const {
   return false;
 }
 
+// Frontend-name comparison that works on every fcitx5 release: the newer
+// InputContext::frontendName() API is not available in older headers (the
+// CI builds against a release where frontend() is the only accessor).
+static bool isFrontendName(const fcitx::InputContext *ic, const char *name) {
+  const char *frontend = ic->frontend();
+  return frontend && std::strcmp(frontend, name) == 0;
+}
+
 bool SKeyState::waylandNativeSurroundingProbe() const {
   // The probe exists for native Wayland apps whose caps omit the
   // SurroundingText bit on the COMPOSITOR text-input path (kwin →
@@ -2502,7 +2510,7 @@ bool SKeyState::waylandNativeSurroundingProbe() const {
   // 2026-09-16; the dbus IC has no app id either, so the terminal name
   // list can't catch it — "no SurroundingText cap, probing" → Surr).
   // Gate on the frontend name instead of the display.
-  return isWayland() && ic_->frontendName() == "wayland" &&
+  return isWayland() && isFrontendName(ic_, "wayland") &&
          !isChromiumCached() && !isTerminalAppCached();
 }
 
@@ -3354,7 +3362,7 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   // (compositor text-input) path keeps the inline commit — its timing is
   // tuned around it.
   uinputDeleting_ = false;
-  if (!isWayland() || ic_->frontendName() == "dbus") {
+  if (!isWayland() || isFrontendName(ic_, "dbus")) {
     uinputCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC, now(CLOCK_MONOTONIC), 0,
         [this, commitText = std::move(commitText), postMs = ov.postCommitMs](
