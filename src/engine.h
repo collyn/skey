@@ -24,6 +24,7 @@
 #include "sheets_cell_tracker.h"
 #include "app_delay_key.h"
 #include "surrounding_cursor.h"
+#include "uinput_delete_ack.h"
 #include <deque>
 #include <fcitx/surroundingtext.h>
 
@@ -41,7 +42,7 @@ class SKeyState : public InputContextProperty {
 public:
     SKeyState(SKeyEngine *engine, InputContext *ic);
     ~SKeyState() override;
-    void surroundingTextChanged() { surroundingCursor_.invalidate(); }
+    void surroundingTextChanged();
 
     void keyEvent(KeyEvent &keyEvent);
     void activate();
@@ -71,6 +72,9 @@ private:
     void scheduleUinputSettle(uint64_t delay, int retries, int postMs);
     void replaySettledKeys();
     bool uinputSettling_ = false;
+    skey::UinputDeleteAck uinputDeleteAck_;
+    bool uinputAckUnavailable_ = false;
+    uint64_t uinputSettleStartedAt_ = 0;
     bool replayingSettledKeys_ = false;
     struct SettledKey { Key key; bool release; int time; };
     std::deque<SettledKey> settledKeys_;
@@ -136,7 +140,8 @@ private:
     void clearEngineBareCapsSticky() const;
     SKeyOutputMode detectAutoMode() const;
     bool connectUinputServer();
-    void sendBackspaceUinput(int count, uint32_t flags = 0);
+    void sendBackspaceUinput(int count, uint32_t flags = 0,
+                            std::string_view oldWord = {});
 
     /// Copy of the current app's manual override (all -1 when none).
     skey::AppDelayOverride appDelayOverrideResolved() const;
@@ -202,7 +207,7 @@ private:
     int committedLen_ = 0;
 
     /// Commit text to the app, converting to the configured charset.
-    bool commitText(const std::string &utf8);
+    bool commitText(const std::string &utf8, bool uinputReplacement = false);
     void commitText(const std::string &utf8, const std::string &fallbackCharset);
     bool modeMenuActive_ = false;
     bool modeMenuForAddressBar_ = false;
