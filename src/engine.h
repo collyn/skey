@@ -53,6 +53,8 @@ public:
     /// unless the IC is mid-word (Auto must not flip the composition
     /// path half-way through — the word-boundary trigger handles it).
     void invalidateAppModeOverrideCache();
+    /// Refresh an active preedit after changing its visibility in settings.
+    void refreshPreeditVisibility();
     /// Per-input deferred-commit delay for the X11 Chromium no-cap Surr
     /// fallback (forwardKey BS + deferred commit): FB-page inputs get the
     /// same 20ms floor as the Uinput path (heavy renderer), other inputs
@@ -354,6 +356,7 @@ private:
     // Spurious-cycle detection: when preeditWasPending_ is true and
     // the next activate is for the same IC+program, the app auto-committed
     // on focus loss (e.g., LibreOffice) — skip the engine fallback commit.
+    // Hidden preedit leaves this false: the app has nothing to auto-commit.
     bool preeditWasPending_ = false;
     std::string preeditPendingProgram_;
     std::string pendingUinputCommit_;

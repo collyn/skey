@@ -76,3 +76,9 @@ surrounding text and a reset after each key, without the Url capability.
 The application model verifies that the native delete removes `o` before
 committing `õ`, and that no Uinput request is sent. Separate cases retain
 the Uinput fallback for missing/stale snapshots and Docs-suite editors.
+
+Preedit visibility cases run with X11/Wayland focus groups, both with and
+without client preedit capability. They cover toggling visibility mid-word,
+hidden tone composition and Space commit, changing the display destination,
+recovering hidden composition after focus loss, and avoiding duplicate text
+or overwriting the mode menu in other output modes.

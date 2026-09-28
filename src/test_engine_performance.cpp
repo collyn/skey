@@ -81,6 +81,83 @@ protected:
 
 namespace fcitx {
 struct EnginePerformanceTest {
+    static void preeditVisibility(Instance &instance, bool wayland, bool client) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager());
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(client ? CapabilityFlags(CapabilityFlag::Preedit) : CapabilityFlags());
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "skey-test";
+        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::Preedit;
+        engine.config_.showPreedit.setValue(true);
+        auto press = [&](KeySym sym) {
+            KeyEvent event(&input, Key(sym));
+            state.keyEvent(event);
+            check(event.accepted(), "preedit typing must consume the key");
+        };
+        auto visible = [&](const std::string &expected) {
+            check(input.inputPanel().clientPreedit().toString() == (client ? expected : "") &&
+                      input.inputPanel().preedit().toString() == (client ? "" : expected),
+                  "ShowPreedit must control inline and fallback-panel visibility");
+        };
+        press(FcitxKey_g);
+        press(FcitxKey_o);
+        visible("go");
+        engine.config_.showPreedit.setValue(false);
+        state.refreshPreeditVisibility();
+        visible("");
+        check(state.viet_.getComposed() == "go" && input.commits.empty(),
+              "hiding preedit must neither reset nor commit the composition");
+        press(FcitxKey_x);
+        visible("");
+        check(state.viet_.getComposed() == "gõ", "hidden composition must still process tone keys");
+        engine.config_.showPreedit.setValue(true);
+        state.refreshPreeditVisibility();
+        visible("gõ");
+        // A capability change must not leave the old destination visible.
+        client = !client;
+        input.setCapabilityFlags(client ? CapabilityFlags(CapabilityFlag::Preedit) : CapabilityFlags());
+        state.refreshPreeditVisibility();
+        visible("gõ");
+        engine.config_.showPreedit.setValue(false);
+        state.refreshPreeditVisibility();
+        KeyEvent space(&input, Key(FcitxKey_space));
+        state.keyEvent(space);
+        visible("");
+        std::string committed;
+        for (const auto &text : input.commits) committed += text;
+        check(committed == "gõ" && !space.accepted() && state.viet_.getRawInput().empty(),
+              "space must commit hidden preedit exactly once");
+
+        state.cachedMode_ = SKeyOutputMode::SurroundingText;
+        state.modeCacheValid_ = true;
+        state.viet_.setRawInput("gõ");
+        engine.config_.showPreedit.setValue(true);
+        state.refreshPreeditVisibility();
+        visible("");
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.refreshPreeditVisibility();
+        visible("");
+        state.cachedMode_ = SKeyOutputMode::Preedit;
+        state.modeMenuActive_ = true;
+        state.refreshPreeditVisibility();
+        visible("");
+        state.modeMenuActive_ = false;
+        engine.config_.outputMode.setValue(SKeyOutputMode::Preedit);
+        engine.config_.showPreedit.setValue(false);
+        state.deactivate();
+        check(!state.preeditWasPending_ && engine.pendingPreedits_["skey-test"] == "gõ",
+              "hidden preedit must be saved without assuming the app auto-committed it");
+        const auto commitsBeforeFocus = input.commits.size();
+        state.activate();
+        check(input.commits.size() == commitsBeforeFocus + 1 && input.commits.back() == "gõ" &&
+                  engine.pendingPreedits_.empty(),
+              "returning to the same input must recover hidden preedit exactly once");
+    }
+
     static void firefoxNativeReplacement(Instance &instance) {
         class FirefoxInput : public TestInput {
         public:
@@ -637,6 +714,9 @@ int main(int argc, char **argv) {
     policies();
     {
         fcitx::Instance instance(argc, argv);
+        for (bool wayland : {false, true})
+            for (bool client : {false, true})
+                fcitx::EnginePerformanceTest::preeditVisibility(instance, wayland, client);
         fcitx::EnginePerformanceTest::firefoxNativeReplacement(instance);
         fcitx::EnginePerformanceTest::firefoxFallback(instance, 0, false);
         fcitx::EnginePerformanceTest::firefoxFallback(instance, 2, false);

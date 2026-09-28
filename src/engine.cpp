@@ -1396,6 +1396,7 @@ void SKeyEngine::maybeSaveAppDelays(bool force) {
 }
 
 void SKeyEngine::reloadConfig() {
+  const bool previousShowPreedit = config_.showPreedit.value();
   // Migrate legacy "Telex W" input method → Telex + ShortW=True.
   // The TelexW enum value no longer exists, so peek the raw ini first.
   {
@@ -1460,9 +1461,12 @@ void SKeyEngine::reloadConfig() {
   // half-way through.  (foreach visits only live ICs — never
   // lastFocusedInputContext(), which can dangle during startup focus
   // churn and trips the manager assert in propertyFor().)
-  instance_->inputContextManager().foreach ([this](InputContext *ic) {
+  instance_->inputContextManager().foreach ([this, previousShowPreedit](InputContext *ic) {
     if (auto *state = ic->propertyFor(&factory_)) {
       state->invalidateAppModeOverrideCache();
+      if (ic->hasFocus() && previousShowPreedit != config_.showPreedit.value()) {
+        state->refreshPreeditVisibility();
+      }
     }
     return true;
   });
@@ -3597,7 +3601,7 @@ void SKeyState::deactivate() {
             // Save preedit for restore on next activation (see reset()).
             if (!viet_.getComposed().empty() && !useSurroundingText()) {
               if (!preeditWasPending_) {
-                preeditWasPending_ = true;
+                preeditWasPending_ = engine_->config().showPreedit.value();
                 preeditPendingProgram_ = appProgram();
                 engine_->pendingPreedits_[appProgram()] = viet_.getComposed();
               }
@@ -3667,7 +3671,7 @@ void SKeyState::deactivate() {
   // Save preedit for restore on next activation (see reset()).
   if (!viet_.getComposed().empty() && !useSurroundingText()) {
     if (!preeditWasPending_) {
-      preeditWasPending_ = true;
+      preeditWasPending_ = engine_->config().showPreedit.value();
       preeditPendingProgram_ = appProgram();
       engine_->pendingPreedits_[appProgram()] = viet_.getComposed();
       SKEY_DEBUG() << "Deactivate: saved preedit '" << viet_.getComposed()
@@ -3730,7 +3734,7 @@ void SKeyState::reset() {
   // commitString() during reset() is silently dropped on some
   // Wayland compositors (GNOME Mutter).
   if (!viet_.getComposed().empty() && !useSurroundingText()) {
-    preeditWasPending_ = true;
+    preeditWasPending_ = engine_->config().showPreedit.value();
     preeditPendingProgram_ = appProgram();
     engine_->pendingPreedits_[appProgram()] = viet_.getComposed();
     SKEY_DEBUG() << "Reset: saved preedit '" << viet_.getComposed()
@@ -6719,14 +6723,26 @@ void SKeyState::reclaimLastWord() {
                << "' committedLen=" << committedLen_;
 }
 
+void SKeyState::refreshPreeditVisibility() {
+  // Committed-text modes must not display a duplicate of the current word.
+  // Settings changes must not replace an open mode-selection menu either.
+  if (!modeMenuActive_ && !useSurroundingText()) {
+    updatePreedit();
+  }
+}
+
 void SKeyState::updatePreedit() {
   Text clientPreedit;
   std::string composed = viet_.getComposed();
-  if (!composed.empty()) {
+  if (engine_->config().showPreedit.value() && !composed.empty()) {
     clientPreedit.append(composed, TextFormatFlag::Underline);
     clientPreedit.setCursor(composed.size());
   }
 
+  // Clear both destinations when hiding or when the client's capability
+  // changes; keep viet_ intact so hidden composition still commits normally.
+  ic_->inputPanel().setClientPreedit(Text());
+  ic_->inputPanel().setPreedit(Text());
   if (ic_->capabilityFlags().test(CapabilityFlag::Preedit)) {
     ic_->inputPanel().setClientPreedit(clientPreedit);
   } else {
