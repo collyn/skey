@@ -989,7 +989,7 @@ void SKeyEngine::setupTrayMenu() {
   // ── Settings action ──
   settingsAction_.setShortText(_("Settings..."));
   settingsAction_.registerAction("skey-settings", &uiManager);
-  settingsAction_.connect<SimpleAction::Activated>([this](InputContext *ic) {
+  settingsAction_.connect<SimpleAction::Activated>([](InputContext *ic) {
     FCITX_UNUSED(ic);
     pid_t pid = fork();
     if (pid == 0) {
@@ -3364,6 +3364,11 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
   uinputDeleting_ = false;
   if (!text.empty()) {
     if (isFirefoxOrSnap()) uinputKeyForwarded_ = true;
+    const auto &surrounding = ic_->surroundingText();
+    SKEY_DEBUG() << "Uinput: settle commit '" << text
+                 << "' surrValid=" << surrounding.isValid()
+                 << " cursor=" << surrounding.cursor()
+                 << " anchor=" << surrounding.anchor();
     if (!commitText(text)) return;
   }
   if (uinputPendingFinalLen_ > 0) {
@@ -4152,7 +4157,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         newMode = SKeyOutputMode::Preedit;
         break;
       default:
-        break; // unreachable
+        return; // unreachable after the choice range check
       }
       appExcluded_ = false;
       engine_->saveAppExcluded(appProgram(), false);
@@ -6428,15 +6433,16 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       // commit, causing corruption when deleteSurroundingText races with
       // omnibox updates.  The uinput BS approach lets Chrome process the
       // deletion as real keystrokes before we commit the replacement.
-      // X11 Firefox-family: delete_surrounding_text through Firefox's
-      // async renderer is DROPPED in heavy web apps (Google Sheets:
-      // "bạn" → "baạn" — the deletes never land, 2026-09-13; deferring
-      // the commit only shifted the odds).  Route X11 Firefox through
-      // deleteViaBackspace() below instead — the uinput anchor deletion
-      // uses the real keyboard path the web app is built for.  Wayland
-      // Firefox keeps the native deletes (validated there).
+      // Keep the X11 Firefox Uinput workaround for Docs-suite editors,
+      // whose renderer can drop native deletes. Do not extend it to every
+      // Firefox/Snap entry: the address bar supplies matching surrounding
+      // text, while injected BS may leave it unchanged (go + x -> goõ).
+      // Other entries use native deletion only after the validity/suffix
+      // checks below; missing/stale snapshots still fall back to Backspace.
+      const bool firefoxDocsUinput = !isWayland() && isFirefoxOrSnap() &&
+                                     a11yGoogleDocsFocused();
       if (useNativeSurroundingApi() && !inChromiumAddressBar() &&
-          !(!isWayland() && isFirefoxOrSnap())) {
+          !firefoxDocsUinput) {
         const auto &surrounding = ic_->surroundingText();
         bool cacheStale = !surroundingCacheEndsWith(surrounding, oldComposed);
         if (!surrounding.isValid() ||
@@ -6514,7 +6520,17 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           }
         }
       } else {
-        SKEY_DEBUG() << "Surr: client has no surrounding text capability";
+        const auto &surrounding = ic_->surroundingText();
+        SKEY_DEBUG() << "Surr: Backspace fallback reason="
+                     << (!useNativeSurroundingApi() ? "native-api-unavailable"
+                         : inChromiumAddressBar() ? "chromium-address-bar"
+                                                  : "firefox-docs-x11-policy")
+                     << " surrValid=" << surrounding.isValid()
+                     << " cursor=" << surrounding.cursor()
+                     << " anchor=" << surrounding.anchor()
+                     << " oldSuffixMatches="
+                     << (surrounding.isValid() &&
+                         surroundingCacheEndsWith(surrounding, oldComposed));
         deleteViaBackspace(/*laggingPush=*/false);
       }
     } else {

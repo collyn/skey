@@ -1305,7 +1305,7 @@ int main(int argc, char **argv) {
 
     auto runCrossMethod = [](const CrossMethodTest &cmt, bool checkVNI,
                              bool checkShortW) {
-      int localPassed = 0, localFailed = 0;
+      int localFailed = 0;
 
       // Telex
       {
@@ -1313,9 +1313,7 @@ int main(int argc, char **argv) {
         eng.setMethod(skey::InputMethod::Telex);
         auto [c, p] = feedKeys(eng, cmt.telexKeys);
         std::string result = c + p;
-        if (result == cmt.expected)
-          ++localPassed;
-        else {
+        if (result != cmt.expected) {
           ++localFailed;
           std::cout << RED << "  FAIL" << RESET << "  " << cmt.name
                     << " Telex: \"" << cmt.telexKeys << "\" → \"" << result
@@ -1329,16 +1327,12 @@ int main(int argc, char **argv) {
         eng.setMethod(skey::InputMethod::VNI);
         auto [c, p] = feedKeys(eng, cmt.vniKeys);
         std::string result = c + p;
-        if (result == cmt.expected)
-          ++localPassed;
-        else {
+        if (result != cmt.expected) {
           ++localFailed;
           std::cout << RED << "  FAIL" << RESET << "  " << cmt.name
                     << " VNI: \"" << cmt.vniKeys << "\" → \"" << result
                     << "\" (expected \"" << cmt.expected << "\")\n";
         }
-      } else {
-        ++localPassed; // skip VNI
       }
 
       // Telex + ShortW
@@ -1348,16 +1342,12 @@ int main(int argc, char **argv) {
         eng.setMethod(skey::InputMethod::Telex);
         auto [c, p] = feedKeys(eng, cmt.shortWKeys);
         std::string result = c + p;
-        if (result == cmt.expected)
-          ++localPassed;
-        else {
+        if (result != cmt.expected) {
           ++localFailed;
           std::cout << RED << "  FAIL" << RESET << "  " << cmt.name
                     << " ShortW: \"" << cmt.shortWKeys << "\" → \"" << result
                     << "\" (expected \"" << cmt.expected << "\")\n";
         }
-      } else {
-        ++localPassed; // skip ShortW
       }
 
       if (localFailed == 0) {

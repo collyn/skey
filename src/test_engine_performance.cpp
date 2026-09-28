@@ -1,14 +1,58 @@
 #include "engine.h"
 #include "input_timing.h"
 #include "a11y_work_policy.h"
-#include "browser_identity.h"
 #include "x11_app_name.h"
 #include <fcitx-utils/event.h>
 #include <fcitx/focusgroup.h>
-#include <fcitx-utils/misc.h>
 #include <cstdlib>
+#include <cerrno>
 #include <iostream>
 #include <limits>
+#include <sys/socket.h>
+#include <unistd.h>
+
+static void check(bool value, const char *message);
+
+// A small application model, not a LibreOffice/Wayland compositor emulator.
+// Delay IM commits so a raw letter can overtake them in the Wayland case.
+// The assertion is on visible UTF-8 text, independently of viet_'s state.
+class OfficeTextInput : public fcitx::InputContext {
+public:
+    OfficeTextInput(fcitx::InputContextManager &manager, bool wayland)
+        : InputContext(manager, "soffice.bin"), wayland_(wayland) { created(); }
+    ~OfficeTextInput() override { destroy(); }
+    const char *frontend() const override { return "test"; }
+    std::string text;
+    void flushCommits() { text += pending_; pending_.clear(); }
+    void key(const fcitx::Key &key, bool release) {
+        if (release) return;
+        if (key.check(FcitxKey_BackSpace)) {
+            flushCommits();
+            check(!text.empty(), "injected deletion must not cross the start of the word");
+            size_t last = text.size() - 1;
+            while (last > 0 && (static_cast<unsigned char>(text[last]) & 0xc0) == 0x80) --last;
+            text.erase(last);
+        } else {
+            if (!wayland_) flushCommits();
+            text += fcitx::Key::keySymToUTF8(key.sym());
+            // Adversarial ordering: physical append lands before the IM
+            // commit, just as a queued a could overtake the committed đ.
+            flushCommits();
+        }
+    }
+protected:
+    void commitStringImpl(const std::string &value) override { pending_ += value; }
+    void forwardKeyImpl(const fcitx::ForwardKeyEvent &event) override {
+        key(event.rawKey(), event.isRelease());
+    }
+    void deleteSurroundingTextImpl(int, unsigned) override {
+        check(false, "Uinput regression must not use native surrounding deletion");
+    }
+    void updatePreeditImpl() override {}
+private:
+    bool wayland_;
+    std::string pending_;
+};
 
 static int checks = 0;
 static void check(bool value, const char *message) {
@@ -37,6 +81,184 @@ protected:
 
 namespace fcitx {
 struct EnginePerformanceTest {
+    static void firefoxNativeReplacement(Instance &instance) {
+        class FirefoxInput : public TestInput {
+        public:
+            explicit FirefoxInput(InputContextManager &manager) : TestInput(manager, "firefox") {}
+            std::string text;
+            unsigned cursor = 0;
+        protected:
+            void commitStringImpl(const std::string &value) override {
+                commits.push_back(value);
+                text += value;
+                ++cursor; // this scenario commits one code point at a time
+                surroundingText().setText(text, cursor, cursor);
+                updateSurroundingText();
+            }
+            void deleteSurroundingTextImpl(int offset, unsigned size) override {
+                check(offset == -1 && size == 1 && text == "go",
+                      "Firefox native request must delete only the old o");
+                ++deletions;
+                text.pop_back();
+                --cursor;
+                // Engine mirrors the delete; publish the next snapshot on commit.
+            }
+        };
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("x11:test", instance.inputContextManager());
+        FirefoxInput input(instance.inputContextManager());
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::SurroundingText); // Url absent, as in log
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "firefox";
+        state.cachedIsChromium_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsFirefoxOrSnap_ = 1;
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::SurroundingText;
+        // A private transport ensures a regression cannot inject real keys.
+        int sockets[2];
+        check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+              "create Firefox regression transport");
+        state.uinputClientFd_ = sockets[0];
+        for (char ch : std::string("gox")) {
+            KeyEvent event(&input, Key(static_cast<KeySym>(ch)));
+            state.keyEvent(event);
+            check(event.accepted(), "Firefox surrounding mode consumes each Telex key");
+            state.reset(); // Firefox resets after each commit in the report
+        }
+        check(input.text == "gõ" && input.deletions == 1 && input.forwarded.empty(),
+              "Firefox X11 go+x must replace o through native deletion, not append goõ");
+        check(!state.uinputDeleting_ && !state.hasDeferredCommitPending() &&
+                  state.viet_.getComposed() == "gõ",
+              "Firefox reset must preserve completed native replacement");
+        char request[16];
+        check(recv(sockets[1], request, sizeof(request), MSG_DONTWAIT) < 0 &&
+                  errno == EAGAIN,
+              "matching Firefox surrounding text must not send Uinput Backspace");
+        close(sockets[0]);
+        state.uinputClientFd_ = -1;
+        close(sockets[1]);
+    }
+
+    static void firefoxFallback(Instance &instance, int snapshot, bool docs) {
+        SKeyEngine engine(&instance, false);
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+        engine.a11yMonitor_->googleDocsDocFocused_ = docs;
+        FocusGroup group("x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "firefox");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::SurroundingText);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "firefox";
+        state.cachedIsChromium_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsFirefoxOrSnap_ = 1;
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::SurroundingText;
+        if (snapshot != 0) {
+            input.surroundingText().setText(snapshot == 1 ? "go" : "zz", 2, 2);
+            input.updateSurroundingText();
+        }
+        int sockets[2];
+        check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+              "create Firefox fallback transport");
+        state.uinputClientFd_ = sockets[0];
+        state.surroundingCommit("go", "gõ");
+        uint32_t request[4] = {};
+        check(recv(sockets[1], request, sizeof(request), 0) == sizeof(request) && request[0] == 2,
+              "Firefox missing/stale surrounding or Docs must retain Uinput fallback");
+        check(input.deletions == 0 && input.commits.empty() && state.uinputDeleting_,
+              "fallback must wait for Backspace before committing");
+        state.resetForCellChange();
+        close(sockets[0]);
+        state.uinputClientFd_ = -1;
+        close(sockets[1]);
+    }
+
+    static void officeWord(Instance &instance, bool wayland,
+                           const std::string &keys, int arrival) {
+        std::cout << "Office word: " << (wayland ? "Wayland" : "X11")
+                  << " keys=" << keys << " arrival=" << arrival << std::endl;
+        SKeyEngine engine(&instance, false);
+        FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
+        OfficeTextInput input(instance.inputContextManager(), wayland);
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::SurroundingText);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "soffice.bin";
+        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        // Capture actual server requests without connecting to the desktop
+        // uinput service or injecting any keys into the user's applications.
+        int sockets[2];
+        check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+              "create isolated uinput transport");
+        state.uinputClientFd_ = sockets[0]; // owned/closed by SKeyState
+        auto press = [&](char ch) {
+            KeyEvent event(&input, Key(static_cast<KeySym>(ch)));
+            state.keyEvent(event);
+            if (!event.accepted()) input.key(event.rawKey(), false);
+        };
+        int replacements = 0;
+        int realDeletes = 0;
+        bool burstSent = false;
+        auto burst = [&] {
+            burstSent = true;
+            for (size_t i = 2; i < keys.size(); ++i) press(keys[i]);
+        };
+        auto drain = [&] {
+            while (state.uinputDeleting_) {
+                check(++replacements <= 4, "replacement replay must terminate");
+                uint32_t request[4] = {};
+                const auto received = recv(sockets[1], request, sizeof(request), 0);
+                if (received != sizeof(request))
+                    std::cerr << "uinput recv=" << received << " errno=" << errno
+                              << " fd=" << state.uinputClientFd_ << " expected="
+                              << state.expectedUinputBackspaces_ << "\n";
+                check(received == sizeof(request),
+                      "replacement must send one complete uinput v3 request");
+                check(request[0] >= 2 && request[0] <= 3 && request[1] == 0 && request[2] == 0,
+                      "request contains suffix deletions plus one sync anchor");
+                for (uint32_t i = 0; i < request[0]; ++i) {
+                    KeyEvent event(&input, Key(FcitxKey_BackSpace));
+                    state.keyEvent(event);
+                    if (i + 1 == request[0]) {
+                        check(event.accepted(), "sync anchor must never delete application text");
+                    } else {
+                        check(!event.accepted(), "real backspace must reach application");
+                        input.key(event.rawKey(), false);
+                        ++realDeletes;
+                    }
+                }
+                check(state.uinputSettling_, "anchor must schedule the commit");
+                if (arrival == 2 && !burstSent) burst();
+                // Advance the settle boundary deterministically. Existing run()
+                // tests exercise the real event-loop timer and cancellation.
+                state.finishUinputSettle(0, 0);
+            }
+        };
+        press('d');
+        press('d');
+        if (arrival == 1) burst(); // all remaining keys before the sync anchor
+        drain();
+        if (arrival == 0) {
+            for (size_t i = 2; i < keys.size(); ++i) {
+                press(keys[i]);
+                drain();
+            }
+        }
+        input.flushCommits();
+        if (input.text != "đây") std::cerr << "Actual application text: " << input.text << '\n';
+        check(input.text == "đây", "application text must retain đ for ddaay and ddaya");
+        check(replacements == 2 && realDeletes == (keys == "ddaay" ? 2 : 3),
+              "one- and two-character suffix replacements delete exactly the intended text");
+        check(state.viet_.getComposed() == "đây" && state.committedLen_ == 3 &&
+                  state.bufferedUinputKeys_.empty() && state.settledKeys_.empty() &&
+                  !state.uinputSettling_ && state.uinputBsOutstanding_ == 0,
+              "composition and transaction queues must agree with application text");
+        close(sockets[1]);
+    }
+
     static void officeAppendOrdering(Instance &instance, bool wayland,
                                      const char *program, bool expectCommit) {
         SKeyEngine engine(&instance, false);
@@ -415,6 +637,14 @@ int main(int argc, char **argv) {
     policies();
     {
         fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::firefoxNativeReplacement(instance);
+        fcitx::EnginePerformanceTest::firefoxFallback(instance, 0, false);
+        fcitx::EnginePerformanceTest::firefoxFallback(instance, 2, false);
+        fcitx::EnginePerformanceTest::firefoxFallback(instance, 1, true);
+        for (bool wayland : {false, true})
+            for (const char *keys : {"ddaay", "ddaya"})
+                for (int arrival : {0, 1, 2})
+                    fcitx::EnginePerformanceTest::officeWord(instance, wayland, keys, arrival);
         fcitx::EnginePerformanceTest::officeAppendOrdering(instance, true, "soffice.bin", true);
         fcitx::EnginePerformanceTest::officeAppendOrdering(instance, false, "soffice.bin", false);
         fcitx::EnginePerformanceTest::officeAppendOrdering(instance, true, "skey-test", false);
