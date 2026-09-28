@@ -5292,6 +5292,19 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
             // Check matching append: old + key == new
             if (oldComposed + keyUtf8 == newComposed) {
+              // Wayland office apps receive raw keys and IM commits through
+              // different queues. An append immediately after a replacement
+              // can overtake it (dd,a -> ađ); the next aa/aya replacement
+              // then deletes đ instead of the expected suffix. Keep letters
+              // on the same commit channel as the replacement, including
+              // keys replayed after the asynchronous settle timer.
+              if (isWayland() && isOfficeSuiteApp(appProgram())) {
+                keyEvent.filterAndAccept();
+                SKEY_DEBUG() << "Uinput: commit append '" << keyUtf8
+                             << "' [office]";
+                commitText(keyUtf8);
+                return;
+              }
               // Forward raw X11 key — instant, no D-Bus latency.
               // Set cycle protection + trigger-key guard: a subsequent
               // replacement's commit can trigger spurious focus changes

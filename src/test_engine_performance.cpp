@@ -37,6 +37,50 @@ protected:
 
 namespace fcitx {
 struct EnginePerformanceTest {
+    static void officeAppendOrdering(Instance &instance, bool wayland,
+                                     const char *program, bool expectCommit) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), program);
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::SurroundingText);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = program;
+        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+
+        KeyEvent first(&input, Key(FcitxKey_d));
+        state.keyEvent(first);
+        check(first.accepted() == expectCommit,
+              "office Wayland letters must use commits; other apps retain raw keys");
+        input.commits.clear();
+
+        // dd has deleted d and is waiting to commit đ. A physical a arrives
+        // while settling, as in the LibreOffice report. Replaying it through
+        // forwardKey would allow the app's raw-key queue to overtake đ.
+        state.viet_.setRawInput("đ");
+        state.uinputDeleting_ = true;
+        state.pendingUinputCommit_ = "đ";
+        state.uinputPendingFinalLen_ = 1;
+        state.scheduleUinputSettle(50000, 0, 0);
+        KeyEvent append(&input, Key(FcitxKey_a));
+        state.keyEvent(append);
+        check(append.accepted() && input.commits.empty(), "append must wait for pending replacement");
+        state.finishUinputSettle(0, 0);
+        check(!input.commits.empty() && input.commits[0] == "đ", "replacement commits first");
+        if (expectCommit) {
+            check(input.commits.size() == 2 && input.commits[1] == "a" && input.forwarded.empty(),
+                  "queued office append must follow replacement on the same commit channel");
+        } else {
+            check(input.commits.size() == 1 && input.forwarded.size() == 1 &&
+                      input.forwarded[0].key.sym() == FcitxKey_a,
+                  "other apps retain forwarded append during replay");
+        }
+        check(state.viet_.getComposed() == "đa" && state.committedLen_ == 2,
+              "append routing must preserve composition and length");
+    }
+
     static void electronBackspace(Instance &instance) {
         SKeyEngine engine(&instance, false);
         FocusGroup group("wayland:test", instance.inputContextManager());
@@ -371,6 +415,9 @@ int main(int argc, char **argv) {
     policies();
     {
         fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::officeAppendOrdering(instance, true, "soffice.bin", true);
+        fcitx::EnginePerformanceTest::officeAppendOrdering(instance, false, "soffice.bin", false);
+        fcitx::EnginePerformanceTest::officeAppendOrdering(instance, true, "skey-test", false);
         fcitx::EnginePerformanceTest::electronBackspace(instance);
         fcitx::EnginePerformanceTest::nativeBackspaceUnchanged(instance, true, "google-chrome", true);
         fcitx::EnginePerformanceTest::nativeBackspaceUnchanged(instance, true, "skey-test", false);
