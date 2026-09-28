@@ -174,7 +174,7 @@ AppDelayDialog::Group AppDelayDialog::buildGroup(
         warningLabel->setText(warnings.join(' '));
     };
     connect(g.customCheck, &QCheckBox::toggled, this,
-            [this, paceSpin = g.paceSpin, preSpin = g.preSpin,
+            [paceSpin = g.paceSpin, preSpin = g.preSpin,
              postSpin = g.postSpin, refreshWarning](bool on) {
                 paceSpin->setEnabled(on);
                 preSpin->setEnabled(on);

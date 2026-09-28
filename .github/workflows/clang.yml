@@ -1,0 +1,36 @@
+name: Clang checks
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  clang:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and analysis tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 clang-tools-18 cmake extra-cmake-modules \
+            libfcitx5core-dev fcitx5 pkg-config gettext libdbus-1-dev libxcb1-dev \
+            qt6-base-dev libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev \
+            dbus-daemon python3
+      - name: Build, test, and audit includes
+        env:
+          CC: clang-18
+          CXX: clang++-18
+          CLANG_INCLUDE_CLEANER: clang-include-cleaner-18
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          bash scripts/check-clang.sh 2>&1 | tee clang-checks.log
+      - name: Upload diagnostic log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-checks
+          path: clang-checks.log

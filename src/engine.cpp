@@ -2,6 +2,8 @@
 
 #include "charset.h"
 #include "icon_resolver.h"
+#include "input_timing.h"
+#include "browser_identity.h"
 #include "x11_app_name.h"
 
 #include <fcitx-config/iniparser.h>
@@ -210,8 +212,6 @@ static constexpr UinputTiming kUinputTimingWayland = {
 };
 
 // Surr deferred commit timing (same mechanism, independent of uinput path)
-static constexpr uint64_t dbusDeferredDefaultUsec = 15000;
-static constexpr uint64_t dbusDeferredMinUsec = 10000;
 // Fixed delay for the native delete path (deleteSurroundingText followed
 // by the deferred commit).  The deletes travel the text-input protocol
 // (no forwarded keys to process), so the commit only needs to avoid
@@ -360,30 +360,9 @@ static size_t commonUtf8PrefixBytes(const std::string &a,
 /// and the follow-up commit then duplicates text (retyping "thật" after
 /// deleting it ends up as "thâtật").
 /// SurroundingText::cursor() is a character offset into text().
-static bool surroundingCacheEndsWith(const fcitx::SurroundingText &st,
-                                     const std::string &expected) {
-  if (!st.isValid() || expected.empty()) {
-    return false;
-  }
-  const std::string &txt = st.text();
-  if (txt.size() < expected.size()) {
-    return false;
-  }
-  // Convert the character cursor position to a byte offset.
-  size_t curBytes = 0;
-  for (unsigned int charsLeft = st.cursor();
-       charsLeft > 0 && curBytes < txt.size(); --charsLeft) {
-    ++curBytes;
-    while (curBytes < txt.size() &&
-           (static_cast<unsigned char>(txt[curBytes]) & 0xC0) == 0x80) {
-      ++curBytes;
-    }
-  }
-  if (curBytes < expected.size()) {
-    return false;
-  }
-  return txt.compare(curBytes - expected.size(), expected.size(), expected) ==
-         0;
+bool SKeyState::surroundingCacheEndsWith(const fcitx::SurroundingText &st,
+                                        std::string_view expected) {
+  return st.isValid() && surroundingCursor_.endsWith(st.text(), st.cursor(), expected);
 }
 
 static std::string outputModeName(SKeyOutputMode mode) {
@@ -459,10 +438,6 @@ static std::string userPkgDataDir() {
 #endif
 }
 
-/// Check if a program name is a known Chromium-based browser.
-// Matches actual Chromium-family browser programs.
-// Used ONLY for address-bar detection — electron/tabby must NOT match here
-// or non-browser Electron apps are misidentified as Chrome address bar.
 // Office suites with broken SurroundingText implementations (routing
 // exception on both platforms, user decision 2026-09-08 X11 / 2026-09-16
 // Wayland): LibreOffice's VCL and WPS/OnlyOffice process the fallback's
@@ -495,20 +470,7 @@ static bool isOfficeSuiteApp(const std::string &prog) {
 // both sides.
 using skey::appDelayKey;
 
-static bool isChromiumBrowser(const std::string &prog) {
-  static const char *const patterns[] = {
-      "chrome",  "chromium",       "google-chrome", "brave",
-      "vivaldi", "microsoft-edge", "opera",
-  };
-  std::string lower = prog;
-  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-  for (const char *p : patterns) {
-    if (lower.find(p) != std::string::npos) {
-      return true;
-    }
-  }
-  return false;
-}
+using skey::isChromiumBrowser;
 
 // Check a single binary's own path for Chromium/Electron markers.
 // Deliberately process-own only: ancestor chains are not evidence — an
@@ -927,7 +889,7 @@ private:
 // SKeyEngine
 // ---------------------------------------------------------------------------
 
-SKeyEngine::SKeyEngine(Instance *instance)
+SKeyEngine::SKeyEngine(Instance *instance, bool initializeDesktop)
     : instance_(instance), factory_([this](InputContext &ic) -> SKeyState * {
         return new SKeyState(this, &ic);
       }) {
@@ -936,6 +898,14 @@ SKeyEngine::SKeyEngine(Instance *instance)
   // registered on the manager — at startup an IC can already exist
   // (portal monitor query) before the addon constructor finishes.
   instance_->inputContextManager().registerProperty("skeyState", &factory_);
+  surroundingWatcher_ = instance_->watchEvent(
+      EventType::InputContextSurroundingTextUpdated, EventWatcherPhase::PreInputMethod,
+      [this](Event &event) {
+        auto *ic = static_cast<InputContextEvent &>(event).inputContext();
+        auto it = liveStates_.find(ic);
+        if (it != liveStates_.end()) it->second->surroundingTextChanged();
+      });
+  if (!initializeDesktop) return;
   reloadConfig();
   setupTrayMenu();
 
@@ -1019,7 +989,7 @@ void SKeyEngine::setupTrayMenu() {
   // ── Settings action ──
   settingsAction_.setShortText(_("Settings..."));
   settingsAction_.registerAction("skey-settings", &uiManager);
-  settingsAction_.connect<SimpleAction::Activated>([this](InputContext *ic) {
+  settingsAction_.connect<SimpleAction::Activated>([](InputContext *ic) {
     FCITX_UNUSED(ic);
     pid_t pid = fork();
     if (pid == 0) {
@@ -1426,6 +1396,7 @@ void SKeyEngine::maybeSaveAppDelays(bool force) {
 }
 
 void SKeyEngine::reloadConfig() {
+  const bool previousShowPreedit = config_.showPreedit.value();
   // Migrate legacy "Telex W" input method → Telex + ShortW=True.
   // The TelexW enum value no longer exists, so peek the raw ini first.
   {
@@ -1490,9 +1461,12 @@ void SKeyEngine::reloadConfig() {
   // half-way through.  (foreach visits only live ICs — never
   // lastFocusedInputContext(), which can dangle during startup focus
   // churn and trips the manager assert in propertyFor().)
-  instance_->inputContextManager().foreach ([this](InputContext *ic) {
+  instance_->inputContextManager().foreach ([this, previousShowPreedit](InputContext *ic) {
     if (auto *state = ic->propertyFor(&factory_)) {
       state->invalidateAppModeOverrideCache();
+      if (ic->hasFocus() && previousShowPreedit != config_.showPreedit.value()) {
+        state->refreshPreeditVisibility();
+      }
     }
     return true;
   });
@@ -1591,24 +1565,41 @@ SKeyState::SKeyState(SKeyEngine *engine, InputContext *ic)
   viet_.setAutoRestore(*cfg.autoRestore);
   viet_.setDict(*cfg.dict);
   loadUserDict();
+  engine_->liveStates_[ic_] = this;
 }
 
-void SKeyState::commitText(const std::string &utf8) {
+SKeyState::~SKeyState() {
+  engine_->liveStates_.erase(ic_);
+}
+
+void SKeyState::mirrorSurroundingDelete(int offset, unsigned size) {
+  surroundingCursor_.invalidate();
+  ic_->surroundingText().deleteText(offset, size);
+}
+
+bool SKeyState::commitText(const std::string &utf8) {
   if (utf8.empty())
-    return;
+    return false;
   // A replacement timer may fire after a click but before the next key.
   // Never insert the previous cell's pending text into the newly selected
   // cell. Use the same synchronous boundary check as keyEvent().
   if (checkCellSelection()) {
     SKEY_DEBUG() << "CellSelection: discard stale commit";
-    return;
+    return false;
   }
   ic_->commitString(skey::convertCharset(utf8, charset_));
+  return true;
 }
 
 const std::string &SKeyState::appProgram() const {
   const std::string &prog = ic_->program();
   if (!prog.empty()) {
+    return prog;
+  }
+  // XWayland's last focused window does not identify a native Wayland app.
+  // Keep an unresolved native app unknown instead of inheriting Chrome's
+  // WM_CLASS (and its address-bar routing) from a background X11 window.
+  if (isWayland()) {
     return prog;
   }
   // The IBus frontend reports an empty program name for apps that only
@@ -1674,18 +1665,32 @@ void SKeyState::refreshAppMode() {
   }
 }
 
+bool SKeyState::forwardUserBackspace() const {
+  // Electron terminal helper textareas can publish valid surrounding text
+  // while native deletes never reach the terminal. A user Backspace already
+  // specifies the desired edit: let the app handle it, including selection.
+  // Keep replacement/tone-editing and browser/Sheets deletion policies intact.
+  return isWayland() && isChromiumCached() &&
+         !isChromiumBrowser(appProgram());
+}
+
 // True when the cursor is in a Chromium-family browser's address/search bar
 // (as opposed to web content). Two detection paths: the native Url capability
 // (Wayland) and the AT-SPI2 accessibility monitor (X11).
 bool SKeyState::inChromiumAddressBar() const {
+  // All detection paths, including Url capability and the X11 grace latch,
+  // require a browser. Chromium runtime markers also match Electron apps.
+  if (!isChromiumBrowser(appProgram())) {
+    addrBarUiVerdictAtUsec_ = 0;
+    return false;
+  }
   // Method 1: Wayland — Chrome sends CapabilityFlag::Url natively.  The
   // capability itself is generic (Firefox also sends it for ITS URL bar),
   // and the omnibox machinery behind this flag (autofill-dismissal BS,
   // FullReplace heuristics) is Chrome-specific — corrupts Firefox's URL
   // bar ("mất chữ đằng trước", 2026-09-15).  Require a real Chromium
   // browser; Firefox's URL bar goes through the normal paths.
-  if (isChromiumCached() &&
-      ic_->capabilityFlags().test(CapabilityFlag::Url)) {
+  if (ic_->capabilityFlags().test(CapabilityFlag::Url)) {
     return true;
   }
   // Method 2: X11 — use AT-SPI2 accessibility monitor.
@@ -1694,7 +1699,7 @@ bool SKeyState::inChromiumAddressBar() const {
   // and omits it for the find bar (urlCap=0).  Using the AT-SPI2 fallback on
   // Wayland would misclassify the Ctrl+F find bar as an address bar, causing
   // Escape-key autocomplete dismissal to close the find bar.
-  if (!isWayland() && isChromiumBrowser(appProgram())) {
+  if (!isWayland()) {
     // Caret-geometry gates below are scaled by the display DPI.  Fixed
     // pixel thresholds assume 96 DPI and break on scaled displays
     // (125%/150%/200%), where Chrome's omnibox caret is proportionally
@@ -3079,7 +3084,7 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   // ── Sync BS arrived ──
   // The extra BS (+1 beyond real deletions) acts as a sync anchor.
   // By the time it arrives back at fcitx5, X11 has serialized all N real
-  // BS to the app.  Consume it, adaptive sleep, commit synchronously.
+  // BS to the app. Consume it and schedule the adaptive settle/commit.
   // Address bar uses its own conservative timing constants.
   keyEvent.filterAndAccept();
   uinputSafetyTimer_.reset();
@@ -3091,8 +3096,7 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   expectedUinputBackspaces_ = 0;
   seenUinputBackspaces_ = 0;
 
-  std::string commitText = pendingUinputCommit_;
-  pendingUinputCommit_.clear();
+  const std::string &commitText = pendingUinputCommit_;
 
   // Hoisted: used by the AutoDelay measurement exclusion, the multiplier
   // band selection and the debug line — one a11y read instead of three.
@@ -3112,12 +3116,8 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
 
   // Adaptive sleep via EWMA of measured round-trip times.
   auto &timing = uinputTiming();
-  if (bsRtEwma_ == timing.bsRtInitialUsec || bsRtEwma_ == 0) {
-    bsRtEwma_ = elapsed;
-  } else {
-    bsRtEwma_ = static_cast<uint64_t>(timing.bsRtEwmaAlpha * elapsed +
-                                      (1.0 - timing.bsRtEwmaAlpha) * bsRtEwma_);
-  }
+  bsRtEwma_ = skey::updatedRoundTrip(bsRtEwma_, elapsed,
+                                    timing.bsRtInitialUsec, timing.bsRtEwmaAlpha);
   double multiplier;
   uint64_t minDelay, maxDelay;
   if (inAddrBar) {
@@ -3329,119 +3329,84 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
                << engine_->appDelayOverrideDebugTag(appProgram(),
                                                     isWayland());
 
-  usleep(sleepUsec);
+  // Keep the transaction alive while the event loop receives fresh app state.
+  // New physical keys (including modifiers/releases) are queued separately.
+  scheduleUinputSettle(sleepUsec, slowMode ? kUinputSlowModeVerifyRetries : 0,
+                       ov.postCommitMs);
+  return true;
+}
 
-  if (slowMode) {
-    // Bounded verification: the app's surrounding cursor must have
-    // reached the expected post-BS length before the commit; give it a
-    // few short retries otherwise (3 × 2ms).
-    for (int retry = 0; retry < kUinputSlowModeVerifyRetries; ++retry) {
-      const auto &surr = ic_->surroundingText();
-      if (surr.isValid() && static_cast<int>(surr.cursor()) == committedLen_)
-        break;
-      usleep(kUinputSlowModeRetryIntervalUsec);
+void SKeyState::scheduleUinputSettle(uint64_t delay, int retries, int postMs) {
+  uinputSettling_ = true;
+  uinputCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+      CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + delay, 1,
+      [this, retries, postMs](EventSourceTime *, uint64_t) {
+        finishUinputSettle(retries, postMs);
+        return true;
+      });
+}
+
+void SKeyState::finishUinputSettle(int retries, int postMs) {
+  if (!uinputSettling_ || !uinputDeleting_) return;
+  if (checkCellSelection()) return; // never commit the previous Sheets cell
+  if (retries > 0) {
+    const auto &surr = ic_->surroundingText();
+    if (!surr.isValid() || static_cast<int>(surr.cursor()) != committedLen_) {
+      uinputCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+          CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + kUinputSlowModeRetryIntervalUsec, 1,
+          [this, retries, postMs](EventSourceTime *, uint64_t) {
+            finishUinputSettle(retries - 1, postMs);
+            return true;
+          });
+      return;
     }
   }
-
-  // ── Commit ──
-  // Defer the commit out of the ProcessKeyEvent call whenever the frontend
-  // can trap it in a batch reply.  fcitx5's D-Bus frontend batches commits
-  // produced inside ProcessKeyEventBatch into the call's reply, and the
-  // fcitx5-gtk immodule delivers them synchronously inside filter_keypress
-  // — so GTK4 apps (ghostty) receive the commit while still inside the
-  // anchor key event, attach the text to the CONSUMED backspace, and drop
-  // it silently (ghostty KeyEncoder: backspace + utf8 → no PTY bytes;
-  // "chào" → "cho", verified 2026-09-14 via dbus-monitor).  A 0-delay
-  // timer fires right after the D-Bus call returns, so the commit travels
-  // as a normal commit-string signal and reaches the app between key
-  // events.  The X11 sync anchor still guarantees the BS were applied
-  // first.  The gate is FRONTEND-based, not display-based: fcitx5-gtk4 on
-  // Wayland reports display "wayland:" even though it talks to the D-Bus
-  // frontend (the same batch mechanism corrupts ghostty there — 2026-09-16
-  // after GTK_IM_MODULE=fcitx leaked into the session env).  The waylandim
-  // (compositor text-input) path keeps the inline commit — its timing is
-  // tuned around it.
+  std::string text = std::move(pendingUinputCommit_);
+  pendingUinputCommit_.clear();
+  uinputCommitTimer_.reset();
+  uinputSettling_ = false;
   uinputDeleting_ = false;
-  if (!isWayland() || isFrontendName(ic_, "dbus")) {
-    uinputCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
-        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC), 0,
-        [this, commitText = std::move(commitText), postMs = ov.postCommitMs](
-            EventSourceTime *, uint64_t) {
-          uinputCommitTimer_.reset();
-          SKEY_DEBUG() << "Uinput: deferred commit '" << commitText
-                       << "' sent";
-          if (!commitText.empty()) {
-            if (isFirefoxOrSnap()) {
-              uinputKeyForwarded_ = true;
-            }
-            this->commitText(commitText);
-          }
-          if (uinputPendingFinalLen_ > 0) {
-            committedLen_ = uinputPendingFinalLen_;
-            uinputPendingFinalLen_ = 0;
-          }
-          // Never manually clear the trigger-key guard — let its deadline
-          // auto-expire.  Chrome may re-deliver the trigger key after ANY
-          // address bar replacement (both fullReplace first-word and
-          // normal non-first-word), and clearing the guard too early lets
-          // the re-delivered key through as a new keystroke, corrupting
-          // the text.  The 100ms deadline is long enough to catch
-          // re-delivery (~5ms) but short enough to allow intentional
-          // double-presses (>150ms).
-          if (addrBarDidFullReplace_) {
-            addrBarDidFullReplace_ = false;
-            addrBarKeepState_ = false;
-            // Don't reset engine after replacement — preedit state is
-            // preserved so subsequent keys extend the same word.
-            committedLen_ = static_cast<int>(utf8::length(commitText));
-            reclaimReady_ = false;
-          }
-          // Manual post-commit pause (captured at schedule time — the
-          // config may have been reloaded since).
-          postCommitPause(postMs);
-          if (!bufferedUinputKeys_.empty()) {
-            replayBufferedUinputKeys();
-          }
-          return true;
-        });
-    return true; // sync BS consumed
-  }
-
-  if (!commitText.empty()) {
-    if (isFirefoxOrSnap()) {
-      uinputKeyForwarded_ = true;
-    }
-    this->commitText(commitText);
+  if (!text.empty()) {
+    if (isFirefoxOrSnap()) uinputKeyForwarded_ = true;
+    const auto &surrounding = ic_->surroundingText();
+    SKEY_DEBUG() << "Uinput: settle commit '" << text
+                 << "' surrValid=" << surrounding.isValid()
+                 << " cursor=" << surrounding.cursor()
+                 << " anchor=" << surrounding.anchor();
+    if (!commitText(text)) return;
   }
   if (uinputPendingFinalLen_ > 0) {
     committedLen_ = uinputPendingFinalLen_;
     uinputPendingFinalLen_ = 0;
   }
-  // Never manually clear the trigger-key guard — let its deadline
-  // auto-expire.  Chrome may re-deliver the trigger key after ANY
-  // address bar replacement (both fullReplace first-word and normal
-  // non-first-word), and clearing the guard too early lets the
-  // re-delivered key through as a new keystroke, corrupting the text.
-  // The 100ms deadline is long enough to catch re-delivery (~5ms) but
-  // short enough to allow intentional double-presses (>150ms).
   if (addrBarDidFullReplace_) {
     addrBarDidFullReplace_ = false;
     addrBarKeepState_ = false;
-    // Don't reset engine after replacement — preedit state is preserved
-    // so subsequent keys extend the same word.
-    committedLen_ = static_cast<int>(utf8::length(commitText));
+    committedLen_ = static_cast<int>(utf8::length(text));
     reclaimReady_ = false;
   }
-  // Manual post-commit pause (Wayland inline path).
-  postCommitPause(ov.postCommitMs);
-  if (!bufferedUinputKeys_.empty()) {
-    replayBufferedUinputKeys();
+  // Explicit user-configured post-commit pauses retain their semantics.
+  postCommitPause(postMs);
+  replayBufferedUinputKeys();
+}
+
+void SKeyState::replaySettledKeys() {
+  if (replayingSettledKeys_) return;
+  replayingSettledKeys_ = true;
+  while (!settledKeys_.empty() && !uinputDeleting_ && !uinputSettling_ &&
+         deferredNativeDeleteLen_ == 0) {
+    auto saved = settledKeys_.front();
+    settledKeys_.pop_front();
+    KeyEvent event(ic_, saved.key, saved.release, saved.time);
+    keyEvent(event);
+    if (!event.accepted()) ic_->forwardKey(saved.key, saved.release, saved.time);
   }
-  return true; // sync BS consumed
+  replayingSettledKeys_ = false;
 }
 
 void SKeyState::replayBufferedUinputKeys() {
   if (bufferedUinputKeys_.empty()) {
+    replaySettledKeys();
     return;
   }
 
@@ -3548,7 +3513,7 @@ void SKeyState::replayBufferedUinputKeys() {
     // If surroundingCommit triggered a new uinput replacement,
     // re-buffer remaining keys and return — they'll be replayed
     // after this new replacement completes.
-    if (uinputDeleting_) {
+    if (uinputDeleting_ || deferredNativeDeleteLen_ > 0) {
       for (size_t j = i + 1; j < keys.size() &&
                              bufferedUinputKeys_.size() < maxBufferedUinputKeys;
            ++j) {
@@ -3557,6 +3522,7 @@ void SKeyState::replayBufferedUinputKeys() {
       return;
     }
   }
+  replaySettledKeys();
 }
 
 void SKeyState::deactivate() {
@@ -3591,11 +3557,12 @@ void SKeyState::deactivate() {
       expectedUinputBackspaces_ == 0) {
     uinputCommitTimer_.reset();
     uinputDeleting_ = false;
+    uinputSettling_ = false;
     SKEY_DEBUG() << "Deactivate: flush pending uinput commit '"
                  << pendingUinputCommit_ << "'";
-    ic_->commitString(pendingUinputCommit_);
+    commitText(pendingUinputCommit_);
     pendingUinputCommit_.clear();
-    if (!bufferedUinputKeys_.empty()) {
+    if (!bufferedUinputKeys_.empty() || !settledKeys_.empty()) {
       replayBufferedUinputKeys();
     }
   }
@@ -3634,7 +3601,7 @@ void SKeyState::deactivate() {
             // Save preedit for restore on next activation (see reset()).
             if (!viet_.getComposed().empty() && !useSurroundingText()) {
               if (!preeditWasPending_) {
-                preeditWasPending_ = true;
+                preeditWasPending_ = engine_->config().showPreedit.value();
                 preeditPendingProgram_ = appProgram();
                 engine_->pendingPreedits_[appProgram()] = viet_.getComposed();
               }
@@ -3677,6 +3644,8 @@ void SKeyState::deactivate() {
           uinputSafetyRetried_ = false;
           uinputBsOutstanding_ = 0;
           bufferedUinputKeys_.clear();
+          settledKeys_.clear();
+          uinputSettling_ = false;
           viet_.reset();
           committedLen_ = 0;
           clearLastWord();
@@ -3690,6 +3659,8 @@ void SKeyState::deactivate() {
   seenUinputBackspaces_ = 0;
   pendingUinputCommit_.clear();
   bufferedUinputKeys_.clear();
+  settledKeys_.clear();
+  uinputSettling_ = false;
   bsSentAt_ = 0;
   lastBsRoundTrip_ = 0;
   bsRtEwma_ = uinputTiming().bsRtInitialUsec;
@@ -3700,7 +3671,7 @@ void SKeyState::deactivate() {
   // Save preedit for restore on next activation (see reset()).
   if (!viet_.getComposed().empty() && !useSurroundingText()) {
     if (!preeditWasPending_) {
-      preeditWasPending_ = true;
+      preeditWasPending_ = engine_->config().showPreedit.value();
       preeditPendingProgram_ = appProgram();
       engine_->pendingPreedits_[appProgram()] = viet_.getComposed();
       SKEY_DEBUG() << "Deactivate: saved preedit '" << viet_.getComposed()
@@ -3763,7 +3734,7 @@ void SKeyState::reset() {
   // commitString() during reset() is silently dropped on some
   // Wayland compositors (GNOME Mutter).
   if (!viet_.getComposed().empty() && !useSurroundingText()) {
-    preeditWasPending_ = true;
+    preeditWasPending_ = engine_->config().showPreedit.value();
     preeditPendingProgram_ = appProgram();
     engine_->pendingPreedits_[appProgram()] = viet_.getComposed();
     SKEY_DEBUG() << "Reset: saved preedit '" << viet_.getComposed()
@@ -3771,6 +3742,8 @@ void SKeyState::reset() {
   }
   viet_.reset();
   bufferedUinputKeys_.clear();
+  settledKeys_.clear();
+  uinputSettling_ = false;
   uinputCommitTimer_.reset();
   uinputSafetyTimer_.reset();
   uinputDeleting_ = false;
@@ -3867,6 +3840,8 @@ void SKeyState::resetForCellChange() {
   clearLastWord();
   surrResetTentative_ = false;
   bufferedUinputKeys_.clear();
+  settledKeys_.clear();
+  uinputSettling_ = false;
   uinputCommitTimer_.reset();
   uinputSafetyTimer_.reset();
   uinputCycleTimer_.reset();
@@ -3888,6 +3863,22 @@ void SKeyState::resetForCellChange() {
 }
 
 void SKeyState::keyEvent(KeyEvent &keyEvent) {
+  // A replayed key can start another delete cycle with queued keys remaining.
+  // Its loopback backspaces must still reach the anchor handler, otherwise
+  // the queue would wait for a commit whose anchor is trapped in that queue.
+  const bool awaitingAnchor = uinputDeleting_ && !uinputSettling_ &&
+                              expectedUinputBackspaces_ > 0 &&
+                              keyEvent.key().check(FcitxKey_BackSpace);
+  if (!replayingSettledKeys_ && !awaitingAnchor && (uinputSettling_ || !settledKeys_.empty() ||
+                                (deferredNativeDeleteLen_ > 0 && hasDeferredCommitPending()))) {
+    if (!keyEvent.isRelease()) checkCellSelection();
+    if (uinputSettling_ || !settledKeys_.empty() ||
+        (deferredNativeDeleteLen_ > 0 && hasDeferredCommitPending())) {
+      settledKeys_.push_back({keyEvent.rawKey(), keyEvent.isRelease(), keyEvent.time()});
+      keyEvent.filterAndAccept();
+      return;
+    }
+  }
   if (keyEvent.isRelease()) {
     return;
   }
@@ -4025,14 +4016,11 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
-  // Enable the a11y snapshot polling while typing in the Chromium address
-  // bar OR any Chromium-family app on X11 (see A11yMonitor::setPollingEnabled)
-  // — Electron (Tabby) needs the focused-entry text for post-commit
-  // verification: its D-Bus commits reach the renderer late and can be
-  // overtaken by the next forwarded key ("đây" → "đyy").
+  // Only the X11 omnibox paths below consume A11y text snapshots. Reading
+  // every Chromium/Electron editor repeatedly scales with document length.
+  // Native Wayland and Sheets cell detection do not use this polling cache.
   if (auto *mon = engine_->a11yMonitor()) {
-    mon->setPollingEnabled(!isWayland() &&
-                           (inChromiumAddressBar() || isChromiumCached()));
+    mon->setPollingEnabled(!isWayland() && inChromiumAddressBar());
   }
 
   // Late uinput BS loopbacks — BS we injected that arrive after the
@@ -4173,7 +4161,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         newMode = SKeyOutputMode::Preedit;
         break;
       default:
-        break; // unreachable
+        return; // unreachable after the choice range check
       }
       appExcluded_ = false;
       engine_->saveAppExcluded(appProgram(), false);
@@ -4460,13 +4448,24 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                           : static_cast<int>(utf8::length(viet_.getComposed()));
       SKEY_DEBUG() << "SurrBS compose -> '" << viet_.getComposed()
                    << "' len=" << committedLen_;
-      if (useNativeSurroundingApi()) {
+      if (forwardUserBackspace()) {
+        const auto &surrounding = ic_->surroundingText();
+        if (surrounding.isValid() && surrounding.anchor() != surrounding.cursor()) {
+          // The app removes the entire selection, not one composed char.
+          viet_.reset();
+          committedLen_ = 0;
+          clearLastWord();
+        }
+        wordWasBackspaced_ = true;
+        ic_->forwardKey(Key(FcitxKey_BackSpace));
+        SKEY_DEBUG() << "SurrBS: Electron user BS via forwardKey";
+      } else if (useNativeSurroundingApi()) {
         const auto &surrounding = ic_->surroundingText();
         if (surrounding.isValid() &&
             surroundingCacheEndsWith(surrounding, oldComposed)) {
           ic_->deleteSurroundingText(-1, 1);
           if (ic_->surroundingText().isValid()) {
-            ic_->surroundingText().deleteText(-1, 1);
+            mirrorSurroundingDelete(-1, 1);
           }
         } else {
           // Invalid or stale cache (e.g. Chromium after key re-delivery):
@@ -4494,6 +4493,26 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // Chromium address bar where raw BS pass-through works correctly.
   if (key.check(FcitxKey_BackSpace) && viet_.getRawInput().empty()) {
     if (useNativeSurroundingApi() && !inChromiumAddressBar()) {
+      if (forwardUserBackspace()) {
+        const auto &surrounding = ic_->surroundingText();
+        const bool selected = surrounding.isValid() &&
+                              surrounding.anchor() != surrounding.cursor();
+        if (!selected && !lastRawInput_.empty() && !wordWasBackspaced_ &&
+            !sepAlreadyDeleted_) {
+          reclaimReady_ = true;
+          sepAlreadyDeleted_ = true;
+        } else {
+          clearLastWord();
+        }
+        committedLen_ = 0;
+        // Do not mirror: a valid helper-textarea snapshot is not evidence
+        // that a native delete reached the shell. Every repeat reaches it
+        // as a key, even if the surrounding cursor never changes.
+        ic_->forwardKey(Key(FcitxKey_BackSpace));
+        SKEY_DEBUG() << "SurrBS: Electron idle BS via forwardKey";
+        keyEvent.filterAndAccept();
+        return;
+      }
       // If we have a valid surrounding text with a selection, delete the
       // entire selection in one operation.
       const auto &surrounding = ic_->surroundingText();
@@ -4510,7 +4529,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         // deletion natively, then update local cache.
         ic_->forwardKey(Key(FcitxKey_BackSpace));
         if (ic_->surroundingText().isValid()) {
-          ic_->surroundingText().deleteText(
+          mirrorSurroundingDelete(
               static_cast<int>(selStart) -
                   static_cast<int>(surrounding.cursor()),
               deleteSize);
@@ -4554,7 +4573,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           // potential retroactive tone editing on the next keystroke.
           ic_->deleteSurroundingText(-1, 1);
           if (ic_->surroundingText().isValid()) {
-            ic_->surroundingText().deleteText(-1, 1);
+            mirrorSurroundingDelete(-1, 1);
           }
           reclaimReady_ = true;
           sepAlreadyDeleted_ = true;
@@ -4566,7 +4585,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           sepAlreadyDeleted_ = false;
           ic_->deleteSurroundingText(-1, 1);
           if (ic_->surroundingText().isValid()) {
-            ic_->surroundingText().deleteText(-1, 1);
+            mirrorSurroundingDelete(-1, 1);
           }
           SKEY_DEBUG() << "SurrBS: delete 1 via surrounding text";
         }
@@ -4575,7 +4594,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         // No saved previous word — just delete the character.
         ic_->deleteSurroundingText(-1, 1);
         if (ic_->surroundingText().isValid()) {
-          ic_->surroundingText().deleteText(-1, 1);
+          mirrorSurroundingDelete(-1, 1);
         }
         SKEY_DEBUG() << "SurrBS: delete 1 via surrounding text";
       }
@@ -4772,7 +4791,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                   committedLen_ = uinputPendingFinalLen_;
                   uinputPendingFinalLen_ = 0;
                   postCommitPause(appDelayOverrideResolved().postCommitMs);
-                  if (!bufferedUinputKeys_.empty())
+                  if (!bufferedUinputKeys_.empty() || !settledKeys_.empty())
                     replayBufferedUinputKeys();
                   return true;
                 });
@@ -4873,7 +4892,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                   committedLen_ = uinputPendingFinalLen_;
                   uinputPendingFinalLen_ = 0;
                   postCommitPause(appDelayOverrideResolved().postCommitMs);
-                  if (!bufferedUinputKeys_.empty())
+                  if (!bufferedUinputKeys_.empty() || !settledKeys_.empty())
                     replayBufferedUinputKeys();
                   return true;
                 });
@@ -5000,7 +5019,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                   committedLen_ = uinputPendingFinalLen_;
                   uinputPendingFinalLen_ = 0;
                   postCommitPause(appDelayOverrideResolved().postCommitMs);
-                  if (!bufferedUinputKeys_.empty())
+                  if (!bufferedUinputKeys_.empty() || !settledKeys_.empty())
                     replayBufferedUinputKeys();
                   return true;
                 });
@@ -5067,7 +5086,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           if (!sepAlreadyDeleted_) {
             ic_->deleteSurroundingText(-1, 1);
             if (ic_->surroundingText().isValid()) {
-              ic_->surroundingText().deleteText(-1, 1);
+              mirrorSurroundingDelete(-1, 1);
             }
           }
           reclaimLastWord();
@@ -5136,14 +5155,15 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             mon ? mon->a11ySnapshotUsec() : 0;
         uint64_t waitUntil = now(CLOCK_MONOTONIC) + 30000;
         for (;;) {
+          const uint64_t observed = mon ? mon->a11ySnapshotUsec() : 0;
           if (!mon || !mon->a11yState(txt, ss, se, kA11ySnapshotMaxAgeUsec))
             break;
           if (txt.find(comp) != std::string::npos)
             break; // word still on screen — in sync
-          uint64_t remaining = waitUntil - now(CLOCK_MONOTONIC);
-          if (now(CLOCK_MONOTONIC) >= waitUntil)
+          const uint64_t nowUsec = now(CLOCK_MONOTONIC);
+          if (nowUsec >= waitUntil)
             break;
-          mon->waitForSnapshotUpdate(remaining);
+          mon->waitForSnapshotUpdate(waitUntil - nowUsec, observed);
         }
         // An EMPTY snapshot is not desync evidence — Chrome on some
         // distros (Fedora) returns an empty omnibox text while the word
@@ -5281,6 +5301,19 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
             // Check matching append: old + key == new
             if (oldComposed + keyUtf8 == newComposed) {
+              // Wayland office apps receive raw keys and IM commits through
+              // different queues. An append immediately after a replacement
+              // can overtake it (dd,a -> ađ); the next aa/aya replacement
+              // then deletes đ instead of the expected suffix. Keep letters
+              // on the same commit channel as the replacement, including
+              // keys replayed after the asynchronous settle timer.
+              if (isWayland() && isOfficeSuiteApp(appProgram())) {
+                keyEvent.filterAndAccept();
+                SKEY_DEBUG() << "Uinput: commit append '" << keyUtf8
+                             << "' [office]";
+                commitText(keyUtf8);
+                return;
+              }
               // Forward raw X11 key — instant, no D-Bus latency.
               // Set cycle protection + trigger-key guard: a subsequent
               // replacement's commit can trigger spurious focus changes
@@ -5384,9 +5417,13 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               if (!isWayland() && isChromiumCached() &&
                   !inChromiumAddressBar() && lastActivateUsec_ > 0 &&
                   now(CLOCK_MONOTONIC) - lastActivateUsec_ < 300000) {
-                usleep(kFirstWordSettleUsec);
+                pendingUinputCommit_ = addPart;
+                uinputPendingFinalLen_ = static_cast<int>(utf8::length(newComposed));
+                uinputDeleting_ = true;
+                scheduleUinputSettle(kFirstWordSettleUsec, 0, 0);
+              } else {
+                commitText(addPart);
               }
-              commitText(addPart);
             }
             committedLen_ = static_cast<int>(utf8::length(newComposed));
             return;
@@ -5471,7 +5508,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                   committedLen_ = uinputPendingFinalLen_;
                   uinputPendingFinalLen_ = 0;
                   postCommitPause(appDelayOverrideResolved().postCommitMs);
-                  if (!bufferedUinputKeys_.empty())
+                  if (!bufferedUinputKeys_.empty() || !settledKeys_.empty())
                     replayBufferedUinputKeys();
                   return true;
                 });
@@ -5622,6 +5659,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
           if (!mon) {
             break;
           }
+          const uint64_t observed = mon->a11ySnapshotUsec();
           if (!mon->a11yState(a11yText, a11ySelStart, a11ySelEnd,
                               kA11ySnapshotMaxAgeUsec)) {
             // No snapshot or stale: WAIT for the monitor to catch up
@@ -5630,9 +5668,10 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
             // selection values stay -1 and the autofill +1 BS check in
             // the fallback below can never fire ("git con[fig]" → the
             // first BS eats the selection → "coonfig", 2026-09-13).
-            if (now(CLOCK_MONOTONIC) >= waitUntil)
+            const uint64_t nowUsec = now(CLOCK_MONOTONIC);
+            if (nowUsec >= waitUntil)
               break; // timeout — heuristics decide
-            mon->waitForSnapshotUpdate(waitUntil - now(CLOCK_MONOTONIC));
+            mon->waitForSnapshotUpdate(waitUntil - nowUsec, observed);
             continue;
           }
           // The prefix compare alone is ambiguous: with "bar ba" in the
@@ -5647,9 +5686,10 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
             a11yDecided = true;
             break;
           }
-          if (now(CLOCK_MONOTONIC) >= waitUntil)
+          const uint64_t nowUsec = now(CLOCK_MONOTONIC);
+          if (nowUsec >= waitUntil)
             break; // timeout — heuristics decide
-          mon->waitForSnapshotUpdate(waitUntil - now(CLOCK_MONOTONIC));
+          mon->waitForSnapshotUpdate(waitUntil - nowUsec, observed);
         }
       }
       // A stale text value can survive while the selection coordinates are
@@ -5806,7 +5846,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
         // would eat real text before the cursor ("git ").
         if (totalBs == bs && a11ySelStart >= 0 &&
             a11ySelStart != a11ySelEnd &&
-            a11ySelEnd == static_cast<int>(a11yText.size())) {
+            a11ySelEnd == static_cast<int>(utf8::length(a11yText))) {
           ++totalBs;
           SKEY_DEBUG() << "AddrBar: autofill selection, +1 BS (total="
                        << totalBs << ")";
@@ -5931,7 +5971,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
             }
           }
           postCommitPause(appDelayOverrideResolved().postCommitMs);
-          if (!bufferedUinputKeys_.empty())
+          if (!bufferedUinputKeys_.empty() || !settledKeys_.empty())
             replayBufferedUinputKeys();
           return true;
         });
@@ -5950,12 +5990,13 @@ void SKeyState::flushAddrBarReplacement() {
       expectedUinputBackspaces_ == 0) {
     uinputCommitTimer_.reset();
     uinputDeleting_ = false;
+    uinputSettling_ = false;
     SKEY_DEBUG() << "AddrBar: flush pending uinput commit '"
                  << pendingUinputCommit_ << "'";
     commitText(pendingUinputCommit_);
     pendingUinputCommit_.clear();
     postCommitPause(appDelayOverrideResolved().postCommitMs);
-    if (!bufferedUinputKeys_.empty()) {
+    if (!bufferedUinputKeys_.empty() || !settledKeys_.empty()) {
       replayBufferedUinputKeys();
     }
   }
@@ -5975,6 +6016,7 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
   deferredPrefix_ = stablePrefix;
   pendingFlushSuffix_.clear();
   deferredNativeDeleteLen_ = nativeDeleteLen;
+  nativeRepairAttempt_ = 0;
   deferredDeletedTail_ = deletedTail;
 
   // Delay after BackSpace to ensure the app has processed the BS key
@@ -6009,9 +6051,7 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
                   1000;
     } else {
       delayUsec =
-          (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
-              ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
-              : dbusDeferredDefaultUsec;
+          skey::deferredDelay(bsRtEwma_, uinputTiming().bsRtInitialUsec);
     }
   }
 
@@ -6020,20 +6060,11 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
                << (delayUsec / 1000) << "ms"
                << engine_->appDelayOverrideDebugTag(appProgram(), isWayland());
   deferredCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
-      CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + delayUsec, 0,
+      CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + delayUsec, 1,
       [this, postMs](EventSourceTime *, uint64_t) {
         SKEY_DEBUG() << "Surr deferred: timer commit '" << deferredCommitText_
                      << "'";
-        repairNativeDeletes();
-        std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
-        deferredCommitText_.clear();
-        deferredPrefix_.clear();
-        deferredBsSentAt_ = 0;
-        pendingFlushSuffix_.clear();
-        deferredCommitTimer_.reset();
-        commitText(toCommit);
-        // Manual post-commit pause (captured at schedule time).
-        postCommitPause(postMs);
+        finishDeferredCommit(postMs);
         return true;
       });
 }
@@ -6062,9 +6093,7 @@ void SKeyState::flushDeferredCommit() {
              isChromiumBrowser(appProgram()) && !inChromiumAddressBar()) {
     minGapUsec = x11ChromiumSurrDelayUsec();
   } else {
-    minGapUsec = (bsRtEwma_ > 0 && bsRtEwma_ != uinputTiming().bsRtInitialUsec)
-                     ? std::max(bsRtEwma_ * 2 + 8000, dbusDeferredMinUsec)
-                     : dbusDeferredDefaultUsec;
+    minGapUsec = skey::deferredDelay(bsRtEwma_, uinputTiming().bsRtInitialUsec);
   }
   if (deferredBsSentAt_ > 0) {
     uint64_t nowUs = now(CLOCK_MONOTONIC);
@@ -6076,21 +6105,12 @@ void SKeyState::flushDeferredCommit() {
                    << "ms (BS not processed)";
       deferredCommitTimer_.reset();
       deferredCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
-          CLOCK_MONOTONIC, nowUs + remaining, 0,
+          CLOCK_MONOTONIC, nowUs + remaining, 1,
           [this, postMs = appDelayOverrideResolved().postCommitMs](
               EventSourceTime *, uint64_t) {
             SKEY_DEBUG() << "Surr deferred: delayed flush commit '"
                          << deferredCommitText_ << "'";
-            repairNativeDeletes();
-            std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
-            deferredCommitText_.clear();
-            deferredPrefix_.clear();
-            deferredBsSentAt_ = 0;
-            pendingFlushSuffix_.clear();
-            deferredCommitTimer_.reset();
-            commitText(toCommit);
-            // Manual post-commit pause (captured at schedule time).
-            postCommitPause(postMs);
+            finishDeferredCommit(postMs);
             return true;
           });
       return;
@@ -6099,14 +6119,42 @@ void SKeyState::flushDeferredCommit() {
 
   // Safe to commit now — BS has been processed.
   SKEY_DEBUG() << "Surr deferred: flush commit '" << deferredCommitText_ << "'";
-  repairNativeDeletes();
-  std::string toCommit = deferredCommitText_ + pendingFlushSuffix_;
+  finishDeferredCommit(0);
+}
+
+void SKeyState::finishDeferredCommit(int postMs) {
+  if (checkCellSelection()) return;
+  if (!hasDeferredCommitPending()) return;
+  if (deferredNativeDeleteLen_ > 0 && nativeRepairAttempt_ < 3) {
+    const int missing = missingNativeDeleteChars();
+    if (missing > 0) {
+      // The first observation only arms a retry. Let the event loop process
+      // the application's new surrounding text before deciding to re-delete.
+      if (nativeRepairAttempt_ > 0) {
+        for (int i = 0; i < missing; ++i) ic_->deleteSurroundingText(-1, 1);
+      }
+      ++nativeRepairAttempt_;
+      deferredCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+          CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 20000, 1,
+          [this, postMs](EventSourceTime *, uint64_t) {
+            finishDeferredCommit(postMs);
+            return true;
+          });
+      return;
+    }
+  }
+  deferredNativeDeleteLen_ = 0;
+  deferredDeletedTail_.clear();
+  nativeRepairAttempt_ = 0;
+  std::string text = deferredCommitText_ + pendingFlushSuffix_;
   deferredCommitText_.clear();
   deferredPrefix_.clear();
   deferredBsSentAt_ = 0;
   pendingFlushSuffix_.clear();
   deferredCommitTimer_.reset();
-  commitText(toCommit);
+  if (!commitText(text)) return;
+  postCommitPause(postMs);
+  replayBufferedUinputKeys();
 }
 
 void SKeyState::forceFlushDeferredCommit() {
@@ -6149,13 +6197,16 @@ int SKeyState::missingNativeDeleteChars() {
         --start;
       ++chars;
     }
-    if (surroundingCacheEndsWith(surr, deferredDeletedTail_.substr(start)))
+    if (surroundingCacheEndsWith(surr, std::string_view(deferredDeletedTail_).substr(start)))
       return k;
   }
   return 0; // nothing of the tail remains — deletes fully applied
 }
 
 void SKeyState::repairNativeDeletes() {
+  // Synchronous fallback for forceFlushDeferredCommit (e.g. focus loss).
+  // Normal typing uses finishDeferredCommit's asynchronous verification;
+  // a departing context cannot safely accept a later timer commit.
   if (deferredNativeDeleteLen_ <= 0)
     return;
   bool confirmedMissing = false;
@@ -6386,15 +6437,16 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       // commit, causing corruption when deleteSurroundingText races with
       // omnibox updates.  The uinput BS approach lets Chrome process the
       // deletion as real keystrokes before we commit the replacement.
-      // X11 Firefox-family: delete_surrounding_text through Firefox's
-      // async renderer is DROPPED in heavy web apps (Google Sheets:
-      // "bạn" → "baạn" — the deletes never land, 2026-09-13; deferring
-      // the commit only shifted the odds).  Route X11 Firefox through
-      // deleteViaBackspace() below instead — the uinput anchor deletion
-      // uses the real keyboard path the web app is built for.  Wayland
-      // Firefox keeps the native deletes (validated there).
+      // Keep the X11 Firefox Uinput workaround for Docs-suite editors,
+      // whose renderer can drop native deletes. Do not extend it to every
+      // Firefox/Snap entry: the address bar supplies matching surrounding
+      // text, while injected BS may leave it unchanged (go + x -> goõ).
+      // Other entries use native deletion only after the validity/suffix
+      // checks below; missing/stale snapshots still fall back to Backspace.
+      const bool firefoxDocsUinput = !isWayland() && isFirefoxOrSnap() &&
+                                     a11yGoogleDocsFocused();
       if (useNativeSurroundingApi() && !inChromiumAddressBar() &&
-          !(!isWayland() && isFirefoxOrSnap())) {
+          !firefoxDocsUinput) {
         const auto &surrounding = ic_->surroundingText();
         bool cacheStale = !surroundingCacheEndsWith(surrounding, oldComposed);
         if (!surrounding.isValid() ||
@@ -6444,7 +6496,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           for (int i = 0; i < deleteLen; ++i) {
             ic_->deleteSurroundingText(-1, 1);
             if (ic_->surroundingText().isValid()) {
-              ic_->surroundingText().deleteText(-1, 1);
+              mirrorSurroundingDelete(-1, 1);
             }
           }
           surroundingInvalidCount_ = 0; // cache works again
@@ -6472,7 +6524,17 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           }
         }
       } else {
-        SKEY_DEBUG() << "Surr: client has no surrounding text capability";
+        const auto &surrounding = ic_->surroundingText();
+        SKEY_DEBUG() << "Surr: Backspace fallback reason="
+                     << (!useNativeSurroundingApi() ? "native-api-unavailable"
+                         : inChromiumAddressBar() ? "chromium-address-bar"
+                                                  : "firefox-docs-x11-policy")
+                     << " surrValid=" << surrounding.isValid()
+                     << " cursor=" << surrounding.cursor()
+                     << " anchor=" << surrounding.anchor()
+                     << " oldSuffixMatches="
+                     << (surrounding.isValid() &&
+                         surroundingCacheEndsWith(surrounding, oldComposed));
         deleteViaBackspace(/*laggingPush=*/false);
       }
     } else {
@@ -6510,7 +6572,7 @@ void SKeyState::surroundingBackspace() {
     } else {
       ic_->deleteSurroundingText(-1, 1);
       if (ic_->surroundingText().isValid()) {
-        ic_->surroundingText().deleteText(-1, 1);
+        mirrorSurroundingDelete(-1, 1);
       }
       surroundingInvalidCount_ = 0; // cache works again
     }
@@ -6605,7 +6667,7 @@ void SKeyState::armUinputSafetyTimer() {
         if (!text.empty())
           this->commitText(text);
         postCommitPause(appDelayOverrideResolved().postCommitMs);
-        if (!bufferedUinputKeys_.empty())
+        if (!bufferedUinputKeys_.empty() || !settledKeys_.empty())
           replayBufferedUinputKeys();
         return true;
       });
@@ -6661,14 +6723,26 @@ void SKeyState::reclaimLastWord() {
                << "' committedLen=" << committedLen_;
 }
 
+void SKeyState::refreshPreeditVisibility() {
+  // Committed-text modes must not display a duplicate of the current word.
+  // Settings changes must not replace an open mode-selection menu either.
+  if (!modeMenuActive_ && !useSurroundingText()) {
+    updatePreedit();
+  }
+}
+
 void SKeyState::updatePreedit() {
   Text clientPreedit;
   std::string composed = viet_.getComposed();
-  if (!composed.empty()) {
+  if (engine_->config().showPreedit.value() && !composed.empty()) {
     clientPreedit.append(composed, TextFormatFlag::Underline);
     clientPreedit.setCursor(composed.size());
   }
 
+  // Clear both destinations when hiding or when the client's capability
+  // changes; keep viet_ intact so hidden composition still commits normally.
+  ic_->inputPanel().setClientPreedit(Text());
+  ic_->inputPanel().setPreedit(Text());
   if (ic_->capabilityFlags().test(CapabilityFlag::Preedit)) {
     ic_->inputPanel().setClientPreedit(clientPreedit);
   } else {

@@ -48,9 +48,10 @@ Thêm APT repository để tự động nhận cập nhật qua `apt update`:
 ```bash
 curl -fsSL https://collyn.github.io/skey/install.sh | sudo bash
 sudo apt install fcitx5-skey
+skey-setup
 ```
 
-Package tự động chạy `skey-setup` để cấu hình fcitx5, bật `ActiveByDefault` và `ShareInputState`, export biến môi trường (`GTK_IM_MODULE`, `QT_IM_MODULE`, `XMODIFIERS`) cho cả X11 và Wayland. Bộ gõ SKey sẵn sàng sử dụng ngay sau khi cài — chuyển đổi bằng **Ctrl+Space**.
+Sau khi cài xong, chạy `skey-setup` trong terminal của bạn để cấu hình fcitx5, bật `ActiveByDefault` và `ShareInputState`, và thiết lập biến môi trường cho X11/Wayland. Script sẽ hỏi trước khi ghi biến môi trường nếu cần. Package không tự chạy bước cấu hình này. Sau khi cấu hình, chuyển đổi bộ gõ bằng **Ctrl+Space**.
 
 > ⚠️ **Wayland:** Sau khi cài, vào System Settings → Input Devices → Virtual Keyboard chọn **Fcitx 5**. Nếu không thấy tuỳ chọn này, logout/login rồi kiểm tra lại.
 
@@ -77,6 +78,7 @@ skey-setup       # cấu hình fcitx5 và uinput server
 ```bash
 curl -fsSL https://collyn.github.io/skey/install-fedora.sh | sudo bash
 sudo dnf install fcitx5-skey
+skey-setup
 ```
 
 Cập nhật tự động qua `dnf update`. Cần thêm frontends để gõ trên GTK/Qt:
@@ -90,6 +92,7 @@ sudo dnf install fcitx5-gtk fcitx5-qt
 ```bash
 curl -fsSL https://collyn.github.io/skey/install-opensuse.sh | sudo bash
 sudo zypper install fcitx5-skey
+skey-setup
 ```
 
 Cập nhật tự động qua `zypper up`. Cần thêm frontend GTK:
@@ -103,6 +106,7 @@ sudo zypper install fcitx5-gtk
 ```bash
 curl -fsSL https://collyn.github.io/skey/install-arch.sh | sudo bash
 sudo pacman -S fcitx5-skey
+skey-setup
 ```
 
 Cập nhật tự động qua `pacman -Syu`. Cần thêm frontends:
@@ -390,7 +394,7 @@ SKey hỗ trợ **cập nhật tự động ngay trong giao diện** — không 
 1. Mở `fcitx5-skey-settings` → **Tab Info**
 2. Bấm **"Kiểm tra cập nhật"** — app truy vấn GitHub Releases API để so sánh phiên bản
 3. Nếu có phiên bản mới → hiện dialog với **version + release notes** → bấm **"Cập nhật ngay"**
-4. App tự động **tải .deb** → **cài qua `pkexec apt-get install -y`** (tự kéo thêm dependency mới như libqt6svg6) → **chạy `skey-setup`** → **restart Fcitx5** (có reconnect Wayland virtual keyboard)
+4. App tự động **tải .deb** → **cài qua `pkexec apt-get install -y`** (tự kéo thêm dependency mới như libqt6svg6) → **restart Fcitx5** (có reconnect Wayland virtual keyboard)
 5. Settings GUI tự khởi động lại với phiên bản mới sau khi cài xong
 
 Toàn bộ quy trình diễn ra trong GUI — người dùng chỉ cần bấm 2 nút: "Kiểm tra cập nhật" → "Cập nhật ngay". Sau khi cập nhật, Fcitx5 được restart tự động và sẵn sàng sử dụng ngay.

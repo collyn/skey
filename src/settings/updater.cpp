@@ -458,15 +458,12 @@ void Updater::onDownloadFinished() {
                 proc->deleteLater();
 
                 if (exitCode == 0) {
-                    // No restart here: the package's postinst already
-                    // restarted fcitx5 and reconnected KWin (it runs
-                    // inside pkexec).  A second restart here would tear
-                    // down app text-input connections a second time.
+                    // Package hooks request the restart inside the user's
+                    // session. Avoid a second restart here, and do not claim
+                    // it succeeded: package success does not confirm that.
                     emit installFinished(
                         true,
-                        T(
-                            "Cập nhật thành công! Fcitx5 đã được "
-                            "khởi động lại."));
+                        T("Cập nhật thành công!"));
                 } else {
                     emit installFinished(
                         false,

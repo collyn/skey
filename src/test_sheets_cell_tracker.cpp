@@ -51,5 +51,19 @@ int main() {
     check(!snapshot.observe(":1.28/editor", ""), "failed read reset baseline");
     check(!snapshot.observe(":1.28/editor", "H24"), "retry reset same cell");
     check(snapshot.observe(":1.52/editor", "H24"), "new editor identity missed");
+
+    // A deferred commit may run after a click, before the new cell's first
+    // key. Its synchronous read must invalidate the old composition now,
+    // while the subsequent key observes the same baseline without resetting.
+    check(snapshot.observe(":1.52/editor", "I24"), "commit boundary missed cell switch");
+    viet.reset();
+    check(!snapshot.observe(":1.52/editor", "I24"), "first key reset after commit boundary");
+    for (char key : std::string("chaof")) viet.processKey(key);
+    check(viet.getComposed() == "chào", "first word after pending commit was corrupted");
+    for (const char *invalid : {"", "loading", "A0", "gõ"})
+        check(!snapshot.observe(":1.52/editor", invalid), "invalid read advanced cell baseline");
+    check(snapshot.observe(":1.52/editor", "J24"), "recovery after failed reads missed switch");
+    check(snapshot.observe(":1.52/other-editor", "J24"), "same coordinate in another document missed");
+    check(!snapshot.observe(":1.52/other-editor", "J24"), "repeat observation reset word");
     std::cout << "Sheets cell tracking passed\n";
 }

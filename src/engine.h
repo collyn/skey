@@ -23,6 +23,9 @@
 #include "a11y_monitor.h"
 #include "sheets_cell_tracker.h"
 #include "app_delay_key.h"
+#include "surrounding_cursor.h"
+#include <deque>
+#include <fcitx/surroundingtext.h>
 
 namespace fcitx {
 
@@ -37,7 +40,8 @@ struct UinputTiming;
 class SKeyState : public InputContextProperty {
 public:
     SKeyState(SKeyEngine *engine, InputContext *ic);
-    ~SKeyState() override = default;
+    ~SKeyState() override;
+    void surroundingTextChanged() { surroundingCursor_.invalidate(); }
 
     void keyEvent(KeyEvent &keyEvent);
     void activate();
@@ -49,6 +53,8 @@ public:
     /// unless the IC is mid-word (Auto must not flip the composition
     /// path half-way through — the word-boundary trigger handles it).
     void invalidateAppModeOverrideCache();
+    /// Refresh an active preedit after changing its visibility in settings.
+    void refreshPreeditVisibility();
     /// Per-input deferred-commit delay for the X11 Chromium no-cap Surr
     /// fallback (forwardKey BS + deferred commit): FB-page inputs get the
     /// same 20ms floor as the Uinput path (heavy renderer), other inputs
@@ -59,11 +65,24 @@ public:
     void dismissModeMenu();
 
 private:
+    friend struct EnginePerformanceTest;
+    void mirrorSurroundingDelete(int offset, unsigned size);
+    void finishUinputSettle(int retries, int postMs);
+    void scheduleUinputSettle(uint64_t delay, int retries, int postMs);
+    void replaySettledKeys();
+    bool uinputSettling_ = false;
+    bool replayingSettledKeys_ = false;
+    struct SettledKey { Key key; bool release; int time; };
+    std::deque<SettledKey> settledKeys_;
+    bool surroundingCacheEndsWith(const SurroundingText &text,
+                                  std::string_view expected);
+    SurroundingCursor surroundingCursor_;
     friend class ModeCandidateWord;
     friend class ExcludeCandidateWord;
     friend class AddressBarModeCandidateWord;
     SKeyOutputMode effectiveMode() const;
     bool inChromiumAddressBar() const;
+    bool forwardUserBackspace() const;
     bool isAutofillCertain() const;
     bool useSurroundingText() const;
     bool useNativeSurroundingApi() const;
@@ -159,6 +178,8 @@ private:
     /// settles).  Call right before committing a deferred native-delete
     /// replacement.
     void repairNativeDeletes();
+    void finishDeferredCommit(int postMs);
+    int nativeRepairAttempt_ = 0;
     void updatePreedit();
     void clearUI();
     void showModeMenu();
@@ -181,7 +202,7 @@ private:
     int committedLen_ = 0;
 
     /// Commit text to the app, converting to the configured charset.
-    void commitText(const std::string &utf8);
+    bool commitText(const std::string &utf8);
     void commitText(const std::string &utf8, const std::string &fallbackCharset);
     bool modeMenuActive_ = false;
     bool modeMenuForAddressBar_ = false;
@@ -335,6 +356,7 @@ private:
     // Spurious-cycle detection: when preeditWasPending_ is true and
     // the next activate is for the same IC+program, the app auto-committed
     // on focus loss (e.g., LibreOffice) — skip the engine fallback commit.
+    // Hidden preedit leaves this false: the app has nothing to auto-commit.
     bool preeditWasPending_ = false;
     std::string preeditPendingProgram_;
     std::string pendingUinputCommit_;
@@ -401,8 +423,11 @@ struct AppDelayStat {
 
 /// Main fcitx5 engine class.
 class SKeyEngine : public InputMethodEngineV2 {
+    friend class SKeyState;
+    friend struct EnginePerformanceTest;
 public:
-    SKeyEngine(Instance *instance);
+    // Standalone test hosts can omit desktop/configuration side effects.
+    SKeyEngine(Instance *instance, bool initializeDesktop = true);
     ~SKeyEngine() override = default;
 
     void keyEvent(const InputMethodEntry &entry,
@@ -475,7 +500,10 @@ private:
 
     Instance *instance_;
     SKeyConfig config_;
+    // Must outlive factory_: unregistering the factory destroys its states.
+    std::unordered_map<InputContext *, SKeyState *> liveStates_;
     FactoryFor<SKeyState> factory_;
+    std::unique_ptr<HandlerTableEntry<EventHandler>> surroundingWatcher_;
 
     friend class SKeyState;
     // Pending preedit text saved on focus loss, keyed by program name.
