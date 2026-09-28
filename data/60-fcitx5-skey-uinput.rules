@@ -10,9 +10,8 @@
 //
 // Authorization is scoped to the USER, not to the session.  Do NOT add
 // `subject.local && subject.active` back: the rule is also exercised from
-// contexts that have no seat session at all — postinst runs skey-setup
-// via systemd-run --user/su, the settings GUI may run under a user-
-// manager scope — and in those contexts the session check always fails,
+// contexts that have no seat session at all — the settings GUI may run
+// under a user-manager scope — and in those contexts the session check fails,
 // denying the restart (silent hang with a polkit agent, hard deny
 // without one).  A user restarting THEIR OWN instance (unit name ==
 // their username) is the correct boundary; other users' instances remain

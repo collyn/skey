@@ -1,0 +1,131 @@
+post_install() {
+    # Update icon caches
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || :
+        gtk-update-icon-cache /usr/share/icons/breeze 2>/dev/null || :
+        gtk-update-icon-cache /usr/share/icons/breeze-dark 2>/dev/null || :
+    fi
+
+    # Reload systemd units
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload 2>/dev/null || :
+        # Restart every running uinput server instance so it picks up the
+        # new binary.  Run as root during package upgrades.
+        # No-op on first install.
+        systemctl try-restart "fcitx5-skey-uinput-server@*.service" 2>/dev/null || :
+    fi
+
+    # Create the skey_uinput system user (the uinput server runs as this
+    # unprivileged user instead of root) and re-apply udev rules so the
+    # /dev/uinput ACL grants it rw access.
+    if command -v systemd-sysusers >/dev/null 2>&1; then
+        systemd-sysusers /usr/lib/sysusers.d/skey-uinput.conf 2>/dev/null || :
+    elif ! getent passwd skey_uinput >/dev/null 2>&1 && command -v useradd >/dev/null 2>&1; then
+        useradd --system --no-create-home --user-group --shell /usr/bin/nologin skey_uinput 2>/dev/null || :
+    fi
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules 2>/dev/null || :
+        udevadm trigger --subsystem-match=misc 2>/dev/null || :
+    fi
+
+    # Prepare the service for the console user; run skey-setup manually.
+    if command -v loginctl >/dev/null 2>&1; then
+        CONSOLE_USER=$(loginctl list-sessions --no-legend 2>/dev/null | \
+            awk '$4=="seat0" {print $3}' | sort -u | head -1)
+        if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+            # Enable the uinput server as root BEFORE skey-setup runs.
+            # Without this, a manual skey-setup run hits its enable branch as
+            # the user: `systemctl enable` uses the manage-unit-files
+            # polkit action, which cannot be scoped per unit, so the
+            # graphical polkit agent pops a root-password dialog that
+            # looks like the terminal hanging.  post_remove disables each
+            # instance on removal, so fresh installs start clean.
+            if command -v systemctl >/dev/null 2>&1; then
+                # No group membership needed: the server socket sits in a
+                # 0700 RuntimeDirectory with a per-user named ACL granted
+                # by ExecStartPost (traverse only); authorization happens
+                # at accept time (SO_PEERCRED + /proc/pid/exe) — so users
+                # work immediately after an upgrade without a re-login.
+                systemctl enable "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
+                systemctl start "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
+            fi
+        fi
+    fi
+}
+
+pre_remove() {
+    # $1 is empty on a real removal (it holds the new version on upgrade).
+    # skey-setup -u strips the env-var blocks from shell rc files, removes
+    # skey-im from the fcitx5 profile and cleans the live session.  It
+    # must run as the USER (HOME + session D-Bus resolve correctly) and
+    # while /usr/bin/skey-setup still exists — pre_remove is the hook.
+    if [ -z "$1" ] && command -v loginctl >/dev/null 2>&1 && \
+       command -v skey-setup >/dev/null 2>&1; then
+        CONSOLE_USER=$(loginctl list-sessions --no-legend 2>/dev/null | \
+            awk '$4=="seat0" {print $3}' | sort -u | head -1)
+        if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+            su -s /bin/bash "$CONSOLE_USER" -c "skey-setup -u" >/dev/null 2>&1 || :
+        fi
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop "fcitx5-skey-uinput-server@*.service" 2>/dev/null || :
+    fi
+}
+
+post_remove() {
+    if command -v systemctl >/dev/null 2>&1; then
+        for link in /etc/systemd/system/multi-user.target.wants/fcitx5-skey-uinput-server@*; do
+            [ -L "$link" ] || continue
+            instance=$(basename "$link")
+            systemctl disable "$instance" 2>/dev/null || :
+        done
+        systemctl daemon-reload 2>/dev/null || :
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || :
+        gtk-update-icon-cache /usr/share/icons/breeze 2>/dev/null || :
+        gtk-update-icon-cache /usr/share/icons/breeze-dark 2>/dev/null || :
+    fi
+    # Remove the dedicated sysuser created by sysusers.d — sysusers only
+    # creates, never deletes.  pre_remove already stopped the service, so
+    # the RuntimeDirectory is gone.  Order matters: drop the /dev/uinput
+    # ACL entry first (it references the user by name), then evict group
+    # members (groupdel refuses a non-empty group), then userdel, then
+    # groupdel as a safety net.
+    if command -v setfacl >/dev/null 2>&1 && [ -c /dev/uinput ]; then
+        setfacl -x u:skey_uinput /dev/uinput 2>/dev/null || :
+    fi
+    if command -v gpasswd >/dev/null 2>&1 && getent group skey_uinput >/dev/null 2>&1; then
+        for member in $(getent group skey_uinput | cut -d: -f4 | tr ',' ' '); do
+            [ -n "$member" ] && gpasswd -d "$member" skey_uinput 2>/dev/null || :
+        done
+    fi
+    if getent passwd skey_uinput >/dev/null 2>&1; then
+        userdel skey_uinput 2>/dev/null || :
+    fi
+    if getent group skey_uinput >/dev/null 2>&1; then
+        groupdel skey_uinput 2>/dev/null || :
+    fi
+}
+
+post_upgrade() {
+    post_install
+
+    # Restart in the graphical user's session without running configuration.
+    local console_user="${SUDO_USER:-}"
+    if [ -z "$console_user" ] && command -v loginctl >/dev/null 2>&1; then
+        console_user=$(loginctl list-sessions --no-legend 2>/dev/null | \
+            awk '$4=="seat0" {print $3}' | sort -u | head -1)
+    fi
+    if [ -n "$console_user" ] && [ "$console_user" != "root" ]; then
+        if command -v systemd-run >/dev/null 2>&1 && \
+           systemd-run --user --machine="${console_user}@.host" \
+               --wait --pipe true 2>/dev/null; then
+            systemd-run --user --machine="${console_user}@.host" \
+                --wait --pipe -p KillMode=none \
+                /usr/bin/skey-restart-fcitx5 2>/dev/null || :
+        else
+            su -s /bin/bash "$console_user" -c "DISPLAY='${DISPLAY:-:0}' fcitx5 -r -d >/dev/null 2>&1" 2>/dev/null || :
+        fi
+    fi
+}

@@ -136,29 +136,8 @@ if [ "$1" -eq 1 ]; then
     fi
 fi
 
-if [ "$1" -eq 1 ]; then
-    # ── First install ──
-    # Run full skey-setup: configures fcitx5 profile, shell env vars,
-    # KWin virtual keyboard, autostart, ibus disable, etc.
-    #
-    # It must run INSIDE the user's graphical session — su loses
-    # XDG_SESSION_TYPE / XDG_CURRENT_DESKTOP, which made the KDE-Wayland
-    # blocks (KWin reconnect, session env files) silently skip.  Route
-    # through the user's systemd manager instead.
-    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && [ -x /usr/bin/skey-setup ]; then
-        if [ -x /usr/bin/systemd-run ] && \
-           /usr/bin/systemd-run --user --machine="${CONSOLE_USER}@.host" \
-               --wait --pipe true 2>/dev/null; then
-            # KillMode=none: skey-setup starts fcitx5 -d, which
-            # daemonizes inside the transient unit.
-            /usr/bin/systemd-run --user --machine="${CONSOLE_USER}@.host" \
-                --wait --pipe -p KillMode=none /usr/bin/skey-setup \
-                2>/dev/null || :
-        else
-            su -s /bin/bash "$CONSOLE_USER" -c /usr/bin/skey-setup >/dev/null 2>&1 || :
-        fi
-    fi
-elif [ "$1" -ge 2 ]; then
+# User configuration is performed manually with skey-setup.
+if [ "$1" -ge 2 ]; then
     # ── Upgrade ──
     # Restart every running uinput server instance so it picks up the new
     # binary.  Instance-agnostic on purpose: CONSOLE_USER only finds a
