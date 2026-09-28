@@ -1,9 +1,9 @@
 #ifndef FCITX5_SKEY_A11Y_MONITOR_H
 #define FCITX5_SKEY_A11Y_MONITOR_H
 
+#include "a11y_text_cache.h"
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -73,7 +73,7 @@ public:
     /// Per-ELEMENT pid from GetProcessId on the focused accessible (the
     /// per-tab renderer pid on old Chrome; Chrome ≥150 native a11y
     /// answers -1).  Web content only — browser-UI queries can stall.
-    /// Log/analysis signal only: NOT consumed by the engine.
+    /// Queried only with debug enabled; NOT consumed by the engine.
     int focusElementPid() const {
         return focusElementPid_.load(std::memory_order_relaxed);
     }
@@ -119,9 +119,8 @@ public:
         return focusMultiline_.load(std::memory_order_relaxed);
     }
 
-    /// Identity of the last focused text-entry element (bus name + object
-    /// path) for the engine's own AT-SPI2 queries (GetText/GetSelection).
-    /// Returns false when no text entry has been focused yet.
+    /// Identity of the focused browser-UI text entry (bus name + object path).
+    /// Cleared on focus loss, non-text controls, passwords and web documents.
     bool focusedTextEntry(std::string &busName, std::string &path,
                           uint64_t &snapshotUsec) const;
 
@@ -135,20 +134,19 @@ public:
     /// (0 = none yet).  Lets the engine require a snapshot that postdates
     /// a moment of interest instead of trusting stale-but-fresh content.
     uint64_t a11ySnapshotUsec() const {
-        std::lock_guard<std::mutex> lock(a11ySnapshotMutex_);
-        return a11ySnapshotUsec_;
+        return textCache_.stamp();
     }
 
     /// Enable/disable the snapshot polling.  The engine enables it only
     /// while the current input context is the Chromium address bar on
     /// X11 — polling any other focused entry is wasted DBus traffic.
-    void setPollingEnabled(bool enabled) {
-        pollEnabled_.store(enabled, std::memory_order_relaxed);
-    }
+    /// Each enabled call renews a short activity lease; idle inputs stop polling.
+    void setPollingEnabled(bool enabled);
 
     /// Block until the snapshot is updated (or `timeoutUsec` elapses).
-    /// Used by the engine's replacement path instead of usleep polling.
-    void waitForSnapshotUpdate(uint64_t timeoutUsec) const;
+    /// Pass the stamp observed before reading to avoid losing a notification
+    /// between the read and this wait.
+    void waitForSnapshotUpdate(uint64_t timeoutUsec, uint64_t observed) const;
 
     /// AT-SPI2 bus address (from the X11 root property or session bus).
     /// Empty when unavailable.
@@ -205,8 +203,10 @@ public:
 
 private:
     void threadFunc();
+    void wakeMonitor();
 
     std::thread thread_;
+    int wakeFd_ = -1;
     std::atomic<bool> running_{false};
     std::atomic<bool> stopRequested_{false};
     std::atomic<bool> browserUIFocused_{false};
@@ -231,21 +231,7 @@ private:
     mutable std::mutex sheetsMutex_;
     std::string sheetsBus_, sheetsPath_, sheetsNameBoxPath_, sheetsBusAddress_;
     DBusConnection *sheetsQueryBus_ = nullptr; // main-thread owned
-    // Focused text-entry identity (guarded — strings are not atomic).
-    mutable std::mutex focusEntryMutex_;
-    std::string focusEntryBus_;
-    std::string focusEntryPath_;
-    std::atomic<uint64_t> focusEntrySnapshotUsec_{0};
-    // Polled text + selection snapshot (guarded — strings are not atomic).
-    mutable std::mutex a11ySnapshotMutex_;
-    std::string a11ySnapshotText_;
-    int a11ySnapshotSelStart_ = -1;
-    int a11ySnapshotSelEnd_ = -1;
-    uint64_t a11ySnapshotUsec_ = 0;
-    uint64_t lastA11yPollUsec_ = 0;
-    bool a11yPollDirty_ = false; // monitor-thread only
-    std::atomic<bool> pollEnabled_{false};
-    mutable std::condition_variable snapshotCv_;
+    A11yTextCache textCache_;
 };
 
 #endif // FCITX5_SKEY_A11Y_MONITOR_H

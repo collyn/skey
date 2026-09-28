@@ -4025,14 +4025,11 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
-  // Enable the a11y snapshot polling while typing in the Chromium address
-  // bar OR any Chromium-family app on X11 (see A11yMonitor::setPollingEnabled)
-  // — Electron (Tabby) needs the focused-entry text for post-commit
-  // verification: its D-Bus commits reach the renderer late and can be
-  // overtaken by the next forwarded key ("đây" → "đyy").
+  // Only the X11 omnibox paths below consume A11y text snapshots. Reading
+  // every Chromium/Electron editor repeatedly scales with document length.
+  // Native Wayland and Sheets cell detection do not use this polling cache.
   if (auto *mon = engine_->a11yMonitor()) {
-    mon->setPollingEnabled(!isWayland() &&
-                           (inChromiumAddressBar() || isChromiumCached()));
+    mon->setPollingEnabled(!isWayland() && inChromiumAddressBar());
   }
 
   // Late uinput BS loopbacks — BS we injected that arrive after the
@@ -5136,14 +5133,15 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             mon ? mon->a11ySnapshotUsec() : 0;
         uint64_t waitUntil = now(CLOCK_MONOTONIC) + 30000;
         for (;;) {
+          const uint64_t observed = mon ? mon->a11ySnapshotUsec() : 0;
           if (!mon || !mon->a11yState(txt, ss, se, kA11ySnapshotMaxAgeUsec))
             break;
           if (txt.find(comp) != std::string::npos)
             break; // word still on screen — in sync
-          uint64_t remaining = waitUntil - now(CLOCK_MONOTONIC);
-          if (now(CLOCK_MONOTONIC) >= waitUntil)
+          const uint64_t nowUsec = now(CLOCK_MONOTONIC);
+          if (nowUsec >= waitUntil)
             break;
-          mon->waitForSnapshotUpdate(remaining);
+          mon->waitForSnapshotUpdate(waitUntil - nowUsec, observed);
         }
         // An EMPTY snapshot is not desync evidence — Chrome on some
         // distros (Fedora) returns an empty omnibox text while the word
@@ -5622,6 +5620,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
           if (!mon) {
             break;
           }
+          const uint64_t observed = mon->a11ySnapshotUsec();
           if (!mon->a11yState(a11yText, a11ySelStart, a11ySelEnd,
                               kA11ySnapshotMaxAgeUsec)) {
             // No snapshot or stale: WAIT for the monitor to catch up
@@ -5630,9 +5629,10 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
             // selection values stay -1 and the autofill +1 BS check in
             // the fallback below can never fire ("git con[fig]" → the
             // first BS eats the selection → "coonfig", 2026-09-13).
-            if (now(CLOCK_MONOTONIC) >= waitUntil)
+            const uint64_t nowUsec = now(CLOCK_MONOTONIC);
+            if (nowUsec >= waitUntil)
               break; // timeout — heuristics decide
-            mon->waitForSnapshotUpdate(waitUntil - now(CLOCK_MONOTONIC));
+            mon->waitForSnapshotUpdate(waitUntil - nowUsec, observed);
             continue;
           }
           // The prefix compare alone is ambiguous: with "bar ba" in the
@@ -5647,9 +5647,10 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
             a11yDecided = true;
             break;
           }
-          if (now(CLOCK_MONOTONIC) >= waitUntil)
+          const uint64_t nowUsec = now(CLOCK_MONOTONIC);
+          if (nowUsec >= waitUntil)
             break; // timeout — heuristics decide
-          mon->waitForSnapshotUpdate(waitUntil - now(CLOCK_MONOTONIC));
+          mon->waitForSnapshotUpdate(waitUntil - nowUsec, observed);
         }
       }
       // A stale text value can survive while the selection coordinates are
@@ -5806,7 +5807,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
         // would eat real text before the cursor ("git ").
         if (totalBs == bs && a11ySelStart >= 0 &&
             a11ySelStart != a11ySelEnd &&
-            a11ySelEnd == static_cast<int>(a11yText.size())) {
+            a11ySelEnd == static_cast<int>(utf8::length(a11yText))) {
           ++totalBs;
           SKEY_DEBUG() << "AddrBar: autofill selection, +1 BS (total="
                        << totalBs << ")";

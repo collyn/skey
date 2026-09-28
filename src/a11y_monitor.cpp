@@ -2,6 +2,7 @@
 #include "sheets_cell_tracker.h"
 
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -10,6 +11,9 @@
 #include <deque>
 #include <dirent.h>
 #include <fstream>
+#include <poll.h>
+#include <sys/eventfd.h>
+#include <unistd.h>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -23,6 +27,38 @@ static constexpr int ROLE_PASSWORD_TEXT = 40;
 // contenteditable control. Facebook comments currently reach DOCUMENT_WEB at
 // depth 22, so 20 incorrectly classifies that event as browser chrome.
 static constexpr int MAX_ANCESTOR_DEPTH = 64;
+
+static uint64_t monotonicUsec() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// Text signals are useful only to the snapshot consumer. Keep the focus and
+// Sheets selection listeners independent: native Wayland must still detect
+// cells even though it never enables background text polling.
+class TextEventSubscription {
+public:
+    void update(DBusConnection *bus, const std::string &sender,
+                const std::string &path) {
+        std::string target;
+        if (!sender.empty() && !path.empty())
+            target = ",sender='" + sender + "',path='" + path + "'";
+        if (target == target_) return;
+        for (const char *member : {"TextChanged", "TextCaretMoved",
+                                   "TextSelectionChanged"}) {
+            const std::string rule =
+                std::string("type='signal',interface='org.a11y.atspi.Event.Object',member='") +
+                member + "'";
+            if (!target_.empty())
+                dbus_bus_remove_match(bus, (rule + target_).c_str(), nullptr);
+            if (!target.empty())
+                dbus_bus_add_match(bus, (rule + target).c_str(), nullptr);
+        }
+        target_ = std::move(target);
+    }
+private:
+    std::string target_;
+};
 
 // Debug logging — controlled by the debug_ atomic flag via a thread-local
 // pointer. The thread function sets this up so A11Y_LOG can check it.
@@ -261,7 +297,9 @@ static int queryRole(DBusConnection *bus, const char *sender,
 
 // ── Read the accessible text of the focused entry (snapshot polling) ──
 static std::string queryText(DBusConnection *bus, const char *sender,
-                             const char *path, int timeoutMs = 500) {
+                             const char *path, int timeoutMs = 500,
+                             bool *ok = nullptr) {
+    if (ok) *ok = false;
     DBusError err;
     dbus_error_init(&err);
     DBusMessage *msg = dbus_message_new_method_call(
@@ -276,14 +314,18 @@ static std::string queryText(DBusConnection *bus, const char *sender,
     std::string text;
     if (reply && !dbus_error_is_set(&err)) {
         DBusMessageIter iter;
-        if (dbus_message_iter_init(reply, &iter) &&
+        if (dbus_message_get_type(reply) == DBUS_MESSAGE_TYPE_METHOD_RETURN &&
+            dbus_message_iter_init(reply, &iter) &&
             dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING) {
             const char *s = nullptr;
             dbus_message_iter_get_basic(&iter, &s);
-            if (s) text = s;
+            if (s) {
+                text = s;
+                if (ok) *ok = true;
+            }
         }
-        dbus_message_unref(reply);
     }
+    if (reply) dbus_message_unref(reply);
     dbus_error_free(&err);
     return text;
 }
@@ -306,9 +348,11 @@ static bool querySelection(DBusConnection *bus, const char *sender,
         bus, msg, 500, &err);
     dbus_message_unref(msg);
     if (reply && !dbus_error_is_set(&err)) {
-        // Reply may be a struct (i, i) directly or wrapped in a variant.
+        // Standard AT-SPI replies contain two top-level int32s ("ii").
+        // Retain compatibility with bridges wrapping them in a struct/variant.
         DBusMessageIter rit, var, st;
         DBusMessageIter *cur = &rit;
+        bool parsed = false;
         if (dbus_message_iter_init(reply, &rit)) {
             if (dbus_message_iter_get_arg_type(cur) == DBUS_TYPE_VARIANT) {
                 dbus_message_iter_recurse(cur, &var);
@@ -316,22 +360,28 @@ static bool querySelection(DBusConnection *bus, const char *sender,
             }
             if (dbus_message_iter_get_arg_type(cur) == DBUS_TYPE_STRUCT) {
                 dbus_message_iter_recurse(cur, &st);
-                dbus_int32_t v1 = -1, v2 = -1;
-                if (dbus_message_iter_get_arg_type(&st) == DBUS_TYPE_INT32) {
-                    dbus_message_iter_get_basic(&st, &v1);
-                    dbus_message_iter_next(&st);
-                    if (dbus_message_iter_get_arg_type(&st) ==
-                        DBUS_TYPE_INT32)
-                        dbus_message_iter_get_basic(&st, &v2);
-                }
-                if (v1 >= 0 && v2 > v1) {
-                    selStart = static_cast<int>(v1);
-                    selEnd = static_cast<int>(v2);
+                cur = &st;
+            }
+            dbus_int32_t v1 = -1, v2 = -1;
+            if (dbus_message_get_type(reply) == DBUS_MESSAGE_TYPE_METHOD_RETURN &&
+                dbus_message_iter_get_arg_type(cur) == DBUS_TYPE_INT32) {
+                dbus_message_iter_get_basic(cur, &v1);
+                if (dbus_message_iter_next(cur) &&
+                    dbus_message_iter_get_arg_type(cur) == DBUS_TYPE_INT32) {
+                    dbus_message_iter_get_basic(cur, &v2);
+                    parsed = !dbus_message_iter_next(cur) &&
+                             ((v1 == -1 && v2 == -1) ||
+                              (v1 >= 0 && v2 >= v1));
+                    if (parsed) {
+                        selStart = v1;
+                        selEnd = v2;
+                    }
                 }
             }
         }
         dbus_message_unref(reply);
-        return true;
+        dbus_error_free(&err);
+        return parsed;
     }
     if (reply)
         dbus_message_unref(reply);
@@ -736,7 +786,9 @@ static void pokeA11yApps(DBusConnection *bus) {
             // stays dead otherwise (no focus events for the integrated
             // terminal).  The query is read-only and cheap; non-Chromium
             // apps just return an empty relation set.
-            std::string name = queryName(bus, appBus, appPath);
+            std::string name;
+            if (g_debugFlag && g_debugFlag->load(std::memory_order_relaxed))
+                name = queryName(bus, appBus, appPath);
             (void)name; // logged below with the poke
             DBusMessage *poke = dbus_message_new_method_call(
                 appBus, appPath, "org.a11y.atspi.Accessible",
@@ -767,10 +819,12 @@ static void pokeA11yApps(DBusConnection *bus) {
 
 A11yMonitor::A11yMonitor() {
     dbus_threads_init_default();
+    wakeFd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
 }
 
 A11yMonitor::~A11yMonitor() {
     stop();
+    if (wakeFd_ >= 0) close(wakeFd_);
     if (sheetsQueryBus_) {
         dbus_connection_close(sheetsQueryBus_);
         dbus_connection_unref(sheetsQueryBus_);
@@ -819,40 +873,29 @@ std::string A11yMonitor::atspiBusAddress() { return getAtspiBusAddress(); }
 
 bool A11yMonitor::focusedTextEntry(std::string &busName, std::string &path,
                                    uint64_t &snapshotUsec) const {
-    std::lock_guard<std::mutex> lock(focusEntryMutex_);
-    if (focusEntryBus_.empty() || focusEntryPath_.empty())
-        return false;
-    busName = focusEntryBus_;
-    path = focusEntryPath_;
-    snapshotUsec = focusEntrySnapshotUsec_.load(std::memory_order_relaxed);
-    return true;
+    return textCache_.focusedEntry(busName, path, snapshotUsec);
 }
 
 bool A11yMonitor::a11yState(std::string &text, int &selStart, int &selEnd,
                             uint64_t maxAgeUsec) const {
-    std::lock_guard<std::mutex> lock(a11ySnapshotMutex_);
-    if (a11ySnapshotUsec_ == 0)
-        return false;
-    uint64_t nowUsec = static_cast<uint64_t>(
-        std::chrono::steady_clock::now().time_since_epoch().count() / 1000);
-    if (nowUsec - a11ySnapshotUsec_ > maxAgeUsec)
-        return false;
-    text = a11ySnapshotText_;
-    selStart = a11ySnapshotSelStart_;
-    selEnd = a11ySnapshotSelEnd_;
-    return true;
+    return textCache_.read(text, selStart, selEnd, monotonicUsec(), maxAgeUsec);
 }
 
-void A11yMonitor::waitForSnapshotUpdate(uint64_t timeoutUsec) const {
-    uint64_t snap;
-    {
-        std::lock_guard<std::mutex> lock(a11ySnapshotMutex_);
-        snap = a11ySnapshotUsec_;
+void A11yMonitor::setPollingEnabled(bool enabled) {
+    if (textCache_.setEnabled(enabled, monotonicUsec())) wakeMonitor();
+}
+
+void A11yMonitor::wakeMonitor() {
+    // Coalesced, nonblocking notification. No DBus operation on the key thread.
+    if (wakeFd_ >= 0) {
+        uint64_t value = 1;
+        while (write(wakeFd_, &value, sizeof(value)) < 0 && errno == EINTR) {}
     }
-    std::unique_lock<std::mutex> lock(a11ySnapshotMutex_);
-    snapshotCv_.wait_for(
-        lock, std::chrono::microseconds(timeoutUsec),
-        [&] { return a11ySnapshotUsec_ != snap; });
+}
+
+void A11yMonitor::waitForSnapshotUpdate(uint64_t timeoutUsec,
+                                      uint64_t observed) const {
+    textCache_.waitForUpdate(observed, timeoutUsec);
 }
 
 void A11yMonitor::start() {
@@ -863,6 +906,7 @@ void A11yMonitor::start() {
 
 void A11yMonitor::stop() {
     stopRequested_.store(true);
+    wakeMonitor();
     if (thread_.joinable())
         thread_.join();
 }
@@ -913,7 +957,7 @@ void A11yMonitor::threadFunc() {
     dbus_bus_add_match(bus,
                        "type='signal',"
                        "interface='org.a11y.atspi.Event.Object',"
-                       "member='StateChanged'",
+                       "member='StateChanged',arg0='focused'",
                        &err);
     dbus_error_free(&err);
     dbus_error_init(&err);
@@ -930,11 +974,9 @@ void A11yMonitor::threadFunc() {
                        "member='NameOwnerChanged'",
                        &err);
     dbus_error_free(&err);
-    // Text/selection events on the focused entry trigger an immediate
-    // snapshot re-poll (we don't parse the payloads — the signal only
-    // tells us "something changed, re-query now").
-    for (const char *member : {"TextChanged", "TextCaretMoved",
-                               "TextSelectionChanged", "ActiveDescendantChanged",
+    // Sheets events remain subscribed even while text polling is disabled.
+    // Text signals are subscribed to the current input on demand below.
+    for (const char *member : {"ActiveDescendantChanged",
                                "SelectionChanged", "PropertyChange"}) {
         dbus_error_init(&err);
         std::string match = std::string(
@@ -942,6 +984,8 @@ void A11yMonitor::threadFunc() {
                                 "interface='org.a11y.atspi.Event.Object',"
                                 "member='") +
                             member + "'";
+        if (strcmp(member, "PropertyChange") == 0)
+            match += ",arg0='accessible-name'";
         dbus_bus_add_match(bus, match.c_str(), &err);
         dbus_error_free(&err);
     }
@@ -984,11 +1028,32 @@ void A11yMonitor::threadFunc() {
     std::string cellContainerBus, cellContainerPath;
     SheetsCellTracker sheetsCells;
     std::unordered_map<std::string, std::string> sheetsNameBoxes;
+    TextEventSubscription textEvents;
+    int busFd = -1;
+    dbus_connection_get_unix_fd(bus, &busFd);
 
     // Poll loop
     while (!stopRequested_.load()) {
-        if (!dbus_connection_read_write(bus, 200))
-            break;
+        int timeout = textCache_.waitMillis(monotonicUsec());
+        if (wakeFd_ >= 0 && busFd >= 0) {
+            // A sync query can have queued signals while waiting for its
+            // reply. Drain them before waiting for more socket activity.
+            if (dbus_connection_get_dispatch_status(bus) == DBUS_DISPATCH_DATA_REMAINS)
+                timeout = 0;
+            const short busEvents = POLLIN |
+                (dbus_connection_get_outgoing_size(bus) > 0 ? POLLOUT : 0);
+            pollfd fds[] = {{busFd, busEvents, 0}, {wakeFd_, POLLIN, 0}};
+            if (poll(fds, 2, timeout) < 0 && errno != EINTR) break;
+            if (fds[1].revents & POLLIN) {
+                uint64_t value;
+                while (read(wakeFd_, &value, sizeof(value)) < 0 && errno == EINTR) {}
+            }
+            if (!dbus_connection_read_write(bus, 0)) break;
+        } else {
+            // Preserve responsiveness if eventfd is unavailable (fd limit).
+            if (!dbus_connection_read_write(bus, std::min(timeout, 10))) break;
+        }
+        if (stopRequested_.load()) break;
 
         DBusMessage *msg;
         while ((msg = dbus_connection_pop_message(bus)) != nullptr) {
@@ -1063,6 +1128,9 @@ void A11yMonitor::threadFunc() {
                             dbus_message_iter_get_basic(&iter, &d1);
                             if (d1 == 1)
                                 isFocusEvent = true;
+                            else
+                                textCache_.blur(dbus_message_get_sender(msg),
+                                                dbus_message_get_path(msg));
                         }
                     }
                 }
@@ -1079,12 +1147,8 @@ void A11yMonitor::threadFunc() {
                 (strcmp(member, "TextChanged") == 0 ||
                  strcmp(member, "TextCaretMoved") == 0 ||
                  strcmp(member, "TextSelectionChanged") == 0)) {
-                const char *sigPath = dbus_message_get_path(msg);
-                std::lock_guard<std::mutex> lock(focusEntryMutex_);
-                if (sigPath && !focusEntryPath_.empty() &&
-                    strcmp(sigPath, focusEntryPath_.c_str()) == 0) {
-                    a11yPollDirty_ = true;
-                }
+                textCache_.changed(dbus_message_get_sender(msg),
+                                   dbus_message_get_path(msg));
             }
 
             if (iface && member &&
@@ -1112,6 +1176,8 @@ void A11yMonitor::threadFunc() {
                 const char *sender = dbus_message_get_sender(msg);
                 const char *path = dbus_message_get_path(msg);
                 if (sender && path) {
+                    // Invalidate before the potentially slow ancestor walk.
+                    textCache_.focus({}, {}, monotonicUsec());
                     int role = queryRole(bus, sender, path);
                     bool fbChatSig = false, fbCommentSig = false;
                     std::string documentPath, framePath;
@@ -1218,7 +1284,7 @@ void A11yMonitor::threadFunc() {
                     // log/analysis signal only, not consumed by the
                     // engine.  Web content only: browser-UI GetProcessId
                     // can stall the shared monitor thread.
-                    int elemPid = hasDocWeb
+                    int elemPid = hasDocWeb && debug_.load(std::memory_order_relaxed)
                                       ? queryElementPid(bus, sender, path)
                                       : -1;
                     focusElementPid_.store(elemPid,
@@ -1270,25 +1336,13 @@ void A11yMonitor::threadFunc() {
                              hasDocWeb, role, roleName(role), editable,
                              multiline, singleLine, states.c_str(), procId,
                              elemPid, path);
-                    // Track the focused text entry so the engine can
-                    // query its content directly at replacement time.
+                    // Only browser UI consumes text snapshots. Do not read
+                    // passwords or web documents while the engine's focus
+                    // verdict is still catching up with this event.
                     static constexpr int ROLE_ENTRY = 79;
                     static constexpr int ROLE_TEXT = 61;
-                    if (role == ROLE_ENTRY || role == ROLE_TEXT ||
-                        role == ROLE_PASSWORD_TEXT) {
-                        {
-                            std::lock_guard<std::mutex> lock(
-                                focusEntryMutex_);
-                            focusEntryBus_ = sender;
-                            focusEntryPath_ = path;
-                        }
-                        focusEntrySnapshotUsec_.store(
-                            static_cast<uint64_t>(
-                                std::chrono::steady_clock::now()
-                                    .time_since_epoch()
-                                    .count() /
-                                1000),
-                            std::memory_order_relaxed);
+                    if (!hasDocWeb && (role == ROLE_ENTRY || role == ROLE_TEXT)) {
+                        textCache_.focus(sender, path, monotonicUsec());
                     }
                 }
             }
@@ -1296,51 +1350,30 @@ void A11yMonitor::threadFunc() {
             dbus_message_unref(msg);
         }
 
-        // Poll the focused text entry's content + selection so the
-        // engine can compute exact BS counts without blocking the main
-        // thread.  Throttled; failures leave the previous snapshot (the
-        // engine treats stale snapshots as unavailable).
         {
-            uint64_t nowUsec = static_cast<uint64_t>(
-                std::chrono::steady_clock::now().time_since_epoch().count() /
-                1000);
-            static constexpr uint64_t kSnapshotPollUsec = 150000;
-            if (pollEnabled_.load(std::memory_order_relaxed) &&
-                (a11yPollDirty_ ||
-                 nowUsec - lastA11yPollUsec_ >= kSnapshotPollUsec)) {
-                a11yPollDirty_ = false;
-                lastA11yPollUsec_ = nowUsec;
-                std::string busName, path;
-                uint64_t snapUsec = 0;
-                if (focusedTextEntry(busName, path, snapUsec)) {
-                    std::string txt =
-                        queryText(bus, busName.c_str(), path.c_str());
-                    int selStart = -1, selEnd = -1;
-                    if (querySelection(bus, busName.c_str(), path.c_str(),
-                                       selStart, selEnd)) {
-                        int oldSelStart, oldSelEnd;
-                        std::string oldText;
-                        {
-                            std::lock_guard<std::mutex> lock(
-                                a11ySnapshotMutex_);
-                            oldSelStart = a11ySnapshotSelStart_;
-                            oldSelEnd = a11ySnapshotSelEnd_;
-                            oldText = a11ySnapshotText_;
-                            a11ySnapshotText_ = txt;
-                            a11ySnapshotSelStart_ = selStart;
-                            a11ySnapshotSelEnd_ = selEnd;
-                            a11ySnapshotUsec_ = nowUsec;
-                        }
-                        if (selStart != oldSelStart ||
-                            selEnd != oldSelEnd || txt != oldText) {
-                            A11Y_LOG("Snapshot: text='%s' sel=%d,%d",
-                                     txt.c_str(), selStart, selEnd);
-                        }
-                    }
-                }
-            }
-            // Wake any engine thread waiting on a fresh snapshot.
-            snapshotCv_.notify_all();
+            std::string sender, path;
+            uint64_t stamp = 0;
+            if (textCache_.active(monotonicUsec()))
+                textCache_.focusedEntry(sender, path, stamp);
+            textEvents.update(bus, sender, path);
+        }
+
+        // Bound event-driven polls, stop on idle, back off on errors, and
+        // discard replies from a disabled polling generation. Sheets uses
+        // its separate synchronous connection and is unaffected by this cache.
+        if (auto request = textCache_.beginPoll(monotonicUsec())) {
+            bool textOk = false;
+            std::string txt = queryText(bus, request->bus.c_str(),
+                                        request->path.c_str(), 500, &textOk);
+            int selStart = -1, selEnd = -1;
+            bool ok = textOk &&
+                querySelection(bus, request->bus.c_str(), request->path.c_str(),
+                               selStart, selEnd);
+            if (debug_.load(std::memory_order_relaxed) && ok)
+                A11Y_LOG("Snapshot: text='%s' sel=%d,%d",
+                         txt.c_str(), selStart, selEnd);
+            textCache_.finishPoll(*request, ok, std::move(txt),
+                                  selStart, selEnd, monotonicUsec());
         }
 
         auto now = Clock::now();
@@ -1353,6 +1386,7 @@ void A11yMonitor::threadFunc() {
         }
     }
 
+    textEvents.update(bus, {}, {});
     dbus_connection_unref(bus);
     running_.store(false);
     A11Y_LOG("A11yMonitor stopped");
