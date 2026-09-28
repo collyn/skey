@@ -81,6 +81,8 @@ public:
     std::string name;
     std::atomic<int> textReads{0}, cellReads{0}, cell{24};
     std::atomic<bool> failCell{false}, failText{false};
+    std::atomic<int> roleReads{0};
+    std::atomic<bool> holdRole{false}, roleWaiting{false};
 private:
     void send(DBusMessage *message) {
         dbus_connection_send(bus, message, nullptr);
@@ -99,6 +101,13 @@ private:
                 const char *path = dbus_message_get_path(message);
                 auto *reply = dbus_message_new_method_return(message);
                 if (!std::strcmp(method, "GetRole")) {
+                    ++roleReads;
+                    if (holdRole) {
+                        roleWaiting = true;
+                        while (holdRole && !stop)
+                            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        roleWaiting = false;
+                    }
                     dbus_uint32_t role = !std::strcmp(path, "/doc") ? 95 :
                                         !std::strcmp(path, "/button") ? 43 : 79;
                     dbus_message_append_args(reply, DBUS_TYPE_UINT32, &role, DBUS_TYPE_INVALID);
@@ -221,6 +230,17 @@ int main() {
 
     // Sheets remains independently tracked with background text polling off.
     monitor.setPollingEnabled(false);
+    // Queue a burst while one query is in flight. Only the newest queued
+    // focus should trigger another expensive role/ancestor analysis.
+    const int rolesBefore = app.roleReads;
+    app.holdRole = true;
+    app.focus("/button");
+    check(until([&] { return app.roleWaiting.load(); }), "hold focus query for burst test");
+    for (int i = 0; i < 50; ++i) app.focus(i % 2 ? "/entry" : "/button");
+    app.holdRole = false;
+    check(until([&] { return monitor.focusedTextEntry(bus, path, stamp) && path == "/entry"; }),
+          "latest focus in burst must win");
+    check(app.roleReads - rolesBefore <= 3, "queued focus burst must not walk all 50 ancestors");
     app.focus("/sheet");
     check(until([&] { return monitor.sheetsEditorFocused(); }), "recognize actual Sheets editor via attributes");
     SheetsCellSnapshot cells;

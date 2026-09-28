@@ -1,5 +1,6 @@
 #include "a11y_monitor.h"
 #include "sheets_cell_tracker.h"
+#include "a11y_work_policy.h"
 
 #include <cctype>
 #include <cerrno>
@@ -739,7 +740,7 @@ static std::string findSheetsNameBox(DBusConnection *bus, const char *sender,
 // the GetRelationSet poke below where the stub exists (Ubuntu), and from a
 // flag set by the desktop/other ATs where it does not.
 
-static void pokeA11yApps(DBusConnection *bus) {
+static void pokeA11yApps(DBusConnection *bus, A11yPokeCache &cache) {
     DBusError err;
     dbus_error_init(&err);
     DBusMessage *msg = dbus_message_new_method_call(
@@ -778,6 +779,10 @@ static void pokeA11yApps(DBusConnection *bus) {
         }
 
         if (appBus && appPath && appPath[0] == '/') {
+            if (!cache.due(appBus, appPath, monotonicUsec())) {
+                dbus_message_iter_next(&arr);
+                continue;
+            }
             // Poke EVERY app, not just browser names: Electron apps
             // (antigravity-ide, VS Code forks) re-enable Chromium's
             // native accessibility on the same GetRelationSet/GetAttributes
@@ -799,6 +804,8 @@ static void pokeA11yApps(DBusConnection *bus) {
                 DBusMessage *preply =
                     dbus_connection_send_with_reply_and_block(
                         bus, poke, 500, &perr);
+                cache.result(appBus, appPath,
+                             preply && !dbus_error_is_set(&perr), monotonicUsec());
                 if (preply) dbus_message_unref(preply);
                 dbus_message_unref(poke);
                 A11Y_LOG("Poked '%s' (%s) to enable native a11y%s",
@@ -816,6 +823,24 @@ static void pokeA11yApps(DBusConnection *bus) {
 // ---------------------------------------------------------------------------
 // A11yMonitor
 // ---------------------------------------------------------------------------
+
+static bool isFocusGain(DBusMessage *msg) {
+    if (dbus_message_get_type(msg) != DBUS_MESSAGE_TYPE_SIGNAL) return false;
+    const char *iface = dbus_message_get_interface(msg);
+    if (iface && strcmp(iface, "org.a11y.atspi.Event.Focus") == 0) return true;
+    if (!dbus_message_is_signal(msg, "org.a11y.atspi.Event.Object", "StateChanged"))
+        return false;
+    DBusMessageIter iter;
+    const char *state = nullptr;
+    dbus_int32_t focused = 0;
+    if (!dbus_message_iter_init(msg, &iter) ||
+        dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_STRING) return false;
+    dbus_message_iter_get_basic(&iter, &state);
+    if (!state || strcmp(state, "focused") || !dbus_message_iter_next(&iter) ||
+        dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_INT32) return false;
+    dbus_message_iter_get_basic(&iter, &focused);
+    return focused == 1;
+}
 
 A11yMonitor::A11yMonitor() {
     dbus_threads_init_default();
@@ -1015,7 +1040,8 @@ void A11yMonitor::threadFunc() {
     // connects (short + late retry: the app root only becomes queryable once
     // the browser's ATK bridge has registered with the registry), plus a
     // periodic sweep as a fallback.
-    pokeA11yApps(bus);
+    A11yPokeCache pokeCache;
+    pokeA11yApps(bus, pokeCache);
 
     using Clock = std::chrono::steady_clock;
     const auto kNever = Clock::time_point::max();
@@ -1055,8 +1081,23 @@ void A11yMonitor::threadFunc() {
         }
         if (stopRequested_.load()) break;
 
-        DBusMessage *msg;
-        while ((msg = dbus_connection_pop_message(bus)) != nullptr) {
+        // Coalesce only focus gains already queued in this batch. Keep all
+        // text/selection/blur signals in order (Sheets depends on those).
+        // A bounded drain prevents an event storm from starving timers/polls.
+        std::vector<DBusMessage *> messages;
+        size_t lastFocus = 0;
+        while (messages.size() < 256) {
+            auto *message = dbus_connection_pop_message(bus);
+            if (!message) break;
+            if (isFocusGain(message)) lastFocus = messages.size();
+            messages.push_back(message);
+        }
+        for (size_t index = 0; index < messages.size(); ++index) {
+            DBusMessage *msg = messages[index];
+            if (index != lastFocus && isFocusGain(msg)) {
+                dbus_message_unref(msg);
+                continue;
+            }
             const char *iface = dbus_message_get_interface(msg);
             const char *member = dbus_message_get_member(msg);
 
@@ -1163,11 +1204,14 @@ void A11yMonitor::threadFunc() {
                                           DBUS_TYPE_STRING, &busName,
                                           DBUS_TYPE_STRING, &oldOwner,
                                           DBUS_TYPE_STRING, &newOwner,
-                                          DBUS_TYPE_INVALID) &&
-                    newOwner && newOwner[0]) {
-                    auto now = Clock::now();
-                    pokeAt = now + std::chrono::milliseconds(600);
-                    latePokeAt = now + std::chrono::milliseconds(3000);
+                                          DBUS_TYPE_INVALID)) {
+                    if (busName && oldOwner && oldOwner[0])
+                        pokeCache.removeBus(busName);
+                    if (newOwner && newOwner[0]) {
+                        auto now = Clock::now();
+                        pokeAt = now + std::chrono::milliseconds(600);
+                        latePokeAt = now + std::chrono::milliseconds(3000);
+                    }
                 }
                 dbus_error_free(&nerr);
             }
@@ -1382,7 +1426,7 @@ void A11yMonitor::threadFunc() {
             if (now >= latePokeAt) latePokeAt = kNever;
             if (now >= periodicPokeAt)
                 periodicPokeAt = now + std::chrono::seconds(15);
-            pokeA11yApps(bus);
+            pokeA11yApps(bus, pokeCache);
         }
     }
 

@@ -10,6 +10,7 @@
 #include <thread>
 
 struct DBusConnection;
+namespace fcitx { struct EnginePerformanceTest; }
 
 /// Monitors AT-SPI2 accessibility focus events to detect whether
 /// the currently focused element is a browser address bar or web content.
@@ -202,6 +203,7 @@ public:
     }
 
 private:
+    friend struct fcitx::EnginePerformanceTest;
     void threadFunc();
     void wakeMonitor();
 
