@@ -3,6 +3,7 @@
 #include <xcb/xcb.h>
 
 #include <cstdlib>
+#include <chrono>
 #include <cstring>
 #include <unordered_map>
 
@@ -83,6 +84,36 @@ std::string wmClassOf(xcb_connection_t *conn, xcb_window_t win, int depth) {
 }
 
 } // namespace
+
+std::optional<int> x11ActiveWindowTop() {
+  using Clock = std::chrono::steady_clock;
+  static Clock::time_point checked;
+  static std::optional<int> cached;
+  const auto now = Clock::now();
+  if (now - checked < std::chrono::milliseconds(5)) return cached;
+  checked = now;
+  cached.reset();
+  auto *conn = x11Connection();
+  if (!conn) return cached;
+  auto screens = xcb_setup_roots_iterator(xcb_get_setup(conn));
+  if (!screens.rem) return cached;
+  const auto root = screens.data->root;
+  auto cookie = xcb_get_property(conn, 0, root,
+      internAtom(conn, "_NET_ACTIVE_WINDOW"), XCB_ATOM_WINDOW, 0, 1);
+  auto *property = xcb_get_property_reply(conn, cookie, nullptr);
+  xcb_window_t window = XCB_WINDOW_NONE;
+  if (property && property->format == 32 &&
+      xcb_get_property_value_length(property) == sizeof(window)) {
+    memcpy(&window, xcb_get_property_value(property), sizeof(window));
+  }
+  free(property);
+  if (window == XCB_WINDOW_NONE) return cached;
+  auto coordinates = xcb_translate_coordinates(conn, window, root, 0, 0);
+  auto *reply = xcb_translate_coordinates_reply(conn, coordinates, nullptr);
+  if (reply && reply->same_screen) cached = reply->dst_y;
+  free(reply);
+  return cached;
+}
 
 std::string x11FocusedWmClass() {
   xcb_connection_t *conn = x11Connection();

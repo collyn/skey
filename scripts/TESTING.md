@@ -156,3 +156,24 @@ The attempted zero-guard Firefox optimization was reverted after real-app
 regressions. All observation paths retain the 8ms post-delete guard. Firefox
 X11 short-w append now arms the same own-output reset guard as forwarded keys;
 regressions include a reset after ư while surrounding still reports only t.
+
+
+Chrome X11 Uinput address-bar regressions cover:
+
+- Own-output focus protection expires without being renewed by reactivation;
+  moving to another input clears retained composition and reclaim state.
+- Distinct nonzero key timestamps preserve deliberate fast repeated keys.
+- One ordered queue spans deletion and settle, preserving modifiers, releases
+  and timestamps. Escape and sync Backspaces reach the transport handler.
+  Replay yields 4ms after replacement and between queued presses; genuine
+  focus cleanup cancels the replay timer.
+- Suffix replacement preserves unchanged text and tracks the full composed
+  length. A pre-word accessibility snapshot cannot justify an extra Backspace
+  that deletes the slash before a Vietnamese URL path.
+
+Live Chrome X11 validation used Uinput throughout: 48/48 typing cases,
+24/24 latency readbacks, 6/6 localhost Enter cases and 4/4 transitions from
+omnibox to textarea passed. The 18 accent samples measured median latency
+147.63→79.16ms; nearest-rank p95 was 172.80→169.08ms (the sample maximum).
+This is bounded regression evidence, not a guarantee across Chrome versions.
+Local Clang and remote GCC builds passed all seven CTests.

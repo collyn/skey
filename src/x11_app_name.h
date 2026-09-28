@@ -2,6 +2,7 @@
 #define FCITX5_SKEY_X11_APP_NAME_H
 
 #include <string>
+#include <optional>
 
 /// Resolve the focused X11 window's WM_CLASS class string.
 ///
@@ -27,5 +28,9 @@ std::string x11FocusedWmClass();
 ///   3. 96.0 when neither is available or no X server is reachable.
 /// The result is clamped to [30, 500] and cached per process.
 double x11DisplayDpi();
+
+/// Root-coordinate top of the active X11 client window, when available.
+/// A short cache avoids repeated roundtrips within one key dispatch.
+std::optional<int> x11ActiveWindowTop();
 
 #endif // FCITX5_SKEY_X11_APP_NAME_H

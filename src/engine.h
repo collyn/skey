@@ -78,6 +78,7 @@ private:
     bool replayingSettledKeys_ = false;
     struct SettledKey { Key key; bool release; int time; };
     std::deque<SettledKey> settledKeys_;
+    std::unique_ptr<EventSourceTime> settledReplayTimer_;
     bool surroundingCacheEndsWith(const SurroundingText &text,
                                   std::string_view expected);
     SurroundingCursor surroundingCursor_;
@@ -316,8 +317,12 @@ private:
     bool uinputLoopbackSlow_ = false;
     // Spurious Deactivate/Reset/Activate detection for Chromium
     // address bar. Set before sending forwardKey/commitString and
-    // cleared after a reactivate or 200ms timeout.
+    // On X11 expires 200ms after our output once replacement finishes;
+    // reactivation must not renew that deadline.
     bool addrBarExpectCycle_ = false;
+    uint64_t addrBarCycleDeadline_ = 0;
+    void armAddrBarCycle();
+    void expireAddrBarCycle();
     // Set before forwarding a raw key in Uinput mode for Firefox/Snap
     // apps.  fcitx5 calls reset() after unfiltered keys, which clears
     // viet_ state.  When set, reset()/deactivate() skip viet_ cleanup

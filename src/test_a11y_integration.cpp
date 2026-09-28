@@ -91,7 +91,10 @@ private:
     }
     void serve() {
         while (!stop) {
-            dbus_connection_read_write(bus, 10);
+            // The main test thread sends focus signals on this connection.
+            // Don't monopolize libdbus's connection lock with repeated blocking
+            // reads; on the X11 test host that could starve send()/flush().
+            dbus_connection_read_write(bus, 0);
             while (auto *message = dbus_connection_pop_message(bus)) {
                 if (dbus_message_get_type(message) != DBUS_MESSAGE_TYPE_METHOD_CALL) {
                     dbus_message_unref(message);
@@ -184,6 +187,7 @@ private:
                 send(reply);
                 dbus_message_unref(message);
             }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
     DBusConnection *bus = nullptr;
@@ -192,6 +196,10 @@ private:
 };
 
 int main() {
+    // Keep toolkit/session helpers on the fake bus, even when CTest is run
+    // over SSH from a live X11 desktop. No real display is needed by this test.
+    unsetenv("DISPLAY");
+    unsetenv("WAYLAND_DISPLAY");
     const char *address = std::getenv("DBUS_SESSION_BUS_ADDRESS");
     check(address && *address, "test requires dbus-run-session");
     setenv("AT_SPI_BUS_ADDRESS", address, 1);
@@ -203,10 +211,17 @@ int main() {
     std::string bus, path, text;
     uint64_t stamp = 0;
     int start, end;
+    // Retry initial publication after subscription startup, without flooding
+    // the focus-coalescing monitor with a new event every 2ms.
+    auto nextFocus = std::chrono::steady_clock::time_point{};
     check(until([&] {
-        app.focus("/entry");
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= nextFocus) {
+            app.focus("/entry");
+            nextFocus = now + std::chrono::milliseconds(50);
+        }
         return monitor.focusedTextEntry(bus, path, stamp);
-    }), "monitor must receive focus on isolated bus");
+    }, 3000), "monitor must receive focus on isolated bus");
     // Let the final duplicate focus event drain before testing snapshots.
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     check(app.textReads == 0, "disabled/native-Wayland mode must not read text");

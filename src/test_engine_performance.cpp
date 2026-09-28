@@ -446,6 +446,209 @@ struct EnginePerformanceTest {
               "returning to the same input must recover hidden preedit exactly once");
     }
 
+    static void addressBarSuffixReplacement(Instance &instance, bool staleCoordinates = false) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome-stable");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::Preedit);
+        input.setCursorRect(Rect(200, 54, 201, 72));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome-stable";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.modeCacheValid_ = true;
+        int sockets[2];
+        check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+              "isolate address-bar replacement transport");
+        state.uinputClientFd_ = sockets[0];
+        state.addrBarHadFirstWord_ = state.addrBarHadSpace_ = true;
+        state.viet_.setRawInput("nhaats");
+        state.scheduleAddrBarReplacement(2, "ất", 4, FcitxKey_s, 1000,
+                                         "nhất", false, "nhât");
+        check(state.expectedUinputBackspaces_ == 2 &&
+                  state.pendingUinputCommit_ == "ất" && state.uinputPendingFinalLen_ == 4,
+              "missing a11y must not rewrite unchanged prefix of subsequent word");
+        uint32_t request[4];
+        check(recv(sockets[1], request, sizeof(request), 0) == sizeof(request) &&
+                  request[0] == 3 && request[1] == 0,
+              "subsequent word sends exact suffix plus anchor, without Escape");
+        state.resetForCellChange();
+        state.addrBarHadFirstWord_ = state.addrBarHadSpace_ = false;
+        state.addrBarClearedByCtrlKey_ = true;
+        state.viet_.setRawInput("banj");
+        if (staleCoordinates) {
+            engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+            auto &cache = engine.a11yMonitor_->textCache_;
+            const auto stamp = now(CLOCK_MONOTONIC);
+            cache.setEnabled(true, stamp);
+            cache.focus(":1.2", "/omnibox", stamp);
+            const auto request = cache.beginPoll(stamp);
+            check(request.has_value(), "prepare pre-word omnibox snapshot");
+            cache.finishPoll(*request, true, "http://127.0.0.1/", 16, 16, stamp);
+        }
+        state.scheduleAddrBarReplacement(2, "ạn", 3, FcitxKey_j, 1100,
+                                         "bạn", true, "ban");
+        check(state.expectedUinputBackspaces_ == 2 &&
+                  state.pendingUinputCommit_ == "ạn" &&
+                  recv(sockets[1], request, sizeof(request), 0) == sizeof(request) &&
+                  request[0] == 3 && request[1] == 1,
+              "first word dismisses autocomplete with Escape before replacing only suffix");
+        state.resetForCellChange();
+        close(sockets[0]);
+        state.uinputClientFd_ = -1;
+        close(sockets[1]);
+    }
+
+    static void addressBarSettleAcrossFocus(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome-stable");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::Preedit);
+        input.setCursorRect(Rect(200, 54, 201, 72));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome-stable";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.modeCacheValid_ = true;
+        state.viet_.setRawInput("nhaas");
+        state.committedLen_ = 2;
+        state.uinputPendingFinalLen_ = 3;
+        state.pendingUinputCommit_ = "ấ";
+        state.uinputDeleting_ = true;
+        state.armAddrBarCycle();
+        state.expectedUinputBackspaces_ = 1;
+        KeyEvent escape(&input, Key(FcitxKey_Escape));
+        state.keyEvent(escape);
+        check(!escape.accepted() && state.settledKeys_.empty(),
+              "autocomplete Escape must reach Chrome before deletion");
+        KeyEvent t(&input, Key(FcitxKey_t), false, 1200);
+        state.keyEvent(t);
+        check(state.settledKeys_.size() == 1 && state.bufferedUinputKeys_.empty(),
+              "pre-anchor omnibox keys use the same ordered queue as settle keys");
+        state.expectedUinputBackspaces_ = 0;
+        state.scheduleUinputSettle(12000, 0, 0);
+        state.deactivate();
+        check(input.commits.empty() && input.forwarded.empty() && state.uinputSettling_ &&
+                  state.pendingUinputCommit_ == "ấ" && state.settledKeys_.size() == 1,
+              "focus churn must not bypass settle delay or replay next letter while deactivating");
+        state.activate();
+        state.finishUinputSettle(0, 0);
+        check(input.commits == std::vector<std::string>{"ấ"} && state.settledReplayTimer_,
+              "replacement dispatches before the first queued key is replayed");
+        state.settledReplayTimer_.reset();
+        state.replaySettledKeys();
+        check(input.commits == std::vector<std::string>{"ấ", "t"} &&
+                  state.viet_.getComposed() == "nhất" && state.committedLen_ == 4 &&
+                  input.forwarded.empty(),
+              "reactivated settle restores final length before replaying t exactly once");
+        state.settledKeys_.push_back({Key(FcitxKey_space), false, 1210});
+        state.settledKeys_.push_back({Key(FcitxKey_n), false, 1220});
+        state.settledKeys_.push_back({Key(FcitxKey_n), true, 1221});
+        state.replaySettledKeys();
+        check(state.settledReplayTimer_ && input.commits.back() == " ",
+              "replay yields to the frontend between queued commits");
+        state.settledReplayTimer_.reset();
+        state.replaySettledKeys();
+        state.settledReplayTimer_.reset();
+        state.replaySettledKeys();
+        check(input.commits == std::vector<std::string>{"ấ", "t", " ", "n"} &&
+                  input.forwarded.empty() && state.viet_.getComposed() == "n",
+              "queued printable letters and spaces use one ordered commit channel");
+    }
+
+    static void chromeFastRepeat(Instance &instance, bool pending, bool replay) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome-stable");
+        input.setFocusGroup(&group);
+        input.setCursorRect(Rect(200, 54, 201, 72));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome-stable";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.modeCacheValid_ = true;
+        state.addrBarLastTriggerKey_ = FcitxKey_n;
+        state.addrBarTriggerKeyTime_ = 1000;
+        state.addrBarGuardArmedUsec_ = now(CLOCK_MONOTONIC);
+        state.addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 100000;
+        state.uinputDeleting_ = pending;
+        state.expectedUinputBackspaces_ = pending ? 1 : 0;
+        KeyEvent event(&input, Key(FcitxKey_n), false, replay ? 1000 : 1010);
+        state.keyEvent(event);
+        if (pending) {
+            check(event.accepted() && state.settledKeys_.size() == 1 &&
+                      state.bufferedUinputKeys_.empty(),
+                  "in-flight omnibox keys retain their timestamp in the ordered queue");
+            state.uinputDeleting_ = false;
+            state.expectedUinputBackspaces_ = 0;
+            state.replaySettledKeys();
+            check(state.viet_.getComposed() == (replay ? "" : "n"),
+                  "ordered replay drops identical timestamps but processes fresh repeats");
+        } else {
+            check(event.accepted() == replay && state.viet_.getComposed() == (replay ? "" : "n"),
+                  "X11 browser must process a new timestamp within the 100ms guard");
+        }
+        state.resetForCellChange();
+    }
+
+    static void addressBarCycleExpiry(Instance &instance, bool rapid = false) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome-stable");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::Preedit);
+        input.setCursorRect(Rect(239, 54, 240, 72));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome-stable";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.modeCacheValid_ = true;
+        state.viet_.setRawInput("nhaast");
+        state.committedLen_ = 4;
+        state.armAddrBarCycle();
+        state.reset();
+        check(state.viet_.getRawInput() == "nhaast", "own-output reset inside guard preserves word");
+        const auto deadline = state.addrBarCycleDeadline_;
+        state.activate();
+        check(state.addrBarCycleDeadline_ == deadline, "reactivation must not renew the output guard");
+        if (!rapid) {
+        state.addrBarCycleDeadline_ = now(CLOCK_MONOTONIC) - 1;
+        state.uinputDeleting_ = true;
+        state.pendingUinputCommit_ = "ấ";
+        state.expireAddrBarCycle();
+        check(state.addrBarExpectCycle_, "in-flight replacement retains cycle protection");
+        state.uinputDeleting_ = false;
+        state.pendingUinputCommit_.clear();
+        // The real click first reports the old omnibox geometry, as in the log.
+        state.reset();
+        check(!state.addrBarExpectCycle_ && state.viet_.getRawInput().empty(),
+              "later real reset must discard the address-bar word even with stale geometry");
+        } else {
+            state.reset();
+            check(state.viet_.getRawInput() == "nhaast", "rapid focus churn initially preserves word");
+        }
+        state.deactivate();
+        state.activate();
+        input.setCursorRect(Rect(400, 400, 500, 425));
+        state.addrBarUiVerdictAtUsec_ = 0;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.modeCacheValid_ = true;
+        for (char ch : std::string("ngon")) {
+            KeyEvent event(&input, Key(static_cast<KeySym>(ch)));
+            state.keyEvent(event);
+            check(!event.accepted(), "new input letters must pass through without replacing old omnibox text");
+        }
+        check(state.viet_.getComposed() == "ngon" && input.commits.empty() &&
+                  !state.uinputDeleting_ && state.lastRawInput_ != "nhaast",
+              "new input must contain only ngon and no stale replacement or reclaim");
+    }
+
     static void firefoxSelectAllBackspace(Instance &instance, int snapshot) {
         SKeyEngine engine(&instance, false);
         FocusGroup group("x11:test", instance.inputContextManager());
@@ -1085,6 +1288,10 @@ static void policies() {
 }
 
 int main(int argc, char **argv) {
+    // Synthetic caret coordinates must not inherit a developer desktop's
+    // active-window origin or DPI. Live X11 geometry is tested separately.
+    unsetenv("DISPLAY");
+    unsetenv("WAYLAND_DISPLAY");
     policies();
     {
         fcitx::Instance instance(argc, argv);
@@ -1142,6 +1349,14 @@ int main(int argc, char **argv) {
                 fcitx::EnginePerformanceTest::preeditVisibility(instance, wayland, client);
         for (int snapshot : {0, 1, 2, 3})
             fcitx::EnginePerformanceTest::firefoxSelectAllBackspace(instance, snapshot);
+        fcitx::EnginePerformanceTest::addressBarSuffixReplacement(instance);
+        fcitx::EnginePerformanceTest::addressBarSuffixReplacement(instance, true);
+        fcitx::EnginePerformanceTest::addressBarSettleAcrossFocus(instance);
+        for (bool pending : {false, true})
+            for (bool replay : {false, true})
+                fcitx::EnginePerformanceTest::chromeFastRepeat(instance, pending, replay);
+        fcitx::EnginePerformanceTest::addressBarCycleExpiry(instance);
+        fcitx::EnginePerformanceTest::addressBarCycleExpiry(instance, true);
         fcitx::EnginePerformanceTest::firefoxNativeReplacement(instance);
         fcitx::EnginePerformanceTest::firefoxFallback(instance, 0, false);
         fcitx::EnginePerformanceTest::firefoxFallback(instance, 2, false);
