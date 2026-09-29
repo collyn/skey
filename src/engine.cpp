@@ -3609,12 +3609,12 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
   }
   // Explicit user-configured post-commit pauses retain their semantics.
   postCommitPause(postMs);
-  if (useOrderedX11Replay() && (!settledKeys_.empty() || isX11Tabby())) {
+  if (useOrderedX11Replay()) {
     // Dispatch the replacement before the next queued transform can send
     // kernel Backspaces. Tabby's PTY commits can trail dispatch by a frame;
     // retain a 20ms barrier even if the next physical key has not arrived.
     settledReplayTimer_ = engine_->instance()->eventLoop().addTimeEvent(
-        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + (isX11Tabby() ? 20000 : 4000), 1,
+        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 20000, 1,
         [this](EventSourceTime *, uint64_t) {
           settledReplayTimer_.reset();
           replayBufferedUinputKeys();
@@ -3632,6 +3632,7 @@ void SKeyState::replaySettledKeys() {
          deferredNativeDeleteLen_ == 0) {
     auto saved = settledKeys_.front();
     settledKeys_.pop_front();
+    const bool hadQueuedReplay = !settledKeys_.empty();
     KeyEvent event(ic_, saved.key, saved.release, saved.time);
     keyEvent(event);
     if (!event.accepted()) {
@@ -3649,12 +3650,12 @@ void SKeyState::replaySettledKeys() {
         ic_->forwardKey(saved.key, saved.release, saved.time);
       }
     }
-    if (!saved.release && (!settledKeys_.empty() || isX11Tabby()) && !uinputDeleting_ &&
-        useOrderedX11Replay()) {
+    if (!saved.release && !uinputDeleting_ &&
+        (hadQueuedReplay || isX11Tabby())) {
       // Let the frontend dispatch this commit before a queued transform
       // injects new kernel backspaces. A blocking sleep cannot do that.
       settledReplayTimer_ = engine_->instance()->eventLoop().addTimeEvent(
-          CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + (isX11Tabby() ? 20000 : 4000), 1,
+          CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 20000, 1,
           [this](EventSourceTime *, uint64_t) {
             settledReplayTimer_.reset();
             replaySettledKeys();
@@ -4574,6 +4575,12 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         addrBarHadSpace_ = false;
         committedLen_ = -1;
       } else {
+        // Clipboard/edit-history shortcuts can change text without giving
+        // the engine a reliable surrounding-text snapshot.  In particular,
+        // Ctrl+V after pasting a URL or a prefix must not be treated as an
+        // empty bar: the first-word X11 fallback would otherwise issue the
+        // extra full-replacement backspace and delete part of the prefix.
+        addrBarContentUnknown_ = true;
         committedLen_ = 0;
       }
     }
@@ -6128,13 +6135,15 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
             addrBarDidFullReplace_ =
                 !(oldComposedIsAscii && oldComposedLen == 1);
             addrBarKeepState_ = (oldComposedIsAscii && oldComposedLen == 1);
-            // Dismiss inline autocomplete without deleting the stable
-            // prefix. Escape plus the changed suffix avoids a full word's
-            // worth of autocomplete updates on every first-word accent.
-            // A nonmatching snapshot can carry valid selection coordinates
-            // from before this word. Those coordinates cannot justify an
-            // extra Backspace (it can erase the slash before a URL suffix).
-            if (commitText == fullComposed) {
+            // Without a text snapshot, retain the full first-word delete
+            // and its extra Backspace: Chrome 154 X11 can leave inline
+            // autocomplete selected after Escape, so Escape + suffix BS
+            // leaves one typed character behind (dd -> dđ, banj -> baạn).
+            // A nonmatching, nonempty snapshot may instead be a URL prefix.
+            // Keep the suffix-only fallback there: an extra BS could erase
+            // its slash. The hasTextBefore checks above still gate all
+            // first-word replacements.
+            if (commitText == fullComposed && !a11yText.empty()) {
               totalBs = bs;
               commitText = text;
               dismissAutofill = true;
