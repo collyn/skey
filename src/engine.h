@@ -187,6 +187,14 @@ private:
     /// replacement.
     void repairNativeDeletes();
     void finishDeferredCommit(int postMs);
+    // Measure actual client updates separately from Uinput loopback. These
+    // observations do not change a proven delay until live validation exists.
+    void beginSurroundingMeasurement(bool native, const std::string &oldWord,
+                                     unsigned deletes);
+    void finishSurroundingMeasurement();
+    skey::UinputDeleteAck surroundingMeasurement_;
+    uint64_t surroundingMeasureStartedAt_ = 0;
+    bool surroundingMeasureNative_ = false;
     int nativeRepairAttempt_ = 0;
     void updatePreedit();
     void clearUI();
@@ -296,6 +304,7 @@ private:
     int deferredNativeDeleteLen_ = 0;
     std::string deferredDeletedTail_;
     uint64_t deferredBsSentAt_ = 0;
+    uint64_t deferredCommitDeadline_ = 0;
     std::string pendingFlushSuffix_;
     int uinputClientFd_ = -1;
     // Uinput replacement state

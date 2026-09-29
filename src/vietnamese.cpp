@@ -6,9 +6,6 @@
 // skey-engine FFI
 #include "skey_engine.h"
 
-// Shared utility helpers
-#include "viet_util.h"
-
 namespace skey {
 
 // ---------------------------------------------------------------------------

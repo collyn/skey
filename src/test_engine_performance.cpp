@@ -4,6 +4,7 @@
 #include "a11y_work_policy.h"
 #include "x11_app_name.h"
 #include <fcitx-utils/event.h>
+#include <fcitx-utils/utf8.h>
 #include <fcitx/focusgroup.h>
 #include <cstdlib>
 #include <cerrno>
@@ -83,6 +84,178 @@ protected:
 
 namespace fcitx {
 struct EnginePerformanceTest {
+    static void chromiumFirstShortW(Instance &instance, bool wayland,
+                                    bool uinput, bool shortW, char keyChar) {
+        SKeyEngine engine(&instance, false);
+        const auto mode = uinput ? SKeyOutputMode::Uinput : SKeyOutputMode::SurroundingText;
+        engine.config_.outputMode.setValue(mode);
+        FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
+        class FirstInput : public TestInput {
+        public:
+            explicit FirstInput(InputContextManager &manager) : TestInput(manager, "google-chrome") {}
+            bool composedCommit = false;
+        protected:
+            void commitStringImpl(const std::string &value) override {
+                composedCommit = !inputPanel().clientPreedit().empty();
+                TestInput::commitStringImpl(value);
+            }
+        } input(instance.inputContextManager());
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlags(CapabilityFlag::Preedit) | CapabilityFlag::SurroundingText);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedMode_ = mode;
+        state.modeCacheValid_ = true;
+        state.viet_.setShortW(shortW);
+        KeyEvent event(&input, Key(static_cast<KeySym>(keyChar)));
+        state.keyEvent(event);
+        const bool transformed = shortW && (keyChar == 'w' || keyChar == 'W');
+        const std::string expected = transformed ? (keyChar == 'W' ? "Ư" : "ư") : std::string(1, keyChar);
+        const bool raw = !transformed && (uinput || wayland);
+        check(state.viet_.getComposed() == expected, "ShortW setting controls the first composed character");
+        check(event.accepted() != raw, "only unchanged first characters may pass through raw");
+        check(input.commits == (raw ? std::vector<std::string>{} : std::vector<std::string>{expected}),
+              "transformed first character reaches the app once instead of forwarding w");
+        if (wayland && !uinput && transformed)
+            check(input.composedCommit && input.inputPanel().clientPreedit().empty(),
+                  "transformed first input opens composition and leaves no preedit behind");
+    }
+
+    static void firefoxSuffixTransaction(Instance &instance, bool wayland) {
+        // Model the observed editor behavior: requests queued against the same
+        // snapshot coalesce before the following commit reaches the client.
+        class SnapshotInput : public TestInput {
+        public:
+            explicit SnapshotInput(InputContextManager &manager) : TestInput(manager, "firefox") {}
+            std::string text = "ban";
+            int offset = 0;
+            unsigned count = 0;
+        protected:
+            void deleteSurroundingTextImpl(int from, unsigned size) override {
+                offset = from;
+                count = size;
+            }
+            void commitStringImpl(const std::string &value) override {
+                text.erase(static_cast<int>(text.size()) + offset, count);
+                text += value;
+                commits.push_back(value);
+            }
+        };
+        SKeyEngine engine(&instance, false);
+        FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
+        SnapshotInput input(instance.inputContextManager());
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::SurroundingText);
+        input.surroundingText().setText("ban", 3, 3);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "firefox";
+        state.cachedIsFirefoxOrSnap_ = 1;
+        state.cachedIsChromium_ = state.cachedIsTerminalApp_ = 0;
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::SurroundingText;
+        state.committedLen_ = 3;
+        state.surroundingCommit("ban", "bạn");
+        if (wayland) {
+            auto stop = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 30000, 1,
+                [&](EventSourceTime *, uint64_t) { instance.eventLoop().exit(); return true; });
+            instance.eventLoop().exec();
+        }
+        check(input.text == "bạn" && input.commits == std::vector<std::string>{"ạn"},
+              "Firefox suffix replacement survives requests coalesced against one snapshot");
+    }
+
+    static void surroundingMeasurement(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        TestInput input(instance.inputContextManager());
+        auto &state = *input.propertyFor(&engine.factory_);
+        const auto start = now(CLOCK_MONOTONIC) - 1000;
+        state.surroundingMeasureStartedAt_ = start;
+        check(state.surroundingMeasurement_.start("tư", 2, 2, "tư", 1, start),
+              "measurement starts from an exact client snapshot");
+        input.surroundingText().setText("tư", 2, 2);
+        state.mirrorSurroundingDelete(-1, 1);
+        check(!state.surroundingMeasurement_.acknowledged(),
+              "locally mirrored native deletion is not client acknowledgement");
+        input.surroundingText().setText("t", 1, 1);
+        input.updateSurroundingText();
+        check(state.surroundingMeasurement_.observedLatencyUsec() >= 1000,
+              "fresh exact client update measures actual deletion latency");
+        input.surroundingText().setText("x", 1, 1);
+        input.updateSurroundingText();
+        check(!state.surroundingMeasurement_.acknowledged(),
+              "conflicting client update revokes measurement");
+        state.resetForCellChange();
+        check(!state.surroundingMeasurement_.active() && !state.surroundingMeasureStartedAt_,
+              "measurement cannot leak across input focus boundaries");
+    }
+
+    static void surroundingDeadline(Instance &instance, bool wayland, bool native) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager());
+        input.setFocusGroup(&group);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::SurroundingText;
+        state.scheduleDeferredCommit("old", "", 50000);
+        state.resetForCellChange();
+        check(!state.deferredCommitTimer_ && state.deferredCommitDeadline_ == 0,
+              "focus boundary cancels deferred deadline");
+        state.bsRtEwma_ = 100000; // unrelated slow Uinput session
+        state.deferredBsSentAt_ = now(CLOCK_MONOTONIC);
+        state.scheduleDeferredCommit("à", "ch", 5000, native ? 1 : 0,
+                                     native ? "a" : "");
+        const auto deadline = state.deferredCommitTimer_->time();
+        for (int i = 0; i < 8; ++i) {
+            state.surroundingCommit("chà", "chào");
+            check(state.deferredCommitTimer_->time() == deadline &&
+                      state.deferredCommitDeadline_ == deadline,
+                  "queued letters never restart deletion deadline or inherit Uinput latency");
+            check(state.deferredNativeDeleteLen_ == (native ? 1 : 0) &&
+                      state.deferredDeletedTail_ == (native ? "a" : ""),
+                  "queued letters retain native deletion verification state");
+        }
+        state.flushDeferredCommit();
+        check(!state.deferredCommitTimer_ || state.deferredCommitTimer_->time() == deadline,
+              "word-boundary flush preserves the original policy deadline");
+        auto stop = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 30000, 1,
+            [&](EventSourceTime *, uint64_t) { instance.eventLoop().exit(); return true; });
+        instance.eventLoop().exec();
+        check(input.commits == std::vector<std::string>{"ào"} &&
+                  state.deferredCommitDeadline_ == 0,
+              "coalesced suffix commits once at original deadline, not the 100ms Uinput delay");
+    }
+
+    static void waylandRepeatedLetter(Instance &instance, bool replay, bool timestamped) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::SurroundingText);
+        input.surroundingText().setText("đa", 2, 2);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedMode_ = SKeyOutputMode::SurroundingText;
+        state.modeCacheValid_ = true;
+        state.viet_.setRawInput("dda");
+        state.committedLen_ = 2;
+        state.addrBarLastTriggerKey_ = FcitxKey_a;
+        state.addrBarTriggerKeyTime_ = timestamped ? 1000 : 0;
+        state.addrBarGuardArmedUsec_ = now(CLOCK_MONOTONIC);
+        state.addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 100000;
+        KeyEvent event(&input, Key(FcitxKey_a), false,
+                       timestamped ? (replay ? 1000 : 1020) : 0);
+        state.keyEvent(event);
+        check(state.viet_.getComposed() == (!replay && timestamped ? "đâ" : "đa"),
+              "Wayland fresh repeat composes aa; identical or missing timestamps retain guard");
+        state.resetForCellChange();
+    }
+
     static void x11AckBeforeAnchor(Instance &instance, bool firefox) {
         SKeyEngine engine(&instance, false);
         engine.config_.autoDelay.setValue(true);
@@ -364,7 +537,8 @@ struct EnginePerformanceTest {
                                           bool preeditCap, bool url,
                                           const char *program, bool replacement, int sheets = 0,
                                           bool omnibox = false, const std::string &suffix = "ự") {
-        // Model Chromium's NeedInsertChar branch, not Facebook itself.
+        // Model an editor requiring composition for replacement input, not
+        // Facebook itself. Multi-character suffixes must use that path too.
         class CompositionInput : public TestInput {
         public:
             CompositionInput(InputContextManager &manager, const char *program)
@@ -378,7 +552,7 @@ struct EnginePerformanceTest {
             }
             void commitStringImpl(const std::string &text) override {
                 events.push_back("commit:" + text);
-                // Adversarial editor ignores the single-character key route.
+                // Adversarial editor ignores bare replacement commits.
                 if (!composition.empty()) visible += text;
                 composition.clear();
                 TestInput::commitStringImpl(text);
@@ -408,9 +582,14 @@ struct EnginePerformanceTest {
         const bool expected = preeditCap && !url && !omnibox && sheets != 1 &&
             ((!wayland && std::string(program) == "tabby") ||
              (replacement && ((std::string(program) == "google-chrome") ||
-              (!wayland && firefox && sheets != 3))));
+              (!wayland && firefox && sheets != 3)))) &&
+            (std::string(program) == "google-chrome" || utf8::length(suffix) == 1);
         check(state.commitText(suffix, replacement), "replacement commit issued");
         check(input.commits == std::vector<std::string>{suffix}, "single suffix commit without retries");
+        if (input.visible != (expected ? suffix : ""))
+            std::cerr << "composition case: program=" << program << " wayland=" << wayland
+                      << " preedit=" << preeditCap << " url=" << url << " sheets=" << sheets
+                      << " omnibox=" << omnibox << " suffix=" << suffix << '\n';
         check(input.visible == (expected ? suffix : ""), "composition selects text insertion instead of character key route");
         check(input.events == (expected ? std::vector<std::string>{"preedit:" + suffix, "commit:" + suffix, "preedit:"}
                                         : std::vector<std::string>{"commit:" + suffix}),
@@ -1607,6 +1786,31 @@ int main(int argc, char **argv) {
     unsetenv("DISPLAY");
     unsetenv("WAYLAND_DISPLAY");
     policies();
+    for (bool wayland : {false, true})
+      for (bool uinput : {false, true})
+        for (bool shortW : {false, true})
+          for (char key : {'w', 'W', 'c'}) {
+            fcitx::Instance instance(argc, argv);
+            fcitx::EnginePerformanceTest::chromiumFirstShortW(instance, wayland, uinput, shortW, key);
+          }
+    for (bool wayland : {false, true}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::firefoxSuffixTransaction(instance, wayland);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::surroundingMeasurement(instance);
+    }
+    for (bool wayland : {false, true})
+        for (bool native : {false, true}) {
+            fcitx::Instance instance(argc, argv);
+            fcitx::EnginePerformanceTest::surroundingDeadline(instance, wayland, native);
+        }
+    for (bool replay : {false, true})
+        for (bool timestamped : {false, true}) {
+            fcitx::Instance instance(argc, argv);
+            fcitx::EnginePerformanceTest::waylandRepeatedLetter(instance, replay, timestamped);
+        }
     for (bool firefox : {false, true}) {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::x11AckBeforeAnchor(instance, firefox);
@@ -1680,6 +1884,18 @@ int main(int argc, char **argv) {
         fcitx::EnginePerformanceTest::chromiumCompositionCommit(
             instance, wayland, true, false, "google-chrome", true, sheets);
     }
+    for (bool wayland : {false, true})
+      for (const std::string suffix : {"ào", "ạn", "ồi"})
+        for (int scope = 0; scope < 6; ++scope) {
+          // Cursor geometry identifies the omnibox only on X11. Wayland's
+          // explicit URL capability exclusion is covered by scope 2.
+          if (wayland && scope == 4) continue;
+          fcitx::Instance instance(argc, argv);
+          fcitx::EnginePerformanceTest::chromiumCompositionCommit(
+              instance, wayland, scope != 1, scope == 2,
+              scope == 5 ? "firefox" : "google-chrome", true,
+              scope == 3 ? 1 : 0, scope == 4, suffix);
+        }
     {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::chromiumCompositionCommit(

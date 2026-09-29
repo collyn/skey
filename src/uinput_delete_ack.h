@@ -63,6 +63,9 @@ public:
     }
     bool active() const { return active_; }
     bool acknowledged() const { return ackAt_ != 0; }
+    uint64_t observedLatencyUsec() const {
+        return ackAt_ ? ackAt_ - startedAt_ : 0;
+    }
 private:
     static size_t offset(const std::string &text, unsigned chars) {
         size_t at = 0;

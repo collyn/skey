@@ -8,7 +8,6 @@
 
 #include <fcitx-config/iniparser.h>
 #include <fcitx-utils/log.h>
-#include <fcitx-utils/standardpath.h>
 // StandardPaths (fcitx5 >= 5.1) replaces the deprecated StandardPath API.
 // Older distros (Ubuntu 22.04 CI, fcitx5 5.0.x) only ship standardpath.h —
 // detect at compile time and fall back (see userPkgDataDir()).
@@ -21,6 +20,8 @@
 #endif
 #ifdef SKEY_HAVE_STANDARDPATHS
 #include <fcitx-utils/standardpaths.h>
+#else
+#include <fcitx-utils/standardpath.h>
 #endif
 
 // StandardPath is deprecated in favour of StandardPaths in newer fcitx5,
@@ -1579,6 +1580,11 @@ void SKeyState::mirrorSurroundingDelete(int offset, unsigned size) {
 
 void SKeyState::surroundingTextChanged() {
   surroundingCursor_.invalidate();
+  if (surroundingMeasureStartedAt_) {
+    const auto &surr = ic_->surroundingText();
+    surroundingMeasurement_.observe(surr.isValid(), surr.text(), surr.cursor(),
+                                     surr.anchor(), now(CLOCK_MONOTONIC));
+  }
   if (uinputDeleting_ && uinputDeleteAck_.active()) {
     const auto &surr = ic_->surroundingText();
     const auto stamp = now(CLOCK_MONOTONIC);
@@ -1591,6 +1597,34 @@ void SKeyState::surroundingTextChanged() {
   }
 }
 
+void SKeyState::beginSurroundingMeasurement(bool native,
+                                           const std::string &oldWord,
+                                           unsigned deletes) {
+  surroundingMeasurement_.reset();
+  surroundingMeasureStartedAt_ = 0;
+  if (!g_skeyDebugEnabled) return;
+  surroundingMeasureStartedAt_ = now(CLOCK_MONOTONIC);
+  surroundingMeasureNative_ = native;
+  const auto &surr = ic_->surroundingText();
+  if (surr.isValid()) {
+    surroundingMeasurement_.start(surr.text(), surr.cursor(), surr.anchor(),
+                                  oldWord, deletes, surroundingMeasureStartedAt_);
+  }
+}
+
+void SKeyState::finishSurroundingMeasurement() {
+  if (!surroundingMeasureStartedAt_) return;
+  SKEY_DEBUG() << "Surr timing: path="
+               << (surroundingMeasureNative_ ? "native" : "forward")
+               << " frontend=" << (isWayland() ? "wayland" : "x11")
+               << " trackable=" << surroundingMeasurement_.active()
+               << " confirmed=" << surroundingMeasurement_.acknowledged()
+               << " deleteUs=" << surroundingMeasurement_.observedLatencyUsec()
+               << " commitUs=" << now(CLOCK_MONOTONIC) - surroundingMeasureStartedAt_;
+  surroundingMeasurement_.reset();
+  surroundingMeasureStartedAt_ = 0;
+}
+
 bool SKeyState::commitText(const std::string &utf8, bool uinputReplacement) {
   if (utf8.empty())
     return false;
@@ -1601,6 +1635,7 @@ bool SKeyState::commitText(const std::string &utf8, bool uinputReplacement) {
     SKEY_DEBUG() << "CellSelection: discard stale commit";
     return false;
   }
+  finishSurroundingMeasurement();
   const auto text = skey::convertCharset(utf8, charset_);
   const auto *monitor = engine_->a11yMonitor();
   const bool sheetsEditor = monitor && monitor->sheetsEditorFocused() &&
@@ -1608,6 +1643,8 @@ bool SKeyState::commitText(const std::string &utf8, bool uinputReplacement) {
   const bool firefoxX11Replacement = !isWayland() &&
       appProgram().find("firefox") != std::string::npos && isFirefoxOrSnap() &&
       !ic_->capabilityFlags().test(CapabilityFlag::Url) && !a11yGoogleDocsFocused();
+  const bool chromiumPageReplacement = uinputReplacement &&
+      isChromiumBrowser(appProgram()) && !inChromiumAddressBar();
   // Chromium's InputMethodAuraLinux::NeedInsertChar routes a single UTF-16
   // character without composition through InsertChar (keyboard handling).
   // After injected Backspace, waiting for surrounding text does not change
@@ -1620,14 +1657,17 @@ bool SKeyState::commitText(const std::string &utf8, bool uinputReplacement) {
   // also distinguishes a bare insert-text command from a composition commit
   // (IMContextWrapper::DispatchCompositionCommitEvent). Use composition for
   // its X11 Uinput suffix replacements, excluding Url and Docs-suite inputs.
+  // Rich editors can also discard a bare multi-character replacement after
+  // Backspace (Facebook: chao -> ch after committing "ào"). Use the same
+  // composition transaction for Chromium page suffixes of any length.
   const bool composeReplacement =
       ((uinputReplacement &&
         ((isChromiumBrowser(appProgram()) && !inChromiumAddressBar()) ||
          firefoxX11Replacement)) || isX11Tabby()) && !sheetsEditor &&
       ic_->capabilityFlags().test(CapabilityFlag::Preedit) &&
       !modeMenuActive_ && ic_->inputPanel().clientPreedit().empty() &&
-      text == utf8 && (text.size() > 1 || isX11Tabby()) && text.size() <= 3 &&
-      utf8::length(text) == 1;
+      text == utf8 && (text.size() > 1 || isX11Tabby()) &&
+      (chromiumPageReplacement || (text.size() <= 3 && utf8::length(text) == 1));
   if (composeReplacement) {
     Text preedit;
     preedit.append(text);
@@ -2751,6 +2791,9 @@ void SKeyState::activate() {
   deferredCommitTimer_.reset();
   deferredCommitText_.clear();
   deferredPrefix_.clear();
+  deferredCommitDeadline_ = 0;
+  surroundingMeasurement_.reset();
+  surroundingMeasureStartedAt_ = 0;
 
   // Load per-app mode preference / exclusion, keyed by the resolved app
   // name (X11 WM_CLASS fallback for empty-program IBus-frontend apps).
@@ -4084,6 +4127,9 @@ void SKeyState::resetForCellChange() {
   deferredCommitTimer_.reset();
   deferredCommitText_.clear();
   deferredPrefix_.clear();
+  deferredCommitDeadline_ = 0;
+  surroundingMeasurement_.reset();
+  surroundingMeasureStartedAt_ = 0;
   pendingFlushSuffix_.clear();
   deferredNativeDeleteLen_ = 0;
   deferredDeletedTail_.clear();
@@ -4304,9 +4350,11 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       const bool freshAfterArm =
           addrBarGuardArmedUsec_ != 0 &&
           t < addrBarGuardArmedUsec_ + kAddrBarGuardFreshWindowUsec &&
-          // A distinct timestamp in the X11 browser/Tabby stream is a new
+          // A distinct timestamp in the browser/Tabby stream is a new
           // press, even within 100ms (aa/dd/ee and fast repeated letters).
-          !(!isWayland() && (isChromiumBrowser(appProgram()) || isX11Tabby()) &&
+          // Native Wayland also supplies compositor timestamps. Treating
+          // every fast repeat as a replay drops the second a in ddaay.
+          !((isChromiumBrowser(appProgram()) || isX11Tabby()) &&
             keyEvent.time() != 0 && addrBarTriggerKeyTime_ != 0 &&
             keyEvent.time() != addrBarTriggerKeyTime_);
       if (replayedEvent || freshAfterArm) {
@@ -5728,11 +5776,20 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           // the char through Chrome's key pipeline, exactly like the
           // Uinput append path.  Subsequent letters commit normally (the
           // editor is open by then).  Address bar excluded (omnibox has
-          // its own machinery).
+          // its own machinery). Only unchanged characters can use the raw
+          // key: ShortW may already have transformed the first w into ư.
           if (isWayland() && isChromiumCached() && !useUinputMode() &&
               !inChromiumAddressBar() && oldComposed.empty()) {
             committedLen_ = static_cast<int>(utf8::length(newComposed));
-            return; // forward raw key, unfiltered
+            if (newComposed == std::string(1, ch)) {
+              return; // forward unchanged raw key, unfiltered
+            }
+            // A bare commit may be dropped while the editor opens. Use the
+            // browser composition route for transformed first input too.
+            SKEY_DEBUG() << "Surr: transformed first '" << newComposed << "'";
+            commitText(newComposed, true);
+            keyEvent.filterAndAccept();
+            return;
           }
           // SurroundingText path in Chromium: set trigger-key guard so
           // X11 re-delivery after forwardKey-induced focus cycles is dropped.
@@ -6278,9 +6335,8 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
   // the app's event loop speed.  D-Bus forwardKey has ~2× overhead
   // vs kernel uinput, so we scale accordingly.
   //
-  // During fast typing this delay is invisible: each keystroke resets
-  // the timer via the deferred update path in surroundingCommit(), so
-  // the commit only happens when the user pauses (natural word boundary).
+  // Following keys can update the pending suffix, but retain the original
+  // deadline so continuous typing cannot keep postponing the commit.
   // Callers on the native delete path pass an explicit small delay (see
   // kNativeDeleteDeferredUsec) — deletes there travel the text-input
   // protocol, not forwarded keys, so the adaptive BS-based delay is not
@@ -6302,11 +6358,12 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
   }
 
   const int postMs = appDelayOverrideResolved().postCommitMs;
+  deferredCommitDeadline_ = now(CLOCK_MONOTONIC) + delayUsec;
   SKEY_DEBUG() << "Surr deferred: schedule '" << text << "' in "
                << (delayUsec / 1000) << "ms"
                << engine_->appDelayOverrideDebugTag(appProgram(), isWayland());
   deferredCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
-      CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + delayUsec, 1,
+      CLOCK_MONOTONIC, deferredCommitDeadline_, 1,
       [this, postMs](EventSourceTime *, uint64_t) {
         SKEY_DEBUG() << "Surr deferred: timer commit '" << deferredCommitText_
                      << "'";
@@ -6321,6 +6378,18 @@ void SKeyState::flushDeferredCommit() {
     return;
   }
 
+  // Preserve the policy chosen when this deletion was sent. Recomputing
+  // from Uinput EWMA here can stretch a native 5ms transaction to 100ms.
+  // A later letter changes the pending suffix, not the deletion deadline.
+  if (deferredCommitDeadline_ > now(CLOCK_MONOTONIC)) {
+    if (deferredCommitTimer_) {
+      deferredCommitTimer_->setTime(deferredCommitDeadline_);
+      deferredCommitTimer_->setOneShot();
+    }
+    return;
+  }
+
+  // Legacy callers without a scheduled deadline still enforce their gap.
   // Enforce adaptive minimum delay between BackSpace and commit.
   // X11 Chromium browsers use the FIXED per-input delay (see
   // x11ChromiumSurrDelayUsec) — the adaptive EWMA (inflated by a prior
@@ -6341,7 +6410,7 @@ void SKeyState::flushDeferredCommit() {
   } else {
     minGapUsec = skey::deferredDelay(bsRtEwma_, uinputTiming().bsRtInitialUsec);
   }
-  if (deferredBsSentAt_ > 0) {
+  if (deferredCommitDeadline_ == 0 && deferredBsSentAt_ > 0) {
     uint64_t nowUs = now(CLOCK_MONOTONIC);
     uint64_t elapsed = nowUs - deferredBsSentAt_;
     if (elapsed < minGapUsec) {
@@ -6396,6 +6465,7 @@ void SKeyState::finishDeferredCommit(int postMs) {
   deferredCommitText_.clear();
   deferredPrefix_.clear();
   deferredBsSentAt_ = 0;
+  deferredCommitDeadline_ = 0;
   pendingFlushSuffix_.clear();
   deferredCommitTimer_.reset();
   if (!commitText(text)) return;
@@ -6418,6 +6488,7 @@ void SKeyState::forceFlushDeferredCommit() {
   deferredCommitText_.clear();
   deferredPrefix_.clear();
   deferredBsSentAt_ = 0;
+  deferredCommitDeadline_ = 0;
   pendingFlushSuffix_.clear();
   deferredCommitTimer_.reset();
   commitText(toCommit);
@@ -6505,15 +6576,16 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
     committedLen_ = newLen;
     // Preserve the original BS timestamp — the BackSpace from the initial
     // replace still hasn't been processed by the app.
-    uint64_t savedBsTime = deferredBsSentAt_;
     if (!deferredPrefix_.empty() &&
         newComposed.compare(0, deferredPrefix_.size(), deferredPrefix_) == 0) {
-      scheduleDeferredCommit(newComposed.substr(deferredPrefix_.size()),
-                             deferredPrefix_);
+      deferredCommitText_ = newComposed.substr(deferredPrefix_.size());
     } else {
-      scheduleDeferredCommit(newComposed);
+      deferredCommitText_ = newComposed;
+      deferredPrefix_.clear();
     }
-    deferredBsSentAt_ = savedBsTime;
+    // Keep the timer, pending boundary suffix and native-delete verification
+    // state. Re-scheduling used to discard these and restart a generic delay
+    // on every key, including when the original transaction was native.
     return;
   }
 
@@ -6607,6 +6679,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         if (isChromiumCached()) {
           armAddrBarCycle();
         }
+        beginSurroundingMeasurement(false, oldComposed, deleteLen);
         for (int i = 0; i < deleteLen; ++i) {
           ic_->forwardKey(Key(FcitxKey_BackSpace));
         }
@@ -6744,10 +6817,20 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           // mediates both) — an immediate commit can race the in-flight
           // deletes and eat characters, so browser-class apps defer the
           // commit through scheduleDeferredCommit.
-          for (int i = 0; i < deleteLen; ++i) {
-            ic_->deleteSurroundingText(-1, 1);
+          beginSurroundingMeasurement(true, oldComposed, deleteLen);
+          if (isFirefoxOrSnap()) {
+            // Multiple single-character requests can target the same Firefox
+            // surrounding snapshot. Delete the suffix in one transaction.
+            ic_->deleteSurroundingText(-deleteLen, deleteLen);
             if (ic_->surroundingText().isValid()) {
-              mirrorSurroundingDelete(-1, 1);
+              mirrorSurroundingDelete(-deleteLen, deleteLen);
+            }
+          } else {
+            for (int i = 0; i < deleteLen; ++i) {
+              ic_->deleteSurroundingText(-1, 1);
+              if (ic_->surroundingText().isValid()) {
+                mirrorSurroundingDelete(-1, 1);
+              }
             }
           }
           surroundingInvalidCount_ = 0; // cache works again
