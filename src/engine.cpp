@@ -1581,9 +1581,13 @@ void SKeyState::surroundingTextChanged() {
   surroundingCursor_.invalidate();
   if (uinputDeleting_ && uinputDeleteAck_.active()) {
     const auto &surr = ic_->surroundingText();
+    const auto stamp = now(CLOCK_MONOTONIC);
     uinputDeleteAck_.observe(surr.isValid(), surr.text(), surr.cursor(),
-                             surr.anchor(), now(CLOCK_MONOTONIC));
-
+                             surr.anchor(), stamp);
+    if (!isWayland() && uinputSettling_ && uinputCommitTimer_) {
+      uinputCommitTimer_->setTime(stamp + uinputDeleteAck_.nextCheckDelay(stamp));
+      uinputCommitTimer_->setOneShot();
+    }
   }
 }
 
@@ -1609,16 +1613,20 @@ bool SKeyState::commitText(const std::string &utf8, bool uinputReplacement) {
   // After injected Backspace, waiting for surrounding text does not change
   // that route. Establish composition so the suffix uses InsertText instead.
   // Keep this local to browser page replacements; do not change ordinary
-  // typing, Chromium X11, Electron, or legacy charset output. Firefox GTK
+  // typing in browsers, address bars, or legacy charset output. Tabby X11
+  // also needs composition for queued ASCII commits: InsertChar may reuse
+  // a newer physical key event instead of the requested queued character.
+  // Firefox GTK
   // also distinguishes a bare insert-text command from a composition commit
   // (IMContextWrapper::DispatchCompositionCommitEvent). Use composition for
   // its X11 Uinput suffix replacements, excluding Url and Docs-suite inputs.
-  const bool composeReplacement = uinputReplacement &&
-      ((isWayland() && isChromiumBrowser(appProgram()) && !inChromiumAddressBar()) ||
-       firefoxX11Replacement) && !sheetsEditor &&
+  const bool composeReplacement =
+      ((uinputReplacement &&
+        ((isChromiumBrowser(appProgram()) && !inChromiumAddressBar()) ||
+         firefoxX11Replacement)) || isX11Tabby()) && !sheetsEditor &&
       ic_->capabilityFlags().test(CapabilityFlag::Preedit) &&
       !modeMenuActive_ && ic_->inputPanel().clientPreedit().empty() &&
-      text == utf8 && text.size() > 1 && text.size() <= 3 &&
+      text == utf8 && (text.size() > 1 || isX11Tabby()) && text.size() <= 3 &&
       utf8::length(text) == 1;
   if (composeReplacement) {
     Text preedit;
@@ -1627,7 +1635,8 @@ bool SKeyState::commitText(const std::string &utf8, bool uinputReplacement) {
     ic_->inputPanel().setClientPreedit(preedit);
     ic_->updatePreedit();
     SKEY_DEBUG() << "Uinput: composition commit '" << text
-                 << (firefoxX11Replacement ? "' [firefox-x11]" : "' [chromium-wayland]");
+                 << (isX11Tabby() ? "' [tabby-x11]" : firefoxX11Replacement ? "' [firefox-x11]"
+                     : isWayland() ? "' [chromium-wayland]" : "' [chromium-x11]");
   }
   ic_->commitString(text);
   if (composeReplacement) {
@@ -2871,6 +2880,7 @@ void SKeyState::activate() {
   // replaces after this activation get extra commit headroom while the
   // renderer settles into the new focus.
   lastActivateUsec_ = now(CLOCK_MONOTONIC);
+  x11BrowserFocusSettled_ = false;
 }
 
 // Connect to a unix socket: filesystem path or abstract name (abstract =
@@ -3041,8 +3051,11 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
          &paceUsec, sizeof(paceUsec));
 
   bsSentAt_ = now(CLOCK_MONOTONIC);
+  const auto *monitor = engine_->a11yMonitor();
+  const bool x11SheetsEditor = !isWayland() && monitor &&
+      monitor->isFocusSnapshotFresh(5000000) && monitor->sheetsEditorFocused();
   const bool observeDeletion =
-      (isWayland() && isChromiumBrowser(appProgram()) && !inChromiumAddressBar()) ||
+      (isChromiumBrowser(appProgram()) && !inChromiumAddressBar() && !x11SheetsEditor) ||
       (!isWayland() && appProgram().find("firefox") != std::string::npos &&
        isFirefoxOrSnap() && !ic_->capabilityFlags().test(CapabilityFlag::Url) && !a11yGoogleDocsFocused());
   if (!uinputAckUnavailable_ && *engine_->config().autoDelay && observeDeletion &&
@@ -3083,6 +3096,14 @@ void SKeyState::postCommitPause(int postMs) const {
                std::min(postMs, skey::kMaxPostCommitMs)) *
            1000);
   }
+}
+
+bool SKeyState::isX11Tabby() const {
+  return !isWayland() && appProgram() == "tabby" && isChromiumCached();
+}
+
+bool SKeyState::useOrderedX11Replay() const {
+  return !isWayland() && (inChromiumAddressBar() || isX11Tabby());
 }
 
 bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
@@ -3129,7 +3150,7 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     if (isChromiumCached() && addrBarLastTriggerKey_ != 0 &&
         now(CLOCK_MONOTONIC) < addrBarTriggerDeadline_ &&
         sym == static_cast<uint32_t>(addrBarLastTriggerKey_) &&
-        !(!isWayland() && isChromiumBrowser(appProgram()) &&
+        !(!isWayland() && (isChromiumBrowser(appProgram()) || isX11Tabby()) &&
           keyEvent.time() != 0 && addrBarTriggerKeyTime_ != 0 &&
           keyEvent.time() != addrBarTriggerKeyTime_)) {
       SKEY_DEBUG() << "Uinput: drop re-delivered trigger key 0x" << std::hex
@@ -3213,11 +3234,9 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     minDelay = timing.commitDelayMinUsec;
     maxDelay = timing.commitDelayMaxUsec;
     if (isChromiumCached()) {
-      // Electron shares the browser-level timing (1.5×, 30ms cap on X11):
-      // the extra 2× headroom only added latency without fixing the
-      // Electron commit-channel drops (the internal key-processing delay
-      // can't be out-waited — see the skill).  Occasional mid-word loss
-      // in Electron is accepted in exchange for smooth typing.
+      // Electron retains the Chromium multiplier. Tabby X11 uses the
+      // terminal per-deletion floor below instead of the web-editor floor;
+      // its queued keys share an ordered commit channel during replacement.
       multiplier *= timing.chromiumDelayFactor;
       minDelay = static_cast<uint64_t>(minDelay * timing.chromiumDelayFactor);
       maxDelay = static_cast<uint64_t>(maxDelay * timing.chromiumDelayFactor);
@@ -3230,14 +3249,30 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
       //     or on machines where the a11y events lag): conservative.
       // Only a fresh NON-editor snapshot (Sheets cell, browser UI)
       // selects the low floor.
-      if (!isWayland() || isChromiumBrowser(appProgram())) {
+      if ((!isWayland() && !isX11Tabby()) || isChromiumBrowser(appProgram())) {
         auto *chainMon = engine_->a11yMonitor();
         bool fbInput = chainMon && (chainMon->isFocusFbChatChain() ||
                                     chainMon->isFocusFbCommentChain());
         bool freshWebEditor = a11yFreshWebEditor();
         bool unknownInput =
             !(chainMon && chainMon->isFocusSnapshotFresh(5000000));
-        bool slowInput = fbInput || freshWebEditor || unknownInput;
+        // A fresh but unclassified accessibility node is not evidence of
+        // a fast editor. Facebook can publish such nodes without the
+        // editable/line-state flags required by a11yFreshWebEditor().
+        // Outside the omnibox, only a positively identified Sheets editor
+        // retains the low X11 browser floor.
+        const bool unclassifiedX11Browser = !isWayland() &&
+            isChromiumBrowser(appProgram()) &&
+            !(chainMon && chainMon->isFocusSnapshotFresh(5000000) &&
+              chainMon->sheetsEditorFocused());
+        bool slowInput = fbInput || freshWebEditor || unknownInput ||
+                         unclassifiedX11Browser;
+        if (!isWayland() && isChromiumBrowser(appProgram())) {
+          SKEY_DEBUG() << "Uinput: X11 renderer settle policy="
+                       << (slowInput ? "editor-or-unclassified" : "sheets")
+                       << " fb=" << fbInput << " editor=" << freshWebEditor
+                       << " fresh=" << !unknownInput;
+        }
         const uint64_t browserFloor = isWayland()
             ? (slowInput ? kWebEditorWaylandCommitDelayMinUsec
                          : kChromeWaylandCommitDelayMinUsec)
@@ -3307,7 +3342,10 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   // separately, and the omnibox churn (Deactivate/Activate per
   // keystroke) re-arms lastActivateUsec_ constantly — the 50ms
   // headroom would apply to every replace and made the omnibox laggy.
+  // Browser pages pay this once per focus; subsequent replacements keep
+  // the regular renderer floor or the exact deletion acknowledgement guard.
   if (!isWayland() && isChromiumCached() && !inChromiumAddressBar() &&
+      !isX11Tabby() && (!isChromiumBrowser(appProgram()) || !x11BrowserFocusSettled_) &&
       lastActivateUsec_ > 0 &&
       now(CLOCK_MONOTONIC) - lastActivateUsec_ < 1000000) {
     sleepUsec = std::max(sleepUsec, kFirstWordSettleUsec);
@@ -3419,9 +3457,13 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   engine_->noteAppSleep(appProgram(), isWayland(), sleepUsec);
 
   SKEY_DEBUG() << "Uinput: sync BS, RT " << (elapsed / 1000) << "ms (ewma "
-               << (bsRtEwma_ / 1000) << "ms), sleep " << (sleepUsec / 1000)
-               << (uinputDeleteAck_.active() ? "ms before deletion check for '"
-                                            : "ms then commit '")
+               << (bsRtEwma_ / 1000) << "ms), "
+               << (!isWayland() && uinputDeleteAck_.active() ? "guard " : "sleep ")
+               << (sleepUsec / 1000)
+               << (!isWayland() && uinputDeleteAck_.active()
+                       ? "ms awaiting deletion notification for '"
+                       : uinputDeleteAck_.active() ? "ms before deletion check for '"
+                                                  : "ms then commit '")
                << commitText << "'"
                << (inAddrBar ? " [addrbar]" : "")
                << (isChromiumCached() ? " [chromium]" : "")
@@ -3441,8 +3483,11 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
 void SKeyState::scheduleUinputSettle(uint64_t delay, int retries, int postMs) {
   uinputSettling_ = true;
   uinputSettleStartedAt_ = now(CLOCK_MONOTONIC);
+  if (!isWayland() && uinputDeleteAck_.active()) {
+    delay = uinputDeleteAck_.nextCheckDelay(uinputSettleStartedAt_);
+  }
   uinputCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
-      CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + delay, 1,
+      CLOCK_MONOTONIC, uinputSettleStartedAt_ + delay, 1,
       [this, retries, postMs](EventSourceTime *, uint64_t) {
         finishUinputSettle(retries, postMs);
         return true;
@@ -3453,7 +3498,9 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
   if (!uinputSettling_ || !uinputDeleting_) return;
   if (checkCellSelection()) return; // never commit the previous Sheets cell
   if (uinputDeleteAck_.active()) {
-    const auto remaining = uinputDeleteAck_.remaining(now(CLOCK_MONOTONIC));
+    const auto stamp = now(CLOCK_MONOTONIC);
+    const auto remaining = isWayland() ? uinputDeleteAck_.remaining(stamp)
+                                     : uinputDeleteAck_.nextCheckDelay(stamp);
     if (remaining) {
       uinputCommitTimer_ = engine_->instance()->eventLoop().addTimeEvent(
           CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + remaining, 1,
@@ -3500,6 +3547,12 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
                  << " cursor=" << surrounding.cursor()
                  << " anchor=" << surrounding.anchor();
     if (!commitText(text, true)) return;
+    // The initial renderer settle has completed. Repeated replacements in
+    // this focus retain their normal renderer/ack guard, not another 50ms
+    // first-focus penalty. A new activation rearms the initial settle.
+    if (!isWayland() && isChromiumBrowser(appProgram()) && !inChromiumAddressBar()) {
+      x11BrowserFocusSettled_ = true;
+    }
   }
   if (uinputPendingFinalLen_ > 0) {
     committedLen_ = uinputPendingFinalLen_;
@@ -3513,11 +3566,12 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
   }
   // Explicit user-configured post-commit pauses retain their semantics.
   postCommitPause(postMs);
-  if (!isWayland() && inChromiumAddressBar() && !settledKeys_.empty()) {
+  if (useOrderedX11Replay() && (!settledKeys_.empty() || isX11Tabby())) {
     // Dispatch the replacement before the next queued transform can send
-    // kernel Backspaces. This also preserves the first replayed key's order.
+    // kernel Backspaces. Tabby's PTY commits can trail dispatch by a frame;
+    // retain a 20ms barrier even if the next physical key has not arrived.
     settledReplayTimer_ = engine_->instance()->eventLoop().addTimeEvent(
-        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 4000, 1,
+        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + (isX11Tabby() ? 20000 : 4000), 1,
         [this](EventSourceTime *, uint64_t) {
           settledReplayTimer_.reset();
           replayBufferedUinputKeys();
@@ -3540,7 +3594,7 @@ void SKeyState::replaySettledKeys() {
     if (!event.accepted()) {
       // X11 forwardKey is asynchronous with respect to commitString. A
       // queued letter followed by a committed space can arrive as " ca"
-      // instead of "ca ". Keep printable omnibox replay on one channel.
+      // instead of "ca ". Keep printable replay on one commit channel.
       const auto sym = event.key().sym();
       const bool printable = sym >= FcitxKey_space && sym <= FcitxKey_asciitilde;
       const auto states = event.key().states();
@@ -3552,12 +3606,12 @@ void SKeyState::replaySettledKeys() {
         ic_->forwardKey(saved.key, saved.release, saved.time);
       }
     }
-    if (!saved.release && !settledKeys_.empty() && !uinputDeleting_ &&
-        !isWayland() && inChromiumAddressBar()) {
+    if (!saved.release && (!settledKeys_.empty() || isX11Tabby()) && !uinputDeleting_ &&
+        useOrderedX11Replay()) {
       // Let the frontend dispatch this commit before a queued transform
       // injects new kernel backspaces. A blocking sleep cannot do that.
       settledReplayTimer_ = engine_->instance()->eventLoop().addTimeEvent(
-          CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 4000, 1,
+          CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + (isX11Tabby() ? 20000 : 4000), 1,
           [this](EventSourceTime *, uint64_t) {
             settledReplayTimer_.reset();
             replaySettledKeys();
@@ -4009,6 +4063,7 @@ bool SKeyState::checkCellSelection() {
 }
 
 void SKeyState::resetForCellChange() {
+  x11BrowserFocusSettled_ = false;
   viet_.reset();
   committedLen_ = 0;
   clearLastWord();
@@ -4063,12 +4118,11 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                               expectedUinputBackspaces_ > 0 &&
                               (keyEvent.key().check(FcitxKey_BackSpace) ||
                                keyEvent.key().check(FcitxKey_Escape));
-  const bool addressBarDeleting = uinputDeleting_ && !isWayland() &&
-                                  inChromiumAddressBar();
-  if (!replayingSettledKeys_ && !awaitingAnchor && (addressBarDeleting || settledReplayTimer_ || uinputSettling_ || !settledKeys_.empty() ||
+  const bool orderedDeleting = uinputDeleting_ && useOrderedX11Replay();
+  if (!replayingSettledKeys_ && !awaitingAnchor && (orderedDeleting || settledReplayTimer_ || uinputSettling_ || !settledKeys_.empty() ||
                                 (deferredNativeDeleteLen_ > 0 && hasDeferredCommitPending()))) {
     if (!keyEvent.isRelease()) checkCellSelection();
-    if (addressBarDeleting || settledReplayTimer_ || uinputSettling_ || !settledKeys_.empty() ||
+    if (orderedDeleting || settledReplayTimer_ || uinputSettling_ || !settledKeys_.empty() ||
         (deferredNativeDeleteLen_ > 0 && hasDeferredCommitPending())) {
       settledKeys_.push_back({keyEvent.rawKey(), keyEvent.isRelease(), keyEvent.time()});
       keyEvent.filterAndAccept();
@@ -4250,9 +4304,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       const bool freshAfterArm =
           addrBarGuardArmedUsec_ != 0 &&
           t < addrBarGuardArmedUsec_ + kAddrBarGuardFreshWindowUsec &&
-          // A distinct timestamp in the X11 browser key stream is a new
+          // A distinct timestamp in the X11 browser/Tabby stream is a new
           // press, even within 100ms (aa/dd/ee and fast repeated letters).
-          !(!isWayland() && isChromiumBrowser(appProgram()) &&
+          !(!isWayland() && (isChromiumBrowser(appProgram()) || isX11Tabby()) &&
             keyEvent.time() != 0 && addrBarTriggerKeyTime_ != 0 &&
             keyEvent.time() != addrBarTriggerKeyTime_);
       if (replayedEvent || freshAfterArm) {
@@ -5060,7 +5114,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           } else {
             clearUI();
             commitText(macroVal);
-            ic_->commitString(" ");
+            if (isX11Tabby()) commitText(" ");
+            else ic_->commitString(" ");
           }
           keyEvent.filterAndAccept();
           return;
@@ -5124,10 +5179,13 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           pendingFlushSuffix_ += " ";
         }
         forceFlushDeferredCommit();
-        if (!hadDeferred && !(autoRestored && useUinputMode())) {
-          ic_->commitString(" ");
+        const bool tabbyReplay = isX11Tabby() && replayingSettledKeys_ &&
+                                 !hadDeferred && !autoRestored;
+        if (!hadDeferred && !(autoRestored && useUinputMode()) && !tabbyReplay) {
+          if (isX11Tabby()) commitText(" ");
+          else ic_->commitString(" ");
         }
-        keyEvent.filterAndAccept();
+        if (!tabbyReplay) keyEvent.filterAndAccept();
       } else if (inChromiumAddressBar() && useUinputMode()) {
         // Uinput addrbar: every composed char is already on screen (letters
         // go out via raw forwards or replacement commits) — commitBuffer
@@ -5630,8 +5688,17 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               // forwards ("ứng" first-word loss).  One-time settle.
               // Address bar excluded (omnibox churn re-arms the window
               // constantly).
-              if (!isWayland() && isChromiumCached() &&
-                  !inChromiumAddressBar() && lastActivateUsec_ > 0 &&
+              if (isX11Tabby()) {
+                // Dispatch the append, then hold subsequent kernel keys until
+                // Electron has drained its asynchronous IM commit to the PTY.
+                pendingUinputCommit_ = addPart;
+                uinputPendingFinalLen_ = static_cast<int>(utf8::length(newComposed));
+                uinputDeleting_ = true;
+                scheduleUinputSettle(0, 0, 0);
+              } else if (!isWayland() && isChromiumCached() &&
+                  !inChromiumAddressBar() &&
+                  (!isChromiumBrowser(appProgram()) || !x11BrowserFocusSettled_) &&
+                  lastActivateUsec_ > 0 &&
                   now(CLOCK_MONOTONIC) - lastActivateUsec_ < 300000) {
                 pendingUinputCommit_ = addPart;
                 uinputPendingFinalLen_ = static_cast<int>(utf8::length(newComposed));
@@ -5749,10 +5816,13 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           pendingFlushSuffix_ += std::string(1, ch);
         }
         forceFlushDeferredCommit();
-        if (!hadDeferred && !(autoRestored && useUinputMode())) {
-          ic_->commitString(std::string(1, ch));
+        const bool tabbyReplay = isX11Tabby() && replayingSettledKeys_ &&
+                                 !hadDeferred && !autoRestored;
+        if (!hadDeferred && !(autoRestored && useUinputMode()) && !tabbyReplay) {
+          if (isX11Tabby()) commitText(std::string(1, ch));
+          else ic_->commitString(std::string(1, ch));
         }
-        keyEvent.filterAndAccept();
+        if (!tabbyReplay) keyEvent.filterAndAccept();
       } else {
         commitBuffer();
         clearUI();
@@ -6489,6 +6559,11 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             (useUinputMode() &&
              (isWayland() || !isTerminalAppCached() || isChromiumCached())) ||
             (!isWayland() && isTerminalAppCached()) ||
+            // X11 Chromium page editors process forwarded Backspace and
+            // IM commits asynchronously too. Surrounding mode without a
+            // usable native snapshot must use the same anchor/renderer
+            // settle as Uinput mode, not the fixed 15ms forward fallback.
+            (!isWayland() && isChromiumBrowser(appProgram())) ||
             // X11 Firefox: native deletes are unreliable through the async
             // renderer — anchor through uinput (see the native-path gate
             // above).

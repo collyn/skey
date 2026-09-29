@@ -54,6 +54,13 @@ public:
         if (now >= deadline) return 0;
         return std::min(pollUsec, deadline - now);
     }
+    // Event-driven frontends rearm on every surrounding update. Without an
+    // acknowledgement, only the bounded fallback deadline needs a wakeup.
+    uint64_t nextCheckDelay(uint64_t now) const {
+        if (!active_) return 0;
+        const auto ready = ackAt_ ? ackAt_ + guardUsec : startedAt_ + timeoutUsec;
+        return now >= ready ? 0 : ready - now;
+    }
     bool active() const { return active_; }
     bool acknowledged() const { return ackAt_ != 0; }
 private:

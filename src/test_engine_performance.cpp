@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cerrno>
 #include <iostream>
+#include <filesystem>
 #include <limits>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -82,9 +83,287 @@ protected:
 
 namespace fcitx {
 struct EnginePerformanceTest {
+    static void x11AckBeforeAnchor(Instance &instance, bool firefox) {
+        SKeyEngine engine(&instance, false);
+        engine.config_.autoDelay.setValue(true);
+        FocusGroup group("x11:test", instance.inputContextManager());
+        const std::string program = firefox ? "firefox" : "google-chrome-stable";
+        TestInput input(instance.inputContextManager(), program);
+        input.setFocusGroup(&group);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = program;
+        state.cachedIsChromium_ = firefox ? 0 : 1;
+        state.cachedIsFirefoxOrSnap_ = firefox ? 1 : 0;
+        state.cachedIsTerminalApp_ = 0;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.modeCacheValid_ = true;
+        state.uinputDeleting_ = true;
+        state.expectedUinputBackspaces_ = state.seenUinputBackspaces_ = 1;
+        state.pendingUinputCommit_ = "ự";
+        state.uinputPendingFinalLen_ = 2;
+        const auto stamp = now(CLOCK_MONOTONIC);
+        state.bsSentAt_ = stamp - 20000;
+        check(state.uinputDeleteAck_.start("tư", 2, 2, "tư", 1, state.bsSentAt_),
+              "prepare deletion whose app confirmation precedes anchor");
+        state.uinputDeleteAck_.observe(true, "t", 1, 1, stamp - 12000);
+        KeyEvent anchor(&input, Key(FcitxKey_BackSpace));
+        state.keyEvent(anchor);
+        check(anchor.accepted() && input.commits.empty() && state.uinputSettling_ &&
+                  state.uinputCommitTimer_->time() <= now(CLOCK_MONOTONIC),
+              "elapsed acknowledgement guard adds no second 8ms sleep after X11 anchor");
+        state.finishUinputSettle(0, 0);
+        check(input.commits == std::vector<std::string>{"ự"},
+              "early acknowledgement still waits for anchor and commits once");
+        state.resetForCellChange();
+    }
+
+    static void x11BrowserFirstSettle(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome-stable");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::Preedit);
+        input.setCursorRect(Rect(700, 480, 700, 508));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome-stable";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.modeCacheValid_ = true;
+        state.lastActivateUsec_ = now(CLOCK_MONOTONIC);
+        const auto appKey = skey::appDelayKey("google-chrome-stable", false);
+        for (int replacement = 0; replacement < 3; ++replacement) {
+            if (replacement == 2) state.resetForCellChange();
+            state.viet_.setRawInput("gox");
+            state.committedLen_ = 1;
+            state.uinputDeleting_ = true;
+            state.expectedUinputBackspaces_ = state.seenUinputBackspaces_ = 1;
+            state.uinputBsOutstanding_ = 1;
+            state.pendingUinputCommit_ = "õ";
+            state.uinputPendingFinalLen_ = 2;
+            state.bsRtEwma_ = 1000;
+            state.bsSentAt_ = now(CLOCK_MONOTONIC) - 1000;
+            KeyEvent anchor(&input, Key(FcitxKey_BackSpace));
+            state.keyEvent(anchor);
+            check(engine.appDelayStats_.at(appKey).lastSleepUsec ==
+                      (replacement == 1 ? 30000u : 50000u),
+                  "Chrome first-focus guard is paid once; normal renderer floor remains; boundary rearms it");
+            state.finishUinputSettle(0, 0);
+            check(state.x11BrowserFocusSettled_, "completed Chrome settle ends first-focus warmup");
+        }
+        state.resetForCellChange();
+    }
+
+    static void tabbyTimingAndQueue(Instance &instance, const std::string &program,
+                                    bool wayland, int deletes, int overrideMs) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), program);
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::Preedit);
+        input.setCursorRect(Rect(700, 480, 700, 508));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = program;
+        state.cachedIsChromium_ = 1;
+        // Even an IDE with a shell child must retain its editor timing.
+        state.cachedIsTerminalApp_ = 1;
+        state.cachedIsFirefoxOrSnap_ = 0;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.modeCacheValid_ = true;
+        const auto appKey = skey::appDelayKey(program, wayland);
+        engine.appDelayOverrides_[appKey].preCommitMs = overrideMs;
+        state.lastActivateUsec_ = now(CLOCK_MONOTONIC);
+        state.viet_.setRawInput("twj");
+        state.committedLen_ = 1;
+        state.uinputDeleting_ = true;
+        state.expectedUinputBackspaces_ = state.seenUinputBackspaces_ = deletes;
+        state.uinputBsOutstanding_ = 1;
+        state.pendingUinputCommit_ = "ự";
+        state.uinputPendingFinalLen_ = 2;
+        state.bsRtEwma_ = 1000;
+        state.bsSentAt_ = now(CLOCK_MONOTONIC) - 1000;
+        KeyEvent anchor(&input, Key(FcitxKey_BackSpace));
+        state.keyEvent(anchor);
+        const auto delay = engine.appDelayStats_.at(appKey).lastSleepUsec;
+        const uint64_t expected = overrideMs >= 0 ? overrideMs * 1000u :
+            program == "tabby" ? deletes * 15000u : 50000u;
+        check(anchor.accepted() && input.commits.empty() &&
+                  (wayland ? delay < 15000 : delay == expected),
+              "Tabby X11 retains per-delete headroom without browser/first-focus floor; other routes and override stay intact");
+        if (!wayland && program == "tabby") {
+            KeyEvent space(&input, Key(FcitxKey_space), false, 2000);
+            KeyEvent n(&input, Key(FcitxKey_n), false, 2010);
+            KeyEvent release(&input, Key(FcitxKey_n), true, 2011);
+            state.keyEvent(space); state.keyEvent(n); state.keyEvent(release);
+            state.finishUinputSettle(0, 0);
+            check(input.commits == std::vector<std::string>{"ự"} && state.settledReplayTimer_,
+                  "Tabby dispatches replacement before queued appends");
+            state.settledReplayTimer_.reset(); state.replaySettledKeys();
+            state.settledReplayTimer_.reset(); state.replaySettledKeys();
+            state.settledReplayTimer_.reset(); state.replaySettledKeys();
+            check(input.commits == std::vector<std::string>{"ự"} && input.forwarded.size() == 3 &&
+                      input.forwarded[0].key.check(FcitxKey_space) && !input.forwarded[0].release &&
+                      input.forwarded[1].key.check(FcitxKey_n) && !input.forwarded[1].release &&
+                      input.forwarded[2].key.check(FcitxKey_n) && input.forwarded[2].release &&
+                      input.forwarded[1].time == 2010 && input.forwarded[2].time == 2011,
+                  "Tabby forwards queued ASCII keys and releases with original identity and order");
+        }
+        state.resetForCellChange();
+        if (!wayland && program == "tabby" && deletes == 1 && overrideMs < 0) {
+            state.viet_.setShortW(true);
+            state.viet_.setRawInput("t");
+            state.committedLen_ = 1;
+            KeyEvent w(&input, Key(FcitxKey_w), false, 3000);
+            state.keyEvent(w);
+            check(w.accepted() && state.uinputSettling_,
+                  "Tabby short-w append uses the commit dispatch barrier");
+            state.finishUinputSettle(0, 0);
+            check(state.settledReplayTimer_ && state.settledKeys_.empty(),
+                  "Tabby protects a dispatched commit even before the next key arrives");
+            KeyEvent j(&input, Key(FcitxKey_j), false, 3010);
+            state.keyEvent(j);
+            check(j.accepted() && state.settledKeys_.size() == 1 && !state.uinputDeleting_,
+                  "a newly arriving tone cannot inject Backspace ahead of the append");
+            state.resetForCellChange();
+            check(!state.settledReplayTimer_ && state.settledKeys_.empty(),
+                  "focus boundary cancels Tabby pending replay and its guard");
+        }
+    }
+
+    static void chromiumX11RepeatedTone(Instance &instance, bool sheets) {
+        SKeyEngine engine(&instance, false);
+        engine.config_.outputMode.setValue(SKeyOutputMode::SurroundingText);
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+        // Fresh node without editor flags: must not imply fast rendering.
+        engine.a11yMonitor_->focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
+        engine.a11yMonitor_->sheetsEditorFocused_ = sheets;
+        FocusGroup group("x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome-stable");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::Preedit);
+        input.setCursorRect(Rect(718, 481, 718, 509));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome-stable";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedMode_ = SKeyOutputMode::SurroundingText;
+        state.modeCacheValid_ = true;
+        state.viet_.setRawInput("chafo");
+        state.committedLen_ = 4;
+        int sockets[2];
+        check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+              "isolate repeated tone transport");
+        state.uinputClientFd_ = sockets[0];
+        for (char tone : {'s', 'j'}) {
+            const std::string suffix = tone == 's' ? "áo" : "ạo";
+            KeyEvent key(&input, Key(static_cast<KeySym>(tone)));
+            state.keyEvent(key);
+            uint32_t request[4] = {};
+            check(recv(sockets[1], request, sizeof(request), 0) == sizeof(request) &&
+                      request[0] == 3 && state.pendingUinputCommit_ == suffix,
+                  "each tone replaces exactly two characters and preserves ch");
+            for (int i = 0; i < 2; ++i) {
+                KeyEvent deletion(&input, Key(FcitxKey_BackSpace));
+                state.keyEvent(deletion);
+                check(!deletion.accepted(), "real suffix deletion reaches the editor");
+            }
+            state.bsRtEwma_ = 1000;
+            state.bsSentAt_ = now(CLOCK_MONOTONIC) - 1000;
+            KeyEvent anchor(&input, Key(FcitxKey_BackSpace));
+            state.keyEvent(anchor);
+            const auto delay = engine.appDelayStats_.at(
+                skey::appDelayKey("google-chrome-stable", false)).lastSleepUsec;
+            check(anchor.accepted() && delay == (sheets ? 15000u : 30000u),
+                  "fresh unknown X11 editor keeps 30ms floor; known Sheets keeps 15ms");
+            // Inspect completion separately from the policy's timer duration.
+            state.finishUinputSettle(0, 0);
+            check(state.committedLen_ == 4 && state.viet_.getComposed() == "ch" + suffix,
+                  "tone replacement preserves complete composed word and length");
+        }
+        check(input.commits == std::vector<std::string>{"áo", "ạo"},
+              "repeated tones emit both replacement suffixes exactly once");
+        state.resetForCellChange();
+        close(sockets[0]);
+        state.uinputClientFd_ = -1;
+        close(sockets[1]);
+    }
+
+    static void chromiumX11SurroundingFallback(Instance &instance, int snapshot, char tone) {
+        SKeyEngine engine(&instance, false);
+        engine.config_.outputMode.setValue(SKeyOutputMode::SurroundingText);
+        FocusGroup group("x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome-stable");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlags(CapabilityFlag::Preedit) |
+            (snapshot ? CapabilityFlags(CapabilityFlag::SurroundingText) : CapabilityFlags()));
+        input.setCursorRect(Rect(718, 481, 718, 509));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome-stable";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedMode_ = SKeyOutputMode::SurroundingText;
+        state.modeCacheValid_ = true;
+        state.viet_.setShortW(true);
+        state.bsRtEwma_ = 1000;
+        int sockets[2];
+        check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+              "isolate Chrome X11 surrounding fallback transport");
+        state.uinputClientFd_ = sockets[0];
+        for (auto sym : {FcitxKey_t, FcitxKey_w}) {
+            KeyEvent key(&input, Key(sym));
+            state.keyEvent(key);
+        }
+        check(input.commits == std::vector<std::string>{"t", "ư"},
+              "Surrounding Text commits the initial tw as tư");
+        input.commits.clear();
+        if (snapshot >= 2) {
+            input.surroundingText().setText(snapshot == 3 ? "tư" : "zz", 2, 2);
+            input.updateSurroundingText();
+        }
+        KeyEvent key(&input, Key(static_cast<KeySym>(tone)));
+        state.keyEvent(key);
+        const std::string suffix = tone == 'j' ? "ự" : "ừ";
+        uint32_t request[4] = {};
+        if (snapshot == 3) {
+            check(input.deletions == 1 && input.commits == std::vector<std::string>{suffix} &&
+                      recv(sockets[1], request, sizeof(request), MSG_DONTWAIT) < 0 && errno == EAGAIN,
+                  "matching native surrounding retains native deletion without Uinput");
+        } else {
+            check(state.uinputDeleting_ && input.forwarded.empty() && input.commits.empty() &&
+                      !state.hasDeferredCommitPending() &&
+                      recv(sockets[1], request, sizeof(request), 0) == sizeof(request) && request[0] == 2,
+                  "missing or stale Chrome X11 surrounding uses one deletion plus sync anchor");
+            auto delayedDeletion = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+                now(CLOCK_MONOTONIC) + 25000, 1,
+                [&](EventSourceTime *, uint64_t) {
+                    check(input.commits.empty(), "no blind 15ms commit while deletion has not returned");
+                    KeyEvent deletion(&input, Key(FcitxKey_BackSpace));
+                    state.keyEvent(deletion);
+                    check(!deletion.accepted(), "one real Backspace reaches the editor");
+                    KeyEvent anchor(&input, Key(FcitxKey_BackSpace));
+                    state.keyEvent(anchor);
+                    check(anchor.accepted() && state.uinputSettling_ && input.commits.empty(),
+                          "sync anchor is consumed and renderer settle precedes replacement");
+                    return false;
+                });
+            auto stop = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+                now(CLOCK_MONOTONIC) + 125000, 1,
+                [&](EventSourceTime *, uint64_t) { instance.eventLoop().exit(); return true; });
+            instance.eventLoop().exec();
+            check(input.commits == std::vector<std::string>{suffix} &&
+                      state.committedLen_ == 2 && !state.uinputDeleting_,
+                  "replacement suffix commits once after deletion, preserving t");
+        }
+        state.resetForCellChange();
+        close(sockets[0]);
+        state.uinputClientFd_ = -1;
+        close(sockets[1]);
+    }
+
     static void chromiumCompositionCommit(Instance &instance, bool wayland,
                                           bool preeditCap, bool url,
-                                          const char *program, bool replacement, int sheets = 0) {
+                                          const char *program, bool replacement, int sheets = 0,
+                                          bool omnibox = false, const std::string &suffix = "ự") {
         // Model Chromium's NeedInsertChar branch, not Facebook itself.
         class CompositionInput : public TestInput {
         public:
@@ -117,6 +396,7 @@ struct EnginePerformanceTest {
         FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
         CompositionInput input(instance.inputContextManager(), program);
         input.setFocusGroup(&group);
+        if (omnibox) input.setCursorRect(Rect(200, 54, 201, 72));
         input.setCapabilityFlags((preeditCap ? CapabilityFlags(CapabilityFlag::Preedit) : CapabilityFlags()) |
                                  (url ? CapabilityFlags(CapabilityFlag::Url) : CapabilityFlags()));
         auto &state = *input.propertyFor(&engine.factory_);
@@ -125,19 +405,20 @@ struct EnginePerformanceTest {
         state.cachedIsChromium_ = firefox ? 0 : 1;
         state.cachedIsFirefoxOrSnap_ = firefox ? 1 : 0;
         state.cachedIsTerminalApp_ = 0;
-        const bool expected = preeditCap && !url && replacement && sheets != 1 &&
-            ((wayland && std::string(program) == "google-chrome") ||
-             (!wayland && firefox && sheets != 3));
-        check(state.commitText("ự", replacement), "replacement commit issued");
-        check(input.commits == std::vector<std::string>{"ự"}, "single suffix commit without retries");
-        check(input.visible == (expected ? "ự" : ""), "composition selects text insertion instead of character key route");
-        check(input.events == (expected ? std::vector<std::string>{"preedit:ự", "commit:ự", "preedit:"}
-                                        : std::vector<std::string>{"commit:ự"}),
+        const bool expected = preeditCap && !url && !omnibox && sheets != 1 &&
+            ((!wayland && std::string(program) == "tabby") ||
+             (replacement && ((std::string(program) == "google-chrome") ||
+              (!wayland && firefox && sheets != 3))));
+        check(state.commitText(suffix, replacement), "replacement commit issued");
+        check(input.commits == std::vector<std::string>{suffix}, "single suffix commit without retries");
+        check(input.visible == (expected ? suffix : ""), "composition selects text insertion instead of character key route");
+        check(input.events == (expected ? std::vector<std::string>{"preedit:" + suffix, "commit:" + suffix, "preedit:"}
+                                        : std::vector<std::string>{"commit:" + suffix}),
               "composition must precede commit and be cleared afterwards only in scoped route");
         check(input.inputPanel().clientPreedit().empty(), "no lingering composition even when Show preedit is off");
     }
 
-    static void chromiumDeletionAck(Instance &instance, int ackDelayMs, bool suffixPath = false, bool firefox = false, char tone = 'j') {
+    static void chromiumDeletionAck(Instance &instance, int ackDelayMs, bool suffixPath = false, bool firefox = false, char tone = 'j', bool chromiumX11 = false) {
         class TimedInput : public TestInput {
         public:
             TimedInput(InputContextManager &manager, const char *program) : TestInput(manager, program) {}
@@ -156,7 +437,8 @@ struct EnginePerformanceTest {
         const std::string word = "t" + suffix;
         SKeyEngine engine(&instance, false);
         engine.config_.autoDelay.setValue(true);
-        FocusGroup group(firefox ? "x11:test" : "wayland:test", instance.inputContextManager());
+        const bool wayland = !firefox && !chromiumX11;
+        FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
         TimedInput input(instance.inputContextManager(), program);
         input.setFocusGroup(&group);
         input.setCapabilityFlags(CapabilityFlags(CapabilityFlag::SurroundingText) | CapabilityFlag::Preedit);
@@ -169,7 +451,7 @@ struct EnginePerformanceTest {
         state.cachedMode_ = SKeyOutputMode::Uinput;
         state.viet_.setShortW(true);
         state.bsRtEwma_ = 1000;
-        engine.noteAppRoundTrip(program, !firefox, 1000);
+        engine.noteAppRoundTrip(program, wayland, 1000);
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "create isolated Chrome deletion transport");
@@ -227,13 +509,17 @@ struct EnginePerformanceTest {
         KeyEvent anchor(&input, Key(FcitxKey_BackSpace));
         state.keyEvent(anchor);
         check(anchor.accepted() && state.uinputSettling_, "sync anchor schedules observed settle");
-        const auto key = skey::appDelayKey(program, !firefox);
+        const auto key = skey::appDelayKey(program, wayland);
         check(engine.appDelayStats_.at(key).lastSleepUsec ==
                   skey::UinputDeleteAck::guardUsec,
               "observed path starts at 8ms, not the unconditional 30ms floor");
         KeyEvent navigation(&input, Key(FcitxKey_End));
         state.keyEvent(navigation);
         check(navigation.accepted() && input.forwarded.empty(), "subsequent keys wait behind observed deletion");
+        if (!wayland) {
+            check(state.uinputCommitTimer_->time() == sentAt + skey::UinputDeleteAck::timeoutUsec,
+                  "X11 waits for surrounding notification or one timeout instead of 4ms polls");
+        }
         uint64_t acknowledgedAt = 0;
         auto update = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
             sentAt + static_cast<uint64_t>(ackDelayMs >= 0 ? ackDelayMs : 10) * 1000, 1,
@@ -244,7 +530,11 @@ struct EnginePerformanceTest {
                     input.surroundingText().setText(ackDelayMs == -2 ? "xin x!" : "xin t!", 5, 5);
                     acknowledgedAt = now(CLOCK_MONOTONIC);
                     input.updateSurroundingText();
-
+                    if (!wayland && ackDelayMs >= 0) {
+                        check(state.uinputCommitTimer_->time() >= acknowledgedAt + skey::UinputDeleteAck::guardUsec &&
+                                  state.uinputCommitTimer_->time() < acknowledgedAt + skey::UinputDeleteAck::guardUsec + 2000,
+                              "exact X11 acknowledgement rearms timer at the full guard deadline");
+                    }
                 }
                 return true;
             });
@@ -279,12 +569,19 @@ struct EnginePerformanceTest {
 
     static void chromiumAckScope(Instance &instance, bool wayland,
                                  const char *program, bool autoDelay,
-                                 int overrideMs, bool url, bool expected) {
+                                 int overrideMs, bool url, bool expected,
+                                 bool sheets = false, bool omnibox = false) {
         SKeyEngine engine(&instance, false);
         engine.config_.autoDelay.setValue(autoDelay);
+        if (sheets) {
+            engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+            engine.a11yMonitor_->sheetsEditorFocused_ = true;
+            engine.a11yMonitor_->focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
+        }
         FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
         TestInput input(instance.inputContextManager(), program);
         input.setFocusGroup(&group);
+        if (omnibox) input.setCursorRect(Rect(200, 54, 201, 72));
         input.setCapabilityFlags(CapabilityFlags(CapabilityFlag::SurroundingText) |
                                  (url ? CapabilityFlags(CapabilityFlag::Url) : CapabilityFlags()));
         auto &state = *input.propertyFor(&engine.factory_);
@@ -302,7 +599,7 @@ struct EnginePerformanceTest {
         state.uinputClientFd_ = sockets[0];
         state.sendBackspaceUinput(2, 0, "tư");
         check(state.uinputDeleteAck_.active() == expected,
-              "ack timing is limited to automatic Wayland browser page replacements");
+              "ack timing is limited to automatic browser page replacements");
         if (expected) {
             engine.appDelayOverrides_[skey::appDelayKey(program, wayland)].preCommitMs = 7;
             state.uinputDeleting_ = true;
@@ -560,14 +857,15 @@ struct EnginePerformanceTest {
               "queued printable letters and spaces use one ordered commit channel");
     }
 
-    static void chromeFastRepeat(Instance &instance, bool pending, bool replay) {
+    static void chromeFastRepeat(Instance &instance, bool pending, bool replay,
+                                 const std::string &program = "google-chrome-stable") {
         SKeyEngine engine(&instance, false);
         FocusGroup group("x11:test", instance.inputContextManager());
-        TestInput input(instance.inputContextManager(), "google-chrome-stable");
+        TestInput input(instance.inputContextManager(), program);
         input.setFocusGroup(&group);
         input.setCursorRect(Rect(200, 54, 201, 72));
         auto &state = *input.propertyFor(&engine.factory_);
-        state.cachedProgram_ = "google-chrome-stable";
+        state.cachedProgram_ = program;
         state.cachedIsChromium_ = 1;
         state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
         state.cachedMode_ = SKeyOutputMode::Uinput;
@@ -1227,6 +1525,9 @@ static void policies() {
         check(!ack.acknowledged(), "pre-send snapshot is not evidence");
         ack.observe(true, "xin t!", 5, 5, start + delay);
         ack.observe(true, "xin t!", 5, 5, start + delay + 1);
+        check(ack.nextCheckDelay(start + delay) == ack.guardUsec &&
+                  ack.nextCheckDelay(start + delay + ack.guardUsec) == 0,
+              "event-driven acknowledgement retains exact guard deadline");
         check(ack.remaining(start + delay) == ack.guardUsec &&
                   ack.remaining(start + delay + ack.guardUsec) == 0,
               "fresh exact text waits one guard; duplicates do not prolong it");
@@ -1240,6 +1541,8 @@ static void policies() {
     check(ack.acknowledged(), "exact multi-delete result acknowledges");
     ack.observe(false, "đ", 1, 1, start + 4000);
     check(!ack.acknowledged(), "new invalid snapshot revokes earlier acknowledgement");
+    check(ack.nextCheckDelay(start + 4000) == ack.timeoutUsec - 4000,
+          "invalidated acknowledgement rearms the bounded deadline, not polling");
     check(ack.remaining(start + ack.timeoutUsec - 1) == 1 &&
               ack.remaining(start + ack.timeoutUsec) == 0,
           "silent/invalid app has a bounded wait");
@@ -1288,15 +1591,75 @@ static void policies() {
 }
 
 int main(int argc, char **argv) {
+    // activate() reloads per-app modes. Never inherit the test machine's
+    // interactive Chrome settings (e.g. a forced Surrounding Text mode).
+    char configTemplate[] = "/tmp/skey-engine-test-XXXXXX";
+    const char *configRoot = mkdtemp(configTemplate);
+    check(configRoot != nullptr, "create isolated test configuration");
+    struct ConfigCleanup {
+        std::string path;
+        ~ConfigCleanup() { std::filesystem::remove_all(path); }
+    } configCleanup{configRoot};
+    setenv("XDG_CONFIG_HOME", configRoot, 1);
+    setenv("XDG_CONFIG_DIRS", configRoot, 1);
     // Synthetic caret coordinates must not inherit a developer desktop's
     // active-window origin or DPI. Live X11 geometry is tested separately.
     unsetenv("DISPLAY");
     unsetenv("WAYLAND_DISPLAY");
     policies();
+    for (bool firefox : {false, true}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::x11AckBeforeAnchor(instance, firefox);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::x11BrowserFirstSettle(instance);
+    }
+    for (const auto &suffix : {"c", " ", "ư", "ự"})
+        for (bool wayland : {false, true}) {
+            fcitx::Instance instance(argc, argv);
+            fcitx::EnginePerformanceTest::chromiumCompositionCommit(
+                instance, wayland, true, false, "tabby", false, 0, false, suffix);
+        }
+
+    for (int deletes : {1, 2, 3})
+        for (int overrideMs : {-1, 7}) {
+            fcitx::Instance instance(argc, argv);
+            fcitx::EnginePerformanceTest::tabbyTimingAndQueue(instance, "tabby", false, deletes, overrideMs);
+        }
+    for (const auto &program : {"code", "google-chrome-stable"}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::tabbyTimingAndQueue(instance, program, false, 1, -1);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::tabbyTimingAndQueue(instance, "tabby", true, 1, -1);
+    }
+    for (bool pending : {false, true})
+        for (bool replay : {false, true}) {
+            fcitx::Instance instance(argc, argv);
+            fcitx::EnginePerformanceTest::chromeFastRepeat(instance, pending, replay, "tabby");
+        }
+
+    for (bool sheets : {false, true}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::chromiumX11RepeatedTone(instance, sheets);
+    }
+    for (int snapshot : {0, 1, 2, 3})
+        for (char tone : {'j', 'f'}) {
+            fcitx::Instance instance(argc, argv);
+            fcitx::EnginePerformanceTest::chromiumX11SurroundingFallback(instance, snapshot, tone);
+        }
     {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", true, -1, false, true);
-        fcitx::EnginePerformanceTest::chromiumAckScope(instance, false, "google-chrome", true, -1, false, false);
+        fcitx::EnginePerformanceTest::chromiumAckScope(instance, false, "google-chrome", true, -1, false, true);
+        fcitx::EnginePerformanceTest::chromiumAckScope(instance, false, "google-chrome", false, -1, false, false);
+        fcitx::EnginePerformanceTest::chromiumAckScope(instance, false, "google-chrome", true, 7, false, false);
+        fcitx::EnginePerformanceTest::chromiumAckScope(instance, false, "google-chrome", true, -1, true, false);
+        fcitx::EnginePerformanceTest::chromiumAckScope(instance, false, "code", true, -1, false, false);
+        fcitx::EnginePerformanceTest::chromiumAckScope(instance, false, "google-chrome", true, -1, false, false, true);
+        fcitx::EnginePerformanceTest::chromiumAckScope(instance, false, "google-chrome", true, -1, false, false, false, true);
         fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", false, -1, false, false);
         fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", true, 7, false, false);
         fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", true, -1, true, false);
@@ -1311,16 +1674,29 @@ int main(int argc, char **argv) {
                         fcitx::EnginePerformanceTest::chromiumCompositionCommit(
                             instance, wayland, cap, url, program, replacement);
                     }
-    for (int sheets : {1, 2}) {
+    for (bool wayland : {false, true})
+      for (int sheets : {1, 2}) {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::chromiumCompositionCommit(
-            instance, true, true, false, "google-chrome", true, sheets);
+            instance, wayland, true, false, "google-chrome", true, sheets);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::chromiumCompositionCommit(
+            instance, false, true, false, "google-chrome", true, 0, true);
     }
     {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::chromiumCompositionCommit(
             instance, false, true, false, "firefox", true, 3);
     }
+    for (char tone : {'j', 'f'})
+        for (bool suffixPath : {false, true})
+            for (int delay : {1, 15, 40, 70, -1, -2, -3}) {
+                fcitx::Instance instance(argc, argv);
+                fcitx::EnginePerformanceTest::chromiumDeletionAck(
+                    instance, delay, suffixPath, false, tone, true);
+            }
     for (char tone : {'j', 'f'})
         for (int delay : {15, 40, -1, -3}) {
             fcitx::Instance instance(argc, argv);

@@ -177,3 +177,104 @@ omnibox to textarea passed. The 18 accent samples measured median latency
 147.63→79.16ms; nearest-rank p95 was 172.80→169.08ms (the sample maximum).
 This is bounded regression evidence, not a guarantee across Chrome versions.
 Local Clang and remote GCC builds passed all seven CTests.
+
+Chrome X11 Surrounding Text fallback uses the shared Uinput Backspace anchor
+and renderer settle when native surrounding is missing or stale. Regression
+cases cover `twj`/`twf` with no capability, an invalid snapshot, a mismatching
+snapshot and a matching native snapshot. A delayed loopback must not allow the
+old fixed 15ms commit; the real Backspace passes once and the sync key is
+consumed before committing the suffix once. Matching native deletion stays
+unchanged. These transport tests do not emulate Facebook's renderer.
+
+Repeated-tone Chrome X11 regression covers `chào` → `cháo` → `chạo`, including
+both two-character suffix deletions and complete-word length tracking. A fresh
+but unclassified a11y node cannot lower the page-editor settle floor to 15ms;
+X11 browser page replacements use the 30ms editor floor unless a fresh Sheets
+editor is positively identified. Omnibox timing and Wayland policy are unchanged.
+This validates routing/timing and emitted text, not acceptance by Facebook's
+renderer; the runtime policy log now records freshness/editor classification.
+
+Chrome X11 page replacements also share the Wayland deletion-acknowledgement
+and single-character composition-commit policies. Only an exact, newer
+surrounding snapshot can acknowledge deletion; the shared 8ms guard and 80ms
+bounded timeout apply. Missing/stale initial data retains the renderer floor,
+and an unresponsive input disables further ack waits until focus activation.
+Manual delay overrides and AutoDelay-off retain their behavior. X11 Sheets
+editors, omniboxes (including geometry-only detection) and Electron are excluded
+from the new acknowledgement route. Composition is scoped to Unicode single-
+character replacements with Preedit support, excludes Sheets/omnibox/Electron,
+and leaves no lingering preedit even with Show preedit disabled.
+
+Regression coverage runs Chrome X11 through both direct-key and suffix-replay
+paths for `twj`/`twf`: early/late/missing/conflicting acknowledgements, boundary
+cancellation, queued navigation, timeout suppression and composition ordering.
+These checks validate IME/transport behavior; they do not establish equal
+end-to-end latency or renderer reliability between real X11 and Wayland apps.
+
+Tabby/Electron X11 uses the terminal per-deletion settle floor (15ms per
+Backspace at fast loopback rates), not the unknown web-editor 30ms floor or
+first-focus 50ms floor. Other Electron apps and Wayland retain their policies.
+Distinct nonzero X11 timestamps distinguish deliberate repeated letters from
+re-delivery. One queue preserves presses, releases and timestamps throughout
+replacement. A 20ms event-loop guard after commits prevents the next kernel
+Backspace from overtaking Tabby's asynchronous PTY insertion, including keys
+that arrive after an initially empty queue. Queued ASCII keys retain their
+native identity; single-character IM commits establish composition so Electron
+inserts the requested text instead of reusing a newer physical key. Raw unqueued
+letters still pass through. Explicit pre-commit overrides retain their values.
+
+Tabby regressions cover one/two/three deletions, first-focus timing, manual
+pre-commit overrides, Electron IDE/browser exclusions, unchanged Wayland,
+replayed versus distinct timestamps, ordered spaces/releases, short-w append,
+late-arriving tone keys, focus cancellation and composition with Show preedit
+disabled. Queued ASCII now uses explicit native key forwarding with original
+timestamps; spaces and punctuation follow that route too. This avoids repeatedly
+starting single-character compositions while Electron still holds old preedit.
+Live tests use a dedicated Tabby tab running a raw Python PTY recorder:
+input is never evaluated by a shell. Timing is injection-to-PTY receipt, not
+screen rendering latency. The same 12-sample-per-case benchmark measured:
+
+| Final key | Median before → after | p95 before → after |
+| --- | --- | --- |
+| `tw` + `j` → `tự` | 37.02 → 26.24ms | 39.03 → 32.19ms |
+| `ban` + `j` → `bạn` | 48.82 → 40.99ms | 56.99 → 46.52ms |
+| `go` + `n` (control) | 3.75 → 4.02ms | 5.51 → 6.69ms |
+
+These measurements belong to the intermediate composition-replay candidate:
+24/24 typing cases and 36/36 latency readbacks passed, but extended bursts
+passed only 119/120 (one duplicated t). The focus-transition run aborted on
+an active-window mismatch before completing. The follow-up native ASCII replay
+change requires live validation; do not treat these measurements as final
+acceptance. Timing samples are small (nearest-rank p95 is the maximum) and
+measure this Tabby 1.0.237 X11 machine, not universal latency.
+
+Browser timing on X11 now pays the 50ms first-focus settle once after a
+completed Chrome page transaction. Later replacements in that focus retain
+the renderer floor (30ms for unknown/page editors; existing Sheets policy)
+or exact deletion acknowledgement. Activation and explicit input-boundary
+cleanup rearm first-focus settling. Omnibox timing is unchanged.
+
+Chrome/Firefox X11 deletion acknowledgement is notification-driven: one timer
+waits for the 80ms fallback deadline, and surrounding-text updates rearm it to
+the exact acknowledgement plus the existing 8ms guard. A conflicting snapshot
+revokes the acknowledgement and restores the bounded fallback deadline. An
+acknowledgement whose guard elapsed before the Backspace anchor does not add
+another 8ms wait. Wayland retains its existing polling schedule. Regressions
+cover these deadlines, early/late/missing/conflicting observations, cancellation,
+manual overrides, one-time focus settling and rearming at input boundaries.
+
+Live browser validation on the X11 machine used isolated localhost textarea
+and contenteditable pages, not Facebook's renderer. Chrome's second replacement
+soon after page activation (`boo` + `j`) passed 12/12 and improved median
+injection-to-DOM latency from 58.66ms to 36.79ms (maximum 66.16→44.62ms).
+Warm textarea typing passed 18/18 cases and 30/30 latency readbacks per browser.
+Warm Chrome medians were 38.54ms (`twj`) and 38.46ms (`banj`); Firefox medians
+were 16.37ms and 31.74ms. These warm samples do not establish a speedup:
+baseline medians were 36.21/40.11ms and 14.58/31.16ms respectively. The retained
+8ms acknowledgement guard and fallback floors are deliberate. The event-driven
+path reduces timer wakeups and avoids an extra guard only when confirmation
+precedes the anchor. Clang and remote GCC each passed all seven CTests.
+Contenteditable validation passed 18/18 typing cases on each browser, including
+`twj`, `twf`, `chafosj` and multi-word Telex at xdotool delay settings 100/60/40ms.
+The combined final browser run passed 144/144 checks: 48 textarea checks plus
+18 contenteditable checks per browser, and 12 Chrome first-focus measurements.

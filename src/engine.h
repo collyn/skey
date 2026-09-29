@@ -87,6 +87,8 @@ private:
     friend class AddressBarModeCandidateWord;
     SKeyOutputMode effectiveMode() const;
     bool inChromiumAddressBar() const;
+    bool isX11Tabby() const;
+    bool useOrderedX11Replay() const;
     bool forwardUserBackspace() const;
     bool isAutofillCertain() const;
     bool useSurroundingText() const;
@@ -241,6 +243,7 @@ private:
     // first word after a focus switch gets extra settle headroom
     // (kFirstWordSettleUsec) because the renderer is still settling.
     uint64_t lastActivateUsec_ = 0;
+    bool x11BrowserFocusSettled_ = false;
     mutable int cachedIsChromium_ = -1;  // tristate: -1=unset, 0=false, 1=true
     // Sticky browser-UI verdict for X11: the a11y monitor may lag behind
     // keystrokes; keep the last true verdict for a short grace instead of
