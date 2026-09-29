@@ -78,6 +78,7 @@ private:
     bool replayingSettledKeys_ = false;
     struct SettledKey { Key key; bool release; int time; };
     std::deque<SettledKey> settledKeys_;
+    std::unique_ptr<EventSourceTime> settledReplayTimer_;
     bool surroundingCacheEndsWith(const SurroundingText &text,
                                   std::string_view expected);
     SurroundingCursor surroundingCursor_;
@@ -86,6 +87,8 @@ private:
     friend class AddressBarModeCandidateWord;
     SKeyOutputMode effectiveMode() const;
     bool inChromiumAddressBar() const;
+    bool isX11Tabby() const;
+    bool useOrderedX11Replay() const;
     bool forwardUserBackspace() const;
     bool isAutofillCertain() const;
     bool useSurroundingText() const;
@@ -184,6 +187,14 @@ private:
     /// replacement.
     void repairNativeDeletes();
     void finishDeferredCommit(int postMs);
+    // Measure actual client updates separately from Uinput loopback. These
+    // observations do not change a proven delay until live validation exists.
+    void beginSurroundingMeasurement(bool native, const std::string &oldWord,
+                                     unsigned deletes);
+    void finishSurroundingMeasurement();
+    skey::UinputDeleteAck surroundingMeasurement_;
+    uint64_t surroundingMeasureStartedAt_ = 0;
+    bool surroundingMeasureNative_ = false;
     int nativeRepairAttempt_ = 0;
     void updatePreedit();
     void clearUI();
@@ -240,6 +251,7 @@ private:
     // first word after a focus switch gets extra settle headroom
     // (kFirstWordSettleUsec) because the renderer is still settling.
     uint64_t lastActivateUsec_ = 0;
+    bool x11BrowserFocusSettled_ = false;
     mutable int cachedIsChromium_ = -1;  // tristate: -1=unset, 0=false, 1=true
     // Sticky browser-UI verdict for X11: the a11y monitor may lag behind
     // keystrokes; keep the last true verdict for a short grace instead of
@@ -292,6 +304,7 @@ private:
     int deferredNativeDeleteLen_ = 0;
     std::string deferredDeletedTail_;
     uint64_t deferredBsSentAt_ = 0;
+    uint64_t deferredCommitDeadline_ = 0;
     std::string pendingFlushSuffix_;
     int uinputClientFd_ = -1;
     // Uinput replacement state
@@ -316,8 +329,12 @@ private:
     bool uinputLoopbackSlow_ = false;
     // Spurious Deactivate/Reset/Activate detection for Chromium
     // address bar. Set before sending forwardKey/commitString and
-    // cleared after a reactivate or 200ms timeout.
+    // On X11 expires 200ms after our output once replacement finishes;
+    // reactivation must not renew that deadline.
     bool addrBarExpectCycle_ = false;
+    uint64_t addrBarCycleDeadline_ = 0;
+    void armAddrBarCycle();
+    void expireAddrBarCycle();
     // Set before forwarding a raw key in Uinput mode for Firefox/Snap
     // apps.  fcitx5 calls reset() after unfiltered keys, which clears
     // viet_ state.  When set, reset()/deactivate() skip viet_ cleanup

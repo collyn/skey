@@ -10,8 +10,6 @@
 #include <cstring>
 #include <dbus/dbus.h>
 #include <deque>
-#include <dirent.h>
-#include <fstream>
 #include <poll.h>
 #include <sys/eventfd.h>
 #include <unistd.h>

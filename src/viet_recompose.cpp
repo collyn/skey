@@ -13,11 +13,9 @@
 
 #include "vietnamese.h"
 
-#include <cstring>
 #include <string>
 
 #include "skey_engine.h"
-#include "viet_util.h"
 
 namespace skey {
 

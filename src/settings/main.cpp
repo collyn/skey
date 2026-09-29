@@ -1,5 +1,5 @@
 #include <clocale>
-#include <cstdlib>
+#include <stdlib.h> // POSIX setenv
 #include <cstring>
 
 #include <QApplication>
