@@ -459,12 +459,12 @@ void InfoTab::onInstallFinished(bool success, const QString &message) {
   progressBar_->hide();
 
   if (success) {
-    if (updater_->distro() == Distro::NixOS) {
-      // No package postinst on NixOS: restart fcitx5 + the user's uinput
-      // server (polkit rule in the NixOS module permits it without a
-      // password) so the newly-built skey.so takes effect.
-      restartFcitx5();
-    }
+    // A package postinst may not be able to find the user's graphical
+    // session (especially when installation was launched through pkexec),
+    // so it cannot reliably restart the user's Fcitx5.  Restart explicitly
+    // from this GUI after installation.  This also starts the new Libei
+    // portal session and lets its permission prompt appear immediately.
+    restartFcitx5();
     statusLabel_->setText(T("✓ %1").arg(message));
     statusLabel_->setStyleSheet("font-size: 12px; color: green;");
     versionLabel_->setText(
