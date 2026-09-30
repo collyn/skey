@@ -31,7 +31,8 @@ jobs:
           sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' /etc/apt/sources.list /etc/apt/apt-mirrors.txt 2>/dev/null || true
           sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
           sudo apt-get update
-          sudo apt-get install -y devscripts debhelper dpkg-dev git rsync dput
+          sudo apt-get install -y devscripts debhelper dpkg-dev git rsync dput \
+            libei-dev libportal-dev
 
       - name: Resolve version
         run: |

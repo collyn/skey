@@ -5,6 +5,7 @@ set(CMAKE_AUTORCC OFF)
 
 set(SKEY_SOURCES
     engine.cpp
+    libei_injector.cpp
     vietnamese.cpp
     viet_recompose.cpp
     viet_undo.cpp
@@ -71,6 +72,8 @@ target_include_directories(test_engine_performance PRIVATE ${SKEY_ENGINE_DIR} ${
 target_compile_features(test_engine_performance PRIVATE cxx_std_17)
 target_compile_definitions(test_engine_performance PRIVATE FCITX_SKEY_ICON_PATH="/tmp/skey-test.svg" FCITX_SKEY_ICON_DIR="/tmp")
 add_test(NAME EnginePerformance COMMAND test_engine_performance)
+add_test(NAME InjectedBackspaceContract COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_BACKSPACE_ONLY=1 $<TARGET_FILE:test_engine_performance>)
 set_tests_properties(EnginePerformance PROPERTIES TIMEOUT 15)
 find_program(DBUS_RUN_SESSION dbus-run-session)
 if(DBUS_RUN_SESSION)
@@ -103,3 +106,13 @@ configure_file(
 )
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/skey-im.conf"
     DESTINATION "${FCITX_INSTALL_PKGDATADIR}/inputmethod")
+
+# Optional experimental portal keyboard backend. Ordinary builds keep working.
+pkg_check_modules(LIBEI QUIET IMPORTED_TARGET libei-1.0>=1.0)
+pkg_check_modules(LIBPORTAL QUIET IMPORTED_TARGET libportal>=0.9)
+if(LIBEI_FOUND AND LIBPORTAL_FOUND)
+    foreach(target skey test_engine_performance)
+        target_compile_definitions(${target} PRIVATE SKEY_HAVE_LIBEI=1)
+        target_link_libraries(${target} PkgConfig::LIBEI PkgConfig::LIBPORTAL)
+    endforeach()
+endif()

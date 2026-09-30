@@ -12,6 +12,8 @@ Build-Depends: debhelper-compat (= 13),
                libfontconfig-dev,
                librsvg2-bin,
                libdbus-1-dev,
+               libei-dev,
+               libportal-dev,
                cargo,
                rustc,
                libstd-rust-dev,
@@ -32,7 +34,9 @@ Depends: ${shlibs:Depends},
          # without it the Icons tab (and system tray icon) render blank.
          libqt6svg6,
          acl,
-         udev
+         udev,
+         libei1,
+         libportal1
 Description: Vietnamese SKey input method addon for Fcitx5
  Skey is a Vietnamese input method engine for the Fcitx5
  input method framework, supporting Telex, Telex W, and VNI

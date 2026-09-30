@@ -986,3 +986,21 @@ msgstr ""
 #: src/settings/updater.cpp:580
 msgid "Cập nhật thất bại (mã %1): %2"
 msgstr ""
+
+msgid "Thay thế Uinput bằng Libei"
+msgstr ""
+
+msgid "Khi bật, Libei thay thế Uinput trong Auto và trong menu chọn mode."
+msgstr ""
+
+msgid "Libei"
+msgstr ""
+
+msgid "Libei (experimental)"
+msgstr ""
+
+msgid "Loại trừ ứng dụng"
+msgstr ""
+
+msgid "Output Mode: Libei"
+msgstr ""

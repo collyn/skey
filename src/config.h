@@ -12,20 +12,21 @@ enum class SKeyInputMethod { Telex, VNI };
 FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyInputMethod, N_("Telex"), N_("VNI"));
 
 // Output mode
-enum class SKeyOutputMode { Uinput, SurroundingText, Preedit, Auto };
+enum class SKeyOutputMode { Uinput, SurroundingText, Preedit, Auto, Libei };
 FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyOutputMode, N_("Uinput"),
                                  N_("Surrounding Text"),
                                  N_("Preedit"),
-                                 N_("Auto"));
+                                 N_("Auto"), N_("Libei"));
 
 // Output mode used only in Chromium-family browser address bars.
 enum class SKeyChromiumAddressBarMode {
-    Auto, Uinput, SurroundingText, Preedit, NoVietnamese
+    Auto, Uinput, SurroundingText, Preedit, Libei, NoVietnamese
 };
 FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyChromiumAddressBarMode, N_("Auto"),
                                  N_("Uinput"),
                                  N_("Surrounding Text"),
                                  N_("Preedit"),
+                                 N_("Libei"),
                                  N_("No Vietnamese"));
 
 // Character set / encoding — IDs match skey-engine VietCharset enum
@@ -52,6 +53,8 @@ FCITX_CONFIGURATION(
                                 SKeyCharset::Unicode};
     Option<SKeyOutputMode> outputMode{this, "OutputMode", _("Chế độ xuất"),
                                       SKeyOutputMode::Auto};
+    Option<bool> preferLibeiAuto{this, "PreferLibeiAuto",
+                                 _("Thay thế Uinput bằng Libei"), false};
     Option<bool> freeMarking{this, "FreeMarking", _("Đánh dấu tự do"), false};
     Option<bool> autoRestore{this, "AutoRestore",
                              _("Tự động khôi phục"), true};

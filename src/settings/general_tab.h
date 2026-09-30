@@ -25,8 +25,12 @@ public:
     std::string modeMenuKey() const;
     void setModeMenuKey(const std::string &fcitx5Key);
 
+signals:
+    void libeiReplacementChanged(bool enabled);
+
 private:
     void setupUI();
+    void syncLibeiReplacementChoice();
 
     QComboBox *inputMethodCombo_;
     QComboBox *outputModeCombo_;
@@ -42,6 +46,7 @@ private:
     QCheckBox *showPreeditCheck_;
     QCheckBox *debugCheck_;
     QCheckBox *autoDelayCheck_;
+    QCheckBox *preferLibeiAutoCheck_;
     QCheckBox *a11yCheck_;
 };
 

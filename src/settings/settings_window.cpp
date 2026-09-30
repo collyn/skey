@@ -48,6 +48,8 @@ void SkeySettingsWindow::setupUI() {
   tabWidget_->tabBar()->setElideMode(Qt::ElideRight);
   generalTab_ = new GeneralTab(this);
   appModesTab_ = new AppModesTab(this);
+  connect(generalTab_, &GeneralTab::libeiReplacementChanged,
+          appModesTab_, &AppModesTab::setLibeiReplacement);
   macroTab_ = new MacroTab(this);
   dictTab_ = new DictTab(this);
   appearanceTab_ = new AppearanceTab(this);

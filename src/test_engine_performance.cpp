@@ -84,6 +84,98 @@ protected:
 
 namespace fcitx {
 struct EnginePerformanceTest {
+    static void replacementMenus(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome");
+        input.setFocusGroup(&group);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome";
+        state.cachedIsChromium_ = 1;
+        for (bool replace : {false, true}) {
+            engine.config_.preferLibeiAuto.setValue(replace);
+            for (bool address : {false, true}) {
+                input.setCapabilityFlags(address ? CapabilityFlag::Url : CapabilityFlags{});
+                engine.config_.outputMode.setValue(SKeyOutputMode::Uinput);
+                engine.config_.chromiumAddressBarMode.setValue(SKeyChromiumAddressBarMode::Uinput);
+                state.hasAppModeOverride_ = false;
+                state.modeCacheValid_ = false;
+                check(state.effectiveMode() == (replace ? SKeyOutputMode::Libei : SKeyOutputMode::Uinput),
+                      "saved Uinput config resolves to selected transport");
+                state.showModeMenu();
+                auto list = input.inputPanel().candidateList();
+                check(list && list->size() == (replace ? 5 : 6), "replacement menu removes duplicate transport slot");
+                check(list->candidate(1).text().toString() == (replace ? "2. Libei" : "2. Uinput"),
+                      "Libei occupies Uinput menu position");
+                check(list->cursorIndex() == 1, "saved transport keeps correct highlighted row");
+                if (replace) for (int i = 0; i < list->size(); ++i)
+                    check(list->candidate(i).text().toString().find("Uinput") == std::string::npos,
+                          "replacement menu has no Uinput label");
+                KeyEvent select(&input, Key(FcitxKey_2));
+                state.keyEvent(select);
+                check(select.accepted() && !state.modeMenuActive_, "numeric key selects visible candidate");
+                state.modeCacheValid_ = false;
+                check(state.effectiveMode() == (replace ? SKeyOutputMode::Libei : SKeyOutputMode::Uinput),
+                      "numeric menu selection uses displayed transport");
+            }
+        }
+    }
+
+    // Model keys arriving at Fcitx BEFORE the application. Consuming a real
+    // deletion here reproduces chaào/caác regardless of the settle delay.
+    static void injectedBackspaceContract(Instance &instance, SKeyOutputMode mode) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        OfficeTextInput input(instance.inputContextManager(), true);
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::SurroundingText);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = mode;
+        check(state.useUinputMode(), "both transports share Uinput replacement policy");
+        struct Replacement { const char *before; const char *after; int deletes; const char *suffix; const char *tail; };
+        for (const auto &r : {Replacement{"cha", "chà", 1, "à", "o "},
+                              Replacement{"ca", "cá", 1, "á", "c "},
+                              Replacement{"ban", "bạn", 2, "ạn", ""}}) {
+            input.text += r.before;
+            state.viet_.setRawInput(r.after);
+            state.committedLen_ = utf8::length(std::string_view(r.before));
+            state.pendingUinputCommit_ = r.suffix;
+            state.uinputPendingFinalLen_ = utf8::length(std::string_view(r.after));
+            state.expectedUinputBackspaces_ = r.deletes;
+            state.seenUinputBackspaces_ = 0;
+            state.uinputBsOutstanding_ = r.deletes + 1;
+            state.uinputDeleting_ = true;
+            state.bsSentAt_ = now(CLOCK_MONOTONIC);
+            for (int i = 0; i < r.deletes; ++i) {
+                KeyEvent deletion(&input, Key(FcitxKey_BackSpace));
+                check(state.handlePendingUinputBackspace(deletion), "injected BS handled by transaction");
+                check(!deletion.accepted(), "real injected Backspace must reach app, not be swallowed");
+                input.key(deletion.rawKey(), false);
+                check(!state.uinputSettling_, "wait for anchor before scheduling commit");
+                check(state.viet_.getComposed() == r.after, "injected BS must not pop engine composition");
+            }
+            const auto afterDeletion = input.text;
+            KeyEvent anchor(&input, Key(FcitxKey_BackSpace));
+            check(state.handlePendingUinputBackspace(anchor) && anchor.accepted(),
+                  "only the sync anchor is consumed");
+            check(state.uinputSettling_ && state.uinputBsOutstanding_ == 0,
+                  "anchor starts shared settle and clears all outstanding keys");
+            state.uinputCommitTimer_.reset();
+            state.finishUinputSettle(0, 0);
+            input.flushCommits();
+            check(input.text == afterDeletion + r.suffix, "replace suffix exactly once after actual deletion");
+            KeyEvent userBs(&input, Key(FcitxKey_BackSpace));
+            check(!state.handlePendingUinputBackspace(userBs) && !userBs.accepted(),
+                  "next user Backspace is not swallowed as an outstanding injected key");
+            input.text += r.tail;
+        }
+        check(input.text == "chào các bạn", "both transports preserve visible chào các bạn");
+    }
+
     static void chromiumFirstShortW(Instance &instance, bool wayland,
                                     bool uinput, bool shortW, char keyChar) {
         SKeyEngine engine(&instance, false);
@@ -1801,6 +1893,18 @@ int main(int argc, char **argv) {
     // active-window origin or DPI. Live X11 geometry is tested separately.
     unsetenv("DISPLAY");
     unsetenv("WAYLAND_DISPLAY");
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::replacementMenus(instance);
+    }
+    for (auto mode : {fcitx::SKeyOutputMode::Uinput, fcitx::SKeyOutputMode::Libei}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::injectedBackspaceContract(instance, mode);
+    }
+    if (std::getenv("SKEY_TEST_BACKSPACE_ONLY")) {
+        std::cout << "Injected Backspace contract: " << checks << " checks passed\n";
+        return 0;
+    }
     policies();
     for (bool wayland : {false, true})
       for (bool uinput : {false, true})

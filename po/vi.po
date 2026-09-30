@@ -1094,3 +1094,21 @@ msgstr "Cập nhật thành công! Hệ thống đã được build lại bằng
 #: src/settings/updater.cpp:580
 msgid "Cập nhật thất bại (mã %1): %2"
 msgstr "Cập nhật thất bại (mã %1): %2"
+
+msgid "Thay thế Uinput bằng Libei"
+msgstr "Thay thế Uinput bằng Libei"
+
+msgid "Khi bật, Libei thay thế Uinput trong Auto và trong menu chọn mode."
+msgstr "Khi bật, Libei thay thế Uinput trong Auto và trong menu chọn mode."
+
+msgid "Libei"
+msgstr "Libei"
+
+msgid "Libei (experimental)"
+msgstr "Libei (thử nghiệm)"
+
+msgid "Loại trừ ứng dụng"
+msgstr "Loại trừ ứng dụng"
+
+msgid "Output Mode: Libei"
+msgstr "Output Mode: Libei"

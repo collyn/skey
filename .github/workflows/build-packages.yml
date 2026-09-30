@@ -32,7 +32,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake extra-cmake-modules libfcitx5core-dev \
             fcitx5 pkg-config gettext dpkg-dev apt-utils librsvg2-bin libdbus-1-dev \
-            libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev libxcb1-dev qt6-base-dev
+            libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev libxcb1-dev qt6-base-dev \
+            libei-dev libportal-dev
 
       - name: Install Rust toolchain
         run: |

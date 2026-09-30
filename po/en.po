@@ -1095,3 +1095,21 @@ msgstr "Update successful! The system has been rebuilt with nixos-rebuild."
 #: src/settings/updater.cpp:580
 msgid "Cập nhật thất bại (mã %1): %2"
 msgstr "Update failed (code %1): %2"
+
+msgid "Thay thế Uinput bằng Libei"
+msgstr "Replace Uinput with Libei"
+
+msgid "Khi bật, Libei thay thế Uinput trong Auto và trong menu chọn mode."
+msgstr "When enabled, Libei replaces Uinput in Auto mode and the mode menu."
+
+msgid "Libei"
+msgstr "Libei"
+
+msgid "Libei (experimental)"
+msgstr "Libei (experimental)"
+
+msgid "Loại trừ ứng dụng"
+msgstr "Exclude application"
+
+msgid "Output Mode: Libei"
+msgstr "Output Mode: Libei"

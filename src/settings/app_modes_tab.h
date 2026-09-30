@@ -31,6 +31,8 @@ public:
     std::string chromiumAddressBarMode() const;
     void setChromiumAddressBarMode(const std::string &mode);
 
+    void setLibeiReplacement(bool enabled);
+
 private slots:
     void onAddApp();
     void onDeleteApp();
@@ -38,6 +40,7 @@ private slots:
     void onFilterChanged(const QString &text);
 
 private:
+    bool replaceUinput_ = false;
     void setupUI();
     void addRow(const std::string &name, const std::string &mode,
                 const std::string &delayX11 = {},

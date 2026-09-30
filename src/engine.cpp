@@ -368,6 +368,8 @@ bool SKeyState::surroundingCacheEndsWith(const fcitx::SurroundingText &st,
 
 static std::string outputModeName(SKeyOutputMode mode) {
   switch (mode) {
+  case SKeyOutputMode::Libei:
+    return "Libei";
   case SKeyOutputMode::SurroundingText:
     return "Surrounding Text";
   case SKeyOutputMode::Preedit:
@@ -831,6 +833,8 @@ public:
   }
 
   void select(InputContext *) const override {
+    state_->appExcluded_ = false;
+    engine_->saveAppExcluded(state_->appProgram(), false);
     state_->appModeOverride_ = mode_;
     state_->hasAppModeOverride_ = true;
     state_->modeCacheValid_ = false;
@@ -965,6 +969,14 @@ void SKeyEngine::setupTrayMenu() {
   omMenu_.addAction(&omUinput_);
   omMenu_.addAction(&omSurrounding_);
   omMenu_.addAction(&omPreedit_);
+  omLibei_.setShortText(_("Libei (experimental)"));
+  omLibei_.setCheckable(true);
+  omLibei_.registerAction("skey-om-libei", &uiManager);
+  omMenu_.addAction(&omLibei_);
+  omLibei_.connect<SimpleAction::Activated>([this](InputContext *) {
+    setOutputMode(SKeyOutputMode::Libei);
+    libei_.start();
+  });
 
   omAction_.setShortText(_("Output Mode"));
   omAction_.setMenu(&omMenu_);
@@ -1159,14 +1171,26 @@ void SKeyEngine::updateMenuActions() {
     imAction_.setShortText(_("Input Method: Telex"));
   }
 
+  const bool replace = config_.preferLibeiAuto.value();
+  for (auto *action : omMenu_.actions()) omMenu_.removeAction(action);
+  omMenu_.addAction(&omAuto_);
+  omMenu_.addAction(replace ? &omLibei_ : &omUinput_);
+  omMenu_.addAction(&omSurrounding_);
+  omMenu_.addAction(&omPreedit_);
+  if (!replace) omMenu_.addAction(&omLibei_);
+  omLibei_.setShortText(replace ? _("Libei") : _("Libei (experimental)"));
   auto om = config_.outputMode.value();
+  if (replace && om == SKeyOutputMode::Uinput) om = SKeyOutputMode::Libei;
   omAuto_.setChecked(om == SKeyOutputMode::Auto);
   omSurrounding_.setChecked(om == SKeyOutputMode::SurroundingText);
+  omLibei_.setChecked(om == SKeyOutputMode::Libei);
   omPreedit_.setChecked(om == SKeyOutputMode::Preedit);
   omUinput_.setChecked(om == SKeyOutputMode::Uinput);
 
   if (om == SKeyOutputMode::Auto) {
     omAction_.setShortText(_("Output Mode: Auto"));
+  } else if (om == SKeyOutputMode::Libei) {
+    omAction_.setShortText(_("Output Mode: Libei"));
   } else if (om == SKeyOutputMode::Preedit) {
     omAction_.setShortText(_("Output Mode: Preedit"));
   } else if (om == SKeyOutputMode::Uinput) {
@@ -1754,6 +1778,8 @@ void SKeyState::refreshAppMode() {
       else if (modeStr == "SurroundingTextSlow" ||
                modeStr == "SurroundingText" || modeStr == "Surrounding Text")
         savedMode = SKeyOutputMode::SurroundingText;
+      else if (modeStr == "Libei")
+        savedMode = SKeyOutputMode::Libei;
       else if (modeStr == "Uinput")
         savedMode = SKeyOutputMode::Uinput;
       appModeOverride_ = savedMode;
@@ -1934,7 +1960,8 @@ SKeyOutputMode SKeyState::effectiveMode() const {
     case SKeyChromiumAddressBarMode::Auto:
       break; // fall through to normal Auto detection below
     case SKeyChromiumAddressBarMode::Uinput:
-      cachedMode_ = SKeyOutputMode::Uinput;
+      cachedMode_ = engine_->config().preferLibeiAuto.value()
+                        ? SKeyOutputMode::Libei : SKeyOutputMode::Uinput;
       modeCacheValid_ = true;
       return cachedMode_;
     case SKeyChromiumAddressBarMode::SurroundingText:
@@ -1943,6 +1970,10 @@ SKeyOutputMode SKeyState::effectiveMode() const {
       return cachedMode_;
     case SKeyChromiumAddressBarMode::Preedit:
       cachedMode_ = SKeyOutputMode::Preedit;
+      modeCacheValid_ = true;
+      return cachedMode_;
+    case SKeyChromiumAddressBarMode::Libei:
+      cachedMode_ = SKeyOutputMode::Libei;
       modeCacheValid_ = true;
       return cachedMode_;
     case SKeyChromiumAddressBarMode::NoVietnamese:
@@ -1956,7 +1987,8 @@ SKeyOutputMode SKeyState::effectiveMode() const {
   if (resolved == SKeyOutputMode::Auto) {
     cachedMode_ = detectAutoMode();
   } else {
-    cachedMode_ = resolved;
+    cachedMode_ = resolved == SKeyOutputMode::Uinput && engine_->config().preferLibeiAuto.value()
+                      ? SKeyOutputMode::Libei : resolved;
   }
   modeCacheValid_ = true;
   return cachedMode_;
@@ -1964,12 +1996,21 @@ SKeyOutputMode SKeyState::effectiveMode() const {
 
 bool SKeyState::useSurroundingText() const {
   auto mode = effectiveMode();
-  return mode == SKeyOutputMode::SurroundingText ||
+  return mode == SKeyOutputMode::Libei ||
+         mode == SKeyOutputMode::SurroundingText ||
          mode == SKeyOutputMode::Uinput;
 }
 
+bool SKeyState::useLibeiMode() const {
+  return effectiveMode() == SKeyOutputMode::Libei;
+}
+
 bool SKeyState::useUinputMode() const {
-  return effectiveMode() == SKeyOutputMode::Uinput;
+  // Libei is the same replacement backend as Uinput.  It deliberately
+  // shares this path so address-bar handling, buffering, timing and state
+  // recovery cannot drift between the two transports.
+  auto mode = effectiveMode();
+  return mode == SKeyOutputMode::Uinput || mode == SKeyOutputMode::Libei;
 }
 
 // Content-hint capability bits that indicate a real, trusted editor in a
@@ -2167,13 +2208,19 @@ void SKeyState::clearEngineBareCapsSticky() const {
 }
 
 SKeyOutputMode SKeyState::detectAutoMode() const {
+  const auto autoUinput = [this](SKeyOutputMode mode) {
+    if (mode == SKeyOutputMode::Uinput &&
+        engine_->config().preferLibeiAuto.value())
+      return SKeyOutputMode::Libei;
+    return mode;
+  };
   // Runtime override: if the surrounding text API was verified as
   // non-functional during a previous replacement attempt (cache invalid),
   // stick with Uinput for this IC — the per-replacement fallback cannot
   // be verified and corrupts text in apps that drop forwarded keys.
   if (surroundingTextFailed_) {
     SKEY_DEBUG() << "Auto: surrounding text previously failed → Uinput";
-    return SKeyOutputMode::Uinput;
+    return autoUinput(SKeyOutputMode::Uinput);
   }
 
   // A Chromium browser tab whose a11y focus is NOT a text entry cannot
@@ -2215,7 +2262,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   }
   if (nonEntry) {
     SKEY_DEBUG() << "Auto: focus is not a text entry → Uinput";
-    return SKeyOutputMode::Uinput;
+    return autoUinput(SKeyOutputMode::Uinput);
   }
 
   // Integrated terminal in a standalone Chromium app.  Must run before the
@@ -2224,7 +2271,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   // otherwise route it to SurroundingText.
   if (a11yChromiumTerminal()) {
     SKEY_DEBUG() << "Auto: Chromium integrated terminal (a11y) → Uinput";
-    return SKeyOutputMode::Uinput;
+    return autoUinput(SKeyOutputMode::Uinput);
   }
 
   // Google Sheets cell editor.  Must run before the caps-based decisions:
@@ -2240,7 +2287,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     if (mon && mon->sheetsEditorFocused() &&
         mon->isFocusSnapshotFresh(5000000)) {
       SKEY_DEBUG() << "Auto: Google Sheets cell editor → Uinput";
-      return SKeyOutputMode::Uinput;
+      return autoUinput(SKeyOutputMode::Uinput);
     }
   }
 
@@ -2252,7 +2299,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   // (0x72) fall through to SurroundingText here.
   if (isFirefoxOrSnap() && a11yGoogleDocsFocused()) {
     SKEY_DEBUG() << "Auto: Google Docs page (Firefox) → Uinput";
-    return SKeyOutputMode::Uinput;
+    return autoUinput(SKeyOutputMode::Uinput);
   }
 
   // Sticky Uinput: Chromium browsers (e.g. Google Sheets) may initially
@@ -2265,7 +2312,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   if (chromiumBareCapsUinput_) {
     if (!a11yFreshWebEditor()) {
       SKEY_DEBUG() << "Auto: sticky bare caps → Uinput";
-      return SKeyOutputMode::Uinput;
+      return autoUinput(SKeyOutputMode::Uinput);
     }
     SKEY_DEBUG() << "Auto: sticky bypassed by fresh web-editor focus";
     clearEngineBareCapsSticky();
@@ -2279,7 +2326,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   // Surr implementation, same result.
   if (isOfficeSuiteApp(appProgram())) {
     SKEY_DEBUG() << "Auto: office suite → Uinput";
-    return SKeyOutputMode::Uinput;
+    return autoUinput(SKeyOutputMode::Uinput);
   }
 
   auto caps = ic_->capabilityFlags();
@@ -2307,7 +2354,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     // (used by x11ChromiumSurrDelayUsec if Surr ever runs again via a
     // manual override).
     SKEY_DEBUG() << "Auto: no SurroundingText cap → Uinput";
-    return SKeyOutputMode::Uinput;
+    return autoUinput(SKeyOutputMode::Uinput);
   }
 
   // Terminal apps (Konsole, Alacritty, etc.) have their own internal
@@ -2321,14 +2368,14 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
       (isTerminalAppCached() &&
        (!isChromiumCached() || isTerminalAppName(appProgram())))) {
     SKEY_DEBUG() << "Auto: terminal app → Uinput";
-    return SKeyOutputMode::Uinput;
+    return autoUinput(SKeyOutputMode::Uinput);
   }
 
   // Chromium address bar always needs Uinput — the omnibox autocomplete
   // races with SurroundingText replacements, corrupting text.
   if (inChromiumAddressBar() && caps.test(CapabilityFlag::SurroundingText)) {
     SKEY_DEBUG() << "Auto: address bar → Uinput";
-    return SKeyOutputMode::Uinput;
+    return autoUinput(SKeyOutputMode::Uinput);
   }
 
   // Chromium-family apps (Electron + full browsers) with truly bare caps
@@ -2390,7 +2437,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
                      << std::hex << static_cast<uint64_t>(caps.toInteger())
                      << std::dec << ")";
       }
-      return SKeyOutputMode::Uinput;
+      return autoUinput(SKeyOutputMode::Uinput);
     }
   }
 
@@ -2412,7 +2459,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
       engine_->chromiumHadBareCaps_ = true;
       SKEY_DEBUG()
           << "Auto: deferred decision → sticky Uinput (weak hints only)";
-      return SKeyOutputMode::Uinput;
+      return autoUinput(SKeyOutputMode::Uinput);
     }
   }
 
@@ -2423,7 +2470,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   // safe for every app; the decision re-evaluates on the next focus.
   if (appProgram().empty() && !(caps & CapabilityFlags(kContentHints))) {
     SKEY_DEBUG() << "Auto: unresolved app + bare caps → Uinput";
-    return SKeyOutputMode::Uinput;
+    return autoUinput(SKeyOutputMode::Uinput);
   }
 
   SKEY_DEBUG() << "Auto: SurroundingText cap → SurroundingText (caps=0x"
@@ -2663,6 +2710,7 @@ void SKeyState::expireAddrBarCycle() {
 }
 
 void SKeyState::activate() {
+  libeiFailed_ = false;
   expireAddrBarCycle();
   uinputAckUnavailable_ = false;
   // Re-sync input method from config (handles config changes at runtime)
@@ -2820,7 +2868,9 @@ void SKeyState::activate() {
         else if (modeStr == "SurroundingTextSlow" ||
                  modeStr == "Surrounding Text")
           savedMode = SKeyOutputMode::SurroundingText;
-        else if (modeStr == "Uinput")
+        else if (modeStr == "Libei")
+        savedMode = SKeyOutputMode::Libei;
+      else if (modeStr == "Uinput")
           savedMode = SKeyOutputMode::Uinput;
         else if (modeStr == "SurroundingText")
           savedMode = SKeyOutputMode::SurroundingText;
@@ -2884,8 +2934,10 @@ void SKeyState::activate() {
   }
   auto mode = effectiveMode();
   auto configuredMode = engine_->config().outputMode.value();
+  if (useLibeiMode() && !appExcluded_) engine_->libei_.start();
   SKEY_DEBUG() << "Activated: mode=" << outputModeName(mode)
                << " configured=" << outputModeName(configuredMode)
+               << " preferLibeiAuto=" << engine_->config().preferLibeiAuto.value()
                << " surroundingCap="
                << caps.test(CapabilityFlag::SurroundingText)
                << " password=" << caps.test(CapabilityFlag::Password)
@@ -3053,7 +3105,7 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
   if (count == 0 && flags == 0) {
     return;
   }
-  if (!connectUinputServer()) {
+  if (!useLibeiMode() && !connectUinputServer()) {
     SKEY_DEBUG() << "Uinput: cannot send BS, server unavailable";
     return;
   }
@@ -3108,6 +3160,19 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
       uinputDeleteAck_.start(surr.text(), surr.cursor(), surr.anchor(),
                              oldWord, count - 1, bsSentAt_);
     }
+  }
+  if (useLibeiMode()) {
+    // Preserve the Uinput event contract: N deletions followed by one
+    // anchor. Fcitx must pass the real deletions to the application and
+    // consume only the anchor in handlePendingUinputBackspace().
+    if (engine_->libei_.backspaces(count, flags & 1, paceUsec)) {
+      uinputBsOutstanding_ += count;
+      SKEY_DEBUG() << "Libei: sent BS=" << count << " (includes sync anchor) paceUs=" << paceUsec;
+    } else {
+      libeiFailed_ = true;
+      SKEY_DEBUG() << "Libei: send rejected; no uinput fallback: " << engine_->libei_.status();
+    }
+    return;
   }
   ssize_t n = send(uinputClientFd_, msg.data(), msg.size(), MSG_NOSIGNAL);
   if (n < 0) {
@@ -3789,6 +3854,10 @@ void SKeyState::replayBufferedUinputKeys() {
 }
 
 void SKeyState::deactivate() {
+  if (useLibeiMode()) {
+    engine_->libei_.cancel();
+    if (uinputDeleting_ || uinputSettling_) resetForCellChange();
+  }
   expireAddrBarCycle();
   SKEY_DEBUG() << "Deactivate: deleting=" << uinputDeleting_
                << " pendingBs=" << expectedUinputBackspaces_
@@ -4107,6 +4176,7 @@ bool SKeyState::checkCellSelection() {
 }
 
 void SKeyState::resetForCellChange() {
+  if (useLibeiMode()) engine_->libei_.cancel();
   x11BrowserFocusSettled_ = false;
   viet_.reset();
   committedLen_ = 0;
@@ -4309,6 +4379,21 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
+  if (useLibeiMode() && !modeMenuActive_ &&
+      !keyEvent.key().check(engine_->modeMenuKey())) {
+    engine_->libei_.start();
+    const auto status = engine_->libei_.status();
+    if (status != libeiStatus_) {
+      libeiStatus_ = status;
+      SKEY_INFO() << "Libei: " << status;
+    }
+    if (!engine_->libei_.ready() || libeiFailed_) {
+      if (uinputDeleting_ || uinputSettling_) resetForCellChange();
+      viet_.reset(); committedLen_ = 0; clearLastWord();
+      return;
+    }
+  }
+
   if (handlePendingUinputBackspace(keyEvent)) {
     return;
   }
@@ -4393,6 +4478,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       choice = 4;
     else if (sym == FcitxKey_5 || sym == FcitxKey_KP_5)
       choice = 5;
+    else if (sym == FcitxKey_6 || sym == FcitxKey_KP_6)
+      choice = 6;
 
     // Arrow keys move the highlight, Enter selects the highlighted item.
     // prevCandidate/nextCandidate wrap around at the edges.
@@ -4423,67 +4510,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       }
     }
 
-    if (modeMenuForAddressBar_) {
-      SKeyChromiumAddressBarMode newMode;
-      switch (choice) {
-      case 1:
-        newMode = SKeyChromiumAddressBarMode::Auto;
-        break;
-      case 2:
-        newMode = SKeyChromiumAddressBarMode::Uinput;
-        break;
-      case 3:
-        newMode = SKeyChromiumAddressBarMode::SurroundingText;
-        break;
-      case 4:
-        newMode = SKeyChromiumAddressBarMode::Preedit;
-        break;
-      case 5:
-        newMode = SKeyChromiumAddressBarMode::NoVietnamese;
-        break;
-      default:
-        return; // unrecognized — dismiss below
-      }
-      engine_->setChromiumAddressBarMode(newMode);
-      SKEY_INFO() << "Address bar mode switched";
-      dismissModeMenu();
-      keyEvent.filterAndAccept();
-      return;
-    } else if (choice > 0 && choice <= 4) {
-      SKeyOutputMode newMode;
-      switch (choice) {
-      case 1:
-        newMode = SKeyOutputMode::Auto;
-        break;
-      case 2:
-        newMode = SKeyOutputMode::Uinput;
-        break;
-      case 3:
-        newMode = SKeyOutputMode::SurroundingText;
-        break;
-      case 4:
-        newMode = SKeyOutputMode::Preedit;
-        break;
-      default:
-        return; // unreachable after the choice range check
-      }
-      appExcluded_ = false;
-      engine_->saveAppExcluded(appProgram(), false);
-      appModeOverride_ = newMode;
-      hasAppModeOverride_ = true;
-      modeCacheValid_ = false;
-      engine_->saveAppMode(appProgram(), newMode);
-      SKEY_INFO() << "Mode switched to " << outputModeName(newMode);
-      dismissModeMenu();
-      keyEvent.filterAndAccept();
-      return;
-    } else if (choice == 5) {
-      bool newExcluded = !appExcluded_;
-      appExcluded_ = newExcluded;
-      engine_->saveAppExcluded(appProgram(), newExcluded);
-      SKEY_INFO() << "App '" << appProgram()
-                  << (newExcluded ? "' excluded" : "' included");
-      dismissModeMenu();
+    if (auto candList = ic_->inputPanel().candidateList();
+        candList && choice > 0 && choice <= candList->size()) {
+      candList->candidate(choice - 1).select(ic_);
       keyEvent.filterAndAccept();
       return;
     }
@@ -5730,7 +5759,6 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               uinputPendingFinalLen_ =
                   static_cast<int>(utf8::length(newComposed));
               uinputDeleting_ = true;
-              // Safety: force-commit if BS events are lost
               armUinputSafetyTimer();
             } else if (!addPart.empty()) {
               SKEY_DEBUG() << "Uinput: consume '" << keyUtf8 << "' commit '"
@@ -6636,7 +6664,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         // into the terminal, so only the sync anchor proves the deletions
         // were dispatched before the commit is sent (kernel 7.0 PTY
         // interleaving — see the keyEvent terminal path).
-        bool usesUinputBs =
+        bool usesUinputBs = useLibeiMode() ||
             (useUinputMode() &&
              (isWayland() || !isTerminalAppCached() || isChromiumCached())) ||
             (!isWayland() && isTerminalAppCached()) ||
@@ -7108,9 +7136,10 @@ void SKeyState::showModeMenu() {
 
   // Build candidate list for dropdown menu
   auto candList = std::make_unique<CommonCandidateList>();
-  candList->setPageSize(5);
+  candList->setPageSize(6);
   candList->setLayoutHint(CandidateLayoutHint::Vertical);
 
+  const bool replaceUinput = engine_->config().preferLibeiAuto.value();
   int cursorIdx = 0;
   if (modeMenuForAddressBar_) {
     auto addressBarMode = engine_->config().chromiumAddressBarMode.value();
@@ -7120,16 +7149,26 @@ void SKeyState::showModeMenu() {
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
         engine_, this, autoLabel, SKeyChromiumAddressBarMode::Auto));
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
-        engine_, this, "2. Uinput", SKeyChromiumAddressBarMode::Uinput));
+        engine_, this, replaceUinput ? "2. Libei" : "2. Uinput",
+        replaceUinput ? SKeyChromiumAddressBarMode::Libei
+                      : SKeyChromiumAddressBarMode::Uinput));
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
         engine_, this, "3. Surrounding Text",
         SKeyChromiumAddressBarMode::SurroundingText));
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
         engine_, this, "4. Preedit", SKeyChromiumAddressBarMode::Preedit));
+    if (!replaceUinput) {
+      candList->append(std::make_unique<AddressBarModeCandidateWord>(
+          engine_, this, "5. Libei", SKeyChromiumAddressBarMode::Libei));
+    }
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
-        engine_, this, "5. Không gõ tiếng Việt",
+        engine_, this, std::string(replaceUinput ? "5. " : "6. ") + _("Không gõ tiếng Việt"),
         SKeyChromiumAddressBarMode::NoVietnamese));
     cursorIdx = static_cast<int>(addressBarMode);
+    if (replaceUinput) {
+      if (addressBarMode == SKeyChromiumAddressBarMode::Libei) cursorIdx = 1;
+      if (addressBarMode == SKeyChromiumAddressBarMode::NoVietnamese) cursorIdx = 4;
+    }
   } else {
     auto configured = hasAppModeOverride_
                           ? appModeOverride_
@@ -7140,23 +7179,29 @@ void SKeyState::showModeMenu() {
     candList->append(std::make_unique<ModeCandidateWord>(
         engine_, this, autoLabel, SKeyOutputMode::Auto));
     candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, "2. Uinput", SKeyOutputMode::Uinput));
+        engine_, this, replaceUinput ? "2. Libei" : "2. Uinput",
+        replaceUinput ? SKeyOutputMode::Libei : SKeyOutputMode::Uinput));
     candList->append(std::make_unique<ModeCandidateWord>(
         engine_, this, "3. Surrounding Text", SKeyOutputMode::SurroundingText));
     candList->append(std::make_unique<ModeCandidateWord>(
         engine_, this, "4. Preedit", SKeyOutputMode::Preedit));
 
+    if (!replaceUinput)
+      candList->append(std::make_unique<ModeCandidateWord>(
+          engine_, this, std::string("5. ") + _("Libei (experimental)"), SKeyOutputMode::Libei));
     std::string excludeLabel =
-        appExcluded_ ? "5. ✓ Loại trừ ứng dụng" : "5. Loại trừ ứng dụng";
+        std::string(replaceUinput ? "5. " : "6. ") +
+        (appExcluded_ ? "✓ " : "") + _("Loại trừ ứng dụng");
     candList->append(
         std::make_unique<ExcludeCandidateWord>(engine_, this, excludeLabel));
 
     // When configured to Auto, cursor stays on Auto (0).
     // Otherwise cursor follows the manually selected mode.
-    cursorIdx = appExcluded_                                      ? 4
+    cursorIdx = appExcluded_                                      ? (replaceUinput ? 4 : 5)
                 : (configured == SKeyOutputMode::Auto)            ? 0
                 : (configured == SKeyOutputMode::Uinput)          ? 1
                 : (configured == SKeyOutputMode::SurroundingText) ? 2
+                : (configured == SKeyOutputMode::Libei)           ? (replaceUinput ? 1 : 4)
                 : (configured == SKeyOutputMode::Preedit)         ? 3
                                                                   : 0;
   }

@@ -2,6 +2,7 @@
 #include "config_io.h"
 #include "hotkey_edit.h"
 #include "tr.h"
+#include "mode_choices.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -39,6 +40,7 @@ void GeneralTab::setupUI() {
   outputModeCombo_->addItem("Auto", "Auto");
   outputModeCombo_->addItem("Uinput", "Uinput");
   outputModeCombo_->addItem("Surrounding Text", "Surrounding Text");
+  outputModeCombo_->addItem(T("Libei (experimental)"), "Libei");
   outputModeCombo_->addItem("Preedit", "Preedit");
   enumLayout->addRow(T("Chế độ xuất:"), outputModeCombo_);
 
@@ -119,7 +121,6 @@ void GeneralTab::setupUI() {
   checkLayout->addWidget(showPreeditCheck_, 2, 0);
 
   debugCheck_ = new QCheckBox(T("Ghi log debug"), checkFrame);
-  checkLayout->addWidget(debugCheck_, 2, 1);
 
   autoDelayCheck_ =
       new QCheckBox(T("Tự động tối ưu delay theo app"), checkFrame);
@@ -129,7 +130,16 @@ void GeneralTab::setupUI() {
       "từ lần chuyển cửa sổ kế tiếp.\n"
       "Dữ liệu lưu ở ~/.config/fcitx5/conf/skey-app-delays.conf — "
       "xoá tệp đó để quên dữ liệu đã học."));
-  checkLayout->addWidget(autoDelayCheck_, 3, 1);
+  checkLayout->addWidget(autoDelayCheck_, 2, 1);
+
+  preferLibeiAutoCheck_ =
+      new QCheckBox(T("Thay thế Uinput bằng Libei"), checkFrame);
+  preferLibeiAutoCheck_->setToolTip(T(
+      "Khi bật, Libei thay thế Uinput trong Auto và trong menu chọn mode."));
+  checkLayout->addWidget(preferLibeiAutoCheck_, 3, 1);
+  checkLayout->addWidget(debugCheck_, 4, 1);
+  connect(preferLibeiAutoCheck_, &QCheckBox::toggled, this,
+          [this](bool) { syncLibeiReplacementChoice(); });
 
   // A11y checkbox + info icon: SKey needs the browsers' a11y trees; the
   // checkbox toggles whether SKey auto-enables the system-wide
@@ -189,7 +199,9 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
   };
 
   setCombo(inputMethodCombo_, cfg.inputMethod);
-  setCombo(outputModeCombo_, cfg.outputMode);
+  preferLibeiAutoCheck_->setChecked(cfg.preferLibeiAuto);
+  syncLibeiReplacementChoice();
+  setCombo(outputModeCombo_, cfg.preferLibeiAuto && cfg.outputMode == "Uinput" ? "Libei" : cfg.outputMode);
   setCombo(charsetCombo_, cfg.charset);
   setCombo(languageCombo_, cfg.uiLanguage);
 
@@ -203,6 +215,11 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
   debugCheck_->setChecked(cfg.debug);
   autoDelayCheck_->setChecked(cfg.autoDelay);
   a11yCheck_->setChecked(cfg.autoEnableA11y);
+}
+
+void GeneralTab::syncLibeiReplacementChoice() {
+  syncTransportChoices(outputModeCombo_, preferLibeiAutoCheck_->isChecked());
+  emit libeiReplacementChanged(preferLibeiAutoCheck_->isChecked());
 }
 
 SKeyConfig GeneralTab::collectConfig() const {
@@ -220,6 +237,7 @@ SKeyConfig GeneralTab::collectConfig() const {
   cfg.showPreedit = showPreeditCheck_->isChecked();
   cfg.debug = debugCheck_->isChecked();
   cfg.autoDelay = autoDelayCheck_->isChecked();
+  cfg.preferLibeiAuto = preferLibeiAutoCheck_->isChecked();
   cfg.autoEnableA11y = a11yCheck_->isChecked();
   cfg.modeMenuKey = modeMenuKeyEdit_->fcitx5Value();
   return cfg;
@@ -246,4 +264,3 @@ std::string GeneralTab::modeMenuKey() const {
 void GeneralTab::setModeMenuKey(const std::string &fcitx5Key) {
   modeMenuKeyEdit_->setFcitx5Value(fcitx5Key);
 }
-

@@ -2,6 +2,7 @@
 #include "app_delay_dialog.h"
 #include "config_io.h"
 #include "tr.h"
+#include "mode_choices.h"
 
 #include "../app_delay_key.h"
 
@@ -28,7 +29,7 @@
 #include <QVBoxLayout>
 
 // ── Mode values as displayed in the per-app config ─────────────────────
-static const char *kAppModeValues[] = {"Auto", "Uinput", "Surrounding Text", "Preedit", "Excluded", nullptr};
+static const char *kAppModeValues[] = {"Auto", "Uinput", "Surrounding Text", "Preedit", "Libei", "Excluded", nullptr};
 
 AppModesTab::AppModesTab(QWidget *parent) : QWidget(parent) {
     setupUI();
@@ -94,6 +95,7 @@ void AppModesTab::setupUI() {
     addrBarModeCombo_->addItem("Uinput", "Uinput");
     addrBarModeCombo_->addItem("Surrounding Text", "Surrounding Text");
     addrBarModeCombo_->addItem("Preedit", "Preedit");
+    addrBarModeCombo_->addItem("Libei", "Libei");
     addrBarModeCombo_->addItem(T("Không gõ tiếng Việt"),
                                "No Vietnamese");
     addrBarRow->addWidget(addrBarModeCombo_);
@@ -326,7 +328,8 @@ void AppModesTab::addRow(const std::string &name, const std::string &mode,
     for (int i = 0; kAppModeValues[i]; ++i) {
         combo->addItem(kAppModeValues[i], kAppModeValues[i]);
     }
-    int idx = combo->findData(QString::fromStdString(mode));
+    syncTransportChoices(combo, replaceUinput_);
+    int idx = combo->findData(QString::fromStdString(replaceUinput_ && mode == "Uinput" ? "Libei" : mode));
     if (idx >= 0) combo->setCurrentIndex(idx);
     table_->setCellWidget(row, 1, combo);
 
@@ -520,6 +523,7 @@ void AppModesTab::onAddApp() {
     for (int i = 0; kAppModeValues[i]; ++i) {
         modeCombo->addItem(kAppModeValues[i], kAppModeValues[i]);
     }
+    syncTransportChoices(modeCombo, replaceUinput_);
     modeCombo->setCurrentIndex(0); // default Uinput
     layout->addRow(T("Chế độ xuất:"), modeCombo);
 
@@ -547,7 +551,7 @@ std::string AppModesTab::chromiumAddressBarMode() const {
 }
 
 void AppModesTab::setChromiumAddressBarMode(const std::string &mode) {
-    int idx = addrBarModeCombo_->findData(QString::fromStdString(mode));
+    int idx = addrBarModeCombo_->findData(QString::fromStdString(replaceUinput_ && mode == "Uinput" ? "Libei" : mode));
     if (idx >= 0) addrBarModeCombo_->setCurrentIndex(idx);
 }
 
@@ -563,4 +567,12 @@ void AppModesTab::onDeleteApp() {
             return;
         }
     }
+}
+
+void AppModesTab::setLibeiReplacement(bool enabled) {
+    replaceUinput_ = enabled;
+    syncTransportChoices(addrBarModeCombo_, enabled);
+    for (int row = 0; row < table_->rowCount(); ++row)
+        if (auto *combo = qobject_cast<QComboBox *>(table_->cellWidget(row, 1)))
+            syncTransportChoices(combo, enabled);
 }
