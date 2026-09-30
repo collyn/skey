@@ -172,10 +172,13 @@ struct LibeiInjector::Impl {
         wakeSource = g_unix_fd_source_new(wakeFd, G_IO_IN);
         g_source_set_callback(wakeSource, G_SOURCE_FUNC(commands), this, nullptr);
         g_source_attach(wakeSource, context);
-        GError *error = nullptr;
-        portal = xdp_portal_initable_new(&error);
+        // Do not use xdp_portal_initable_new() here.  That constructor
+        // validates every portal interface, including ScreenCast.  A
+        // keyboard-only Libei session only needs RemoteDesktop/EIS, and
+        // some Ubuntu portal backends do not expose ScreenCast at all.
+        portal = xdp_portal_new();
         if (!portal) {
-            fail(error ? error->message : "session bus unavailable"); g_clear_error(&error);
+            fail("cannot create portal proxy");
         } else {
             pending = true;
             // Keyboard only: no screencast, pointer or clipboard access.
