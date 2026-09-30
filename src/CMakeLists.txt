@@ -109,10 +109,16 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/skey-im.conf"
 
 # Optional experimental portal keyboard backend. Ordinary builds keep working.
 pkg_check_modules(LIBEI QUIET IMPORTED_TARGET libei-1.0>=1.0)
-pkg_check_modules(LIBPORTAL QUIET IMPORTED_TARGET libportal>=0.9)
+pkg_check_modules(LIBPORTAL QUIET IMPORTED_TARGET libportal>=0.7.1)
 if(LIBEI_FOUND AND LIBPORTAL_FOUND)
+    message(STATUS "Libei backend enabled (libei ${LIBEI_VERSION}, libportal ${LIBPORTAL_VERSION})")
     foreach(target skey test_engine_performance)
         target_compile_definitions(${target} PRIVATE SKEY_HAVE_LIBEI=1)
+        if(LIBPORTAL_VERSION VERSION_GREATER_EQUAL 0.8)
+            target_compile_definitions(${target} PRIVATE SKEY_LIBPORTAL_PERSIST=1)
+        endif()
         target_link_libraries(${target} PkgConfig::LIBEI PkgConfig::LIBPORTAL)
     endforeach()
+else()
+    message(WARNING "Libei backend disabled: requires libei >= 1.0 and libportal >= 0.7.1")
 endif()

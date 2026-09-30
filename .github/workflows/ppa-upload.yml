@@ -31,8 +31,9 @@ jobs:
           sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' /etc/apt/sources.list /etc/apt/apt-mirrors.txt 2>/dev/null || true
           sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
           sudo apt-get update
-          sudo apt-get install -y devscripts debhelper dpkg-dev git rsync dput \
-            libei-dev libportal-dev
+          # This runner only prepares source packages. Launchpad installs
+          # Build-Depends from debian/control in each target series.
+          sudo apt-get install -y devscripts debhelper dpkg-dev git rsync dput
 
       - name: Resolve version
         run: |

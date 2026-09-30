@@ -21,7 +21,8 @@ jobs:
     # which already attached its artifacts — the follow-up tag push must
     # not rebuild everything (it would also strip the dev version suffix).
     if: ${{ !contains(github.ref_name, '-dev.') }}
-    runs-on: ubuntu-22.04
+    # libei-dev is available starting with Ubuntu 24.04.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
@@ -80,6 +81,7 @@ jobs:
               dnf install -y cmake extra-cmake-modules fcitx5-devel fcitx5 \
                 dbus-devel libxcb-devel gettext gcc-c++ make \
                 qt6-qtbase-devel librsvg2-tools \
+                'pkgconfig(libei-1.0)' 'pkgconfig(libportal)' \
                 rpm-build rpm-sign gpg createrepo_c
           - distro: opensuse
             image: opensuse/tumbleweed
@@ -90,6 +92,7 @@ jobs:
                 cmake extra-cmake-modules \
                 fcitx5-devel fcitx5 dbus-1-devel libxcb-devel gettext gcc-c++ make \
                 qt6-base-devel rsvg-convert \
+                'pkgconfig(libei-1.0)' 'pkgconfig(libportal)' \
                 rpm-build gpg2 createrepo_c
 
     container:

@@ -181,12 +181,20 @@ struct LibeiInjector::Impl {
             // Keyboard only: no screencast, pointer or clipboard access.
             // Ask the portal to persist its permission and restore it on the
             // next Fcitx restart when the compositor supports restore tokens.
+#ifdef SKEY_LIBPORTAL_PERSIST
             loadToken();
             xdp_portal_create_remote_desktop_session_full(portal, XDP_DEVICE_KEYBOARD,
                 static_cast<XdpOutputType>(0), XDP_REMOTE_DESKTOP_FLAG_NONE,
                 XDP_CURSOR_MODE_HIDDEN, XDP_PERSIST_MODE_PERSISTENT,
                 restoreToken.empty() ? nullptr : restoreToken.c_str(),
                 cancellable, created, this);
+#else
+            // libportal 0.7.1 supports EIS but not RemoteDesktop persistence.
+            status("requesting keyboard permission (libportal < 0.8 cannot restore it)");
+            xdp_portal_create_remote_desktop_session(portal, XDP_DEVICE_KEYBOARD,
+                static_cast<XdpOutputType>(0), XDP_REMOTE_DESKTOP_FLAG_NONE,
+                XDP_CURSOR_MODE_HIDDEN, cancellable, created, this);
+#endif
             while (!stop || pending) g_main_context_iteration(context, TRUE);
         }
         ready = false;
