@@ -171,6 +171,18 @@ Chrome X11 Uinput address-bar regressions cover:
   length. A pre-word accessibility snapshot cannot justify an extra Backspace
   that deletes the slash before a Vietnamese URL path.
 
+First-word autocomplete regression (Chrome 154.0.8037.57 on X11): Escape
+can close the suggestion popup without removing its inline selection. On the
+affected test machine, `d`, Escape, Backspace, `Q` produces `dQ` even with
+SKey disabled; two Backspaces instead produce `Q`. Thus Escape plus an exact
+suffix deletion is not a safe substitute for the full first-word replacement
+when accessibility text is unavailable. The existing first-word/prefix guards
+still apply; a nonempty, nonmatching URL snapshot retains the suffix fallback.
+The transport test models both selected autocomplete consuming the first
+Backspace and no selection, where surplus Backspace at the start is harmless.
+Before the fix, live `ddaay`, `banj` and `goox` cases retained one old character
+(`dđây`, `baạn`, `goỗ`). The updated test fails on the old implementation.
+
 Live Chrome X11 validation used Uinput throughout: 48/48 typing cases,
 24/24 latency readbacks, 6/6 localhost Enter cases and 4/4 transitions from
 omnibox to textarea passed. The 18 accent samples measured median latency

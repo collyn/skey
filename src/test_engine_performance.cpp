@@ -966,11 +966,27 @@ struct EnginePerformanceTest {
         }
         state.scheduleAddrBarReplacement(2, "ạn", 3, FcitxKey_j, 1100,
                                          "bạn", true, "ban");
-        check(state.expectedUinputBackspaces_ == 2 &&
-                  state.pendingUinputCommit_ == "ạn" &&
+        check(state.expectedUinputBackspaces_ == (staleCoordinates ? 2 : 4) &&
+                  state.pendingUinputCommit_ == (staleCoordinates ? "ạn" : "bạn") &&
                   recv(sockets[1], request, sizeof(request), 0) == sizeof(request) &&
-                  request[0] == 3 && request[1] == 1,
-              "first word dismisses autocomplete with Escape before replacing only suffix");
+                  request[0] == (staleCoordinates ? 3u : 5u) &&
+                  request[1] == (staleCoordinates ? 1u : 0u),
+              "unknown first-word autocomplete needs full replacement; a URL snapshot keeps the prefix safe");
+        if (!staleCoordinates) {
+            // Chrome 154 X11 can keep inline autocomplete selected after
+            // Escape. The first real BS removes that selection, not 'n'.
+            // Also exercise an absent selection: extra BS at bar start is
+            // harmless, unlike an extra BS in a URL suffix.
+            for (bool selected : {false, true}) {
+                std::string visible = "ban";
+                for (unsigned i = 0; i + 1 < request[0]; ++i) {
+                    if (selected) selected = false;
+                    else if (!visible.empty()) visible.pop_back();
+                }
+                visible += state.pendingUinputCommit_;
+                check(visible == "bạn", "first-word replacement must consume inline autocomplete before deleting typed text");
+            }
+        }
         state.resetForCellChange();
         close(sockets[0]);
         state.uinputClientFd_ = -1;
