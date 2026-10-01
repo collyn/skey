@@ -25,7 +25,7 @@
 #include "app_delay_key.h"
 #include "surrounding_cursor.h"
 #include "uinput_delete_ack.h"
-#include "libei_injector.h"
+#include "native_injector.h"
 #include <deque>
 #include <fcitx/surroundingtext.h>
 
@@ -102,9 +102,9 @@ private:
     bool isWayland() const;
     const struct UinputTiming& uinputTiming() const;
     bool useUinputMode() const;
-    bool useLibeiMode() const;
-    bool libeiFailed_ = false;
-    std::string libeiStatus_;
+    bool useNativeMode() const;
+    bool nativeFailed_ = false;
+    std::string nativeStatus_;
     bool isChromiumCached() const;
     /// The a11y-reported PID of the current app, when trustworthy: the
     /// focus snapshot is fresh and the pid's comm matches appProgram().
@@ -567,8 +567,8 @@ private:
     SimpleAction omAction_;
     Menu omMenu_;
     SimpleAction omSurrounding_;
-    SimpleAction omLibei_;
-    skey::LibeiInjector libei_;
+    SimpleAction omNative_;
+    skey::NativeInjector native_;
     SimpleAction omPreedit_;
     SimpleAction omUinput_;
     SimpleAction omAuto_;

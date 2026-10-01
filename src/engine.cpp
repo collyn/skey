@@ -368,8 +368,8 @@ bool SKeyState::surroundingCacheEndsWith(const fcitx::SurroundingText &st,
 
 static std::string outputModeName(SKeyOutputMode mode) {
   switch (mode) {
-  case SKeyOutputMode::Libei:
-    return "Libei";
+  case SKeyOutputMode::Native:
+    return "Native";
   case SKeyOutputMode::SurroundingText:
     return "Surrounding Text";
   case SKeyOutputMode::Preedit:
@@ -969,13 +969,13 @@ void SKeyEngine::setupTrayMenu() {
   omMenu_.addAction(&omUinput_);
   omMenu_.addAction(&omSurrounding_);
   omMenu_.addAction(&omPreedit_);
-  omLibei_.setShortText(_("Libei (experimental)"));
-  omLibei_.setCheckable(true);
-  omLibei_.registerAction("skey-om-libei", &uiManager);
-  omMenu_.addAction(&omLibei_);
-  omLibei_.connect<SimpleAction::Activated>([this](InputContext *) {
-    setOutputMode(SKeyOutputMode::Libei);
-    libei_.start();
+  omNative_.setShortText(_("Native (XTest/Libei)"));
+  omNative_.setCheckable(true);
+  omNative_.registerAction("skey-om-libei", &uiManager);
+  omMenu_.addAction(&omNative_);
+  omNative_.connect<SimpleAction::Activated>([this](InputContext *) {
+    setOutputMode(SKeyOutputMode::Native);
+    native_.start();
   });
 
   omAction_.setShortText(_("Output Mode"));
@@ -1171,26 +1171,26 @@ void SKeyEngine::updateMenuActions() {
     imAction_.setShortText(_("Input Method: Telex"));
   }
 
-  const bool replace = config_.preferLibeiAuto.value();
+  const bool replace = config_.replaceUinputWithNative.value();
   for (auto *action : omMenu_.actions()) omMenu_.removeAction(action);
   omMenu_.addAction(&omAuto_);
-  omMenu_.addAction(replace ? &omLibei_ : &omUinput_);
+  omMenu_.addAction(replace ? &omNative_ : &omUinput_);
   omMenu_.addAction(&omSurrounding_);
   omMenu_.addAction(&omPreedit_);
-  if (!replace) omMenu_.addAction(&omLibei_);
-  omLibei_.setShortText(replace ? _("Libei") : _("Libei (experimental)"));
+  if (!replace) omMenu_.addAction(&omNative_);
+  omNative_.setShortText(replace ? _("Native") : _("Native (XTest/Libei)"));
   auto om = config_.outputMode.value();
-  if (replace && om == SKeyOutputMode::Uinput) om = SKeyOutputMode::Libei;
+  if (replace && om == SKeyOutputMode::Uinput) om = SKeyOutputMode::Native;
   omAuto_.setChecked(om == SKeyOutputMode::Auto);
   omSurrounding_.setChecked(om == SKeyOutputMode::SurroundingText);
-  omLibei_.setChecked(om == SKeyOutputMode::Libei);
+  omNative_.setChecked(om == SKeyOutputMode::Native);
   omPreedit_.setChecked(om == SKeyOutputMode::Preedit);
   omUinput_.setChecked(om == SKeyOutputMode::Uinput);
 
   if (om == SKeyOutputMode::Auto) {
     omAction_.setShortText(_("Output Mode: Auto"));
-  } else if (om == SKeyOutputMode::Libei) {
-    omAction_.setShortText(_("Output Mode: Libei"));
+  } else if (om == SKeyOutputMode::Native) {
+    omAction_.setShortText(_("Output Mode: Native"));
   } else if (om == SKeyOutputMode::Preedit) {
     omAction_.setShortText(_("Output Mode: Preedit"));
   } else if (om == SKeyOutputMode::Uinput) {
@@ -1422,21 +1422,24 @@ void SKeyEngine::maybeSaveAppDelays(bool force) {
 
 void SKeyEngine::reloadConfig() {
   const bool previousShowPreedit = config_.showPreedit.value();
-  // Migrate legacy "Telex W" input method → Telex + ShortW=True.
-  // The TelexW enum value no longer exists, so peek the raw ini first.
-  {
-    RawConfig raw;
-    readAsIni(raw, "conf/skey.conf");
-    auto *im = raw.valueByPath("InputMethod");
-    if (im && (*im == "Telex W" || *im == "TelexW")) {
-      readAsIni(config_, "conf/skey.conf");
-      config_.inputMethod.setValue(SKeyInputMethod::Telex);
-      config_.shortW.setValue(true);
-      safeSaveAsIni(config_, "conf/skey.conf");
-      SKEY_INFO() << "Migrated legacy 'Telex W' → Telex + ShortW";
+  // Normalize retired enum names before parsing, preserving all other keys.
+  RawConfig raw;
+  readAsIni(raw, "conf/skey.conf");
+  bool migrated = false;
+  if (const auto *im = raw.valueByPath("InputMethod");
+      im && (*im == "Telex W" || *im == "TelexW")) {
+    raw.setValueByPath("InputMethod", "Telex");
+    raw.setValueByPath("ShortW", "True");
+    migrated = true;
+  }
+  for (const auto *key : {"OutputMode", "ChromiumAddressBarMode"}) {
+    if (const auto *mode = raw.valueByPath(key); mode && *mode == "Libei") {
+      raw.setValueByPath(key, "Native");
+      migrated = true;
     }
   }
-  readAsIni(config_, "conf/skey.conf");
+  config_.load(raw);
+  if (migrated) safeSaveAsIni(raw, "conf/skey.conf");
   g_skeyDebugEnabled = readDebugFromFile();
   if (a11yMonitor_) {
     a11yMonitor_->setDebug(g_skeyDebugEnabled);
@@ -1778,8 +1781,8 @@ void SKeyState::refreshAppMode() {
       else if (modeStr == "SurroundingTextSlow" ||
                modeStr == "SurroundingText" || modeStr == "Surrounding Text")
         savedMode = SKeyOutputMode::SurroundingText;
-      else if (modeStr == "Libei")
-        savedMode = SKeyOutputMode::Libei;
+      else if (modeStr == "Native" || modeStr == "Libei")
+        savedMode = SKeyOutputMode::Native;
       else if (modeStr == "Uinput")
         savedMode = SKeyOutputMode::Uinput;
       appModeOverride_ = savedMode;
@@ -1960,8 +1963,8 @@ SKeyOutputMode SKeyState::effectiveMode() const {
     case SKeyChromiumAddressBarMode::Auto:
       break; // fall through to normal Auto detection below
     case SKeyChromiumAddressBarMode::Uinput:
-      cachedMode_ = engine_->config().preferLibeiAuto.value()
-                        ? SKeyOutputMode::Libei : SKeyOutputMode::Uinput;
+      cachedMode_ = engine_->config().replaceUinputWithNative.value()
+                        ? SKeyOutputMode::Native : SKeyOutputMode::Uinput;
       modeCacheValid_ = true;
       return cachedMode_;
     case SKeyChromiumAddressBarMode::SurroundingText:
@@ -1972,8 +1975,8 @@ SKeyOutputMode SKeyState::effectiveMode() const {
       cachedMode_ = SKeyOutputMode::Preedit;
       modeCacheValid_ = true;
       return cachedMode_;
-    case SKeyChromiumAddressBarMode::Libei:
-      cachedMode_ = SKeyOutputMode::Libei;
+    case SKeyChromiumAddressBarMode::Native:
+      cachedMode_ = SKeyOutputMode::Native;
       modeCacheValid_ = true;
       return cachedMode_;
     case SKeyChromiumAddressBarMode::NoVietnamese:
@@ -1987,8 +1990,8 @@ SKeyOutputMode SKeyState::effectiveMode() const {
   if (resolved == SKeyOutputMode::Auto) {
     cachedMode_ = detectAutoMode();
   } else {
-    cachedMode_ = resolved == SKeyOutputMode::Uinput && engine_->config().preferLibeiAuto.value()
-                      ? SKeyOutputMode::Libei : resolved;
+    cachedMode_ = resolved == SKeyOutputMode::Uinput && engine_->config().replaceUinputWithNative.value()
+                      ? SKeyOutputMode::Native : resolved;
   }
   modeCacheValid_ = true;
   return cachedMode_;
@@ -1996,21 +1999,21 @@ SKeyOutputMode SKeyState::effectiveMode() const {
 
 bool SKeyState::useSurroundingText() const {
   auto mode = effectiveMode();
-  return mode == SKeyOutputMode::Libei ||
+  return mode == SKeyOutputMode::Native ||
          mode == SKeyOutputMode::SurroundingText ||
          mode == SKeyOutputMode::Uinput;
 }
 
-bool SKeyState::useLibeiMode() const {
-  return effectiveMode() == SKeyOutputMode::Libei;
+bool SKeyState::useNativeMode() const {
+  return effectiveMode() == SKeyOutputMode::Native;
 }
 
 bool SKeyState::useUinputMode() const {
-  // Libei is the same replacement backend as Uinput.  It deliberately
+  // Native is the same replacement backend as Uinput.  It deliberately
   // shares this path so address-bar handling, buffering, timing and state
   // recovery cannot drift between the two transports.
   auto mode = effectiveMode();
-  return mode == SKeyOutputMode::Uinput || mode == SKeyOutputMode::Libei;
+  return mode == SKeyOutputMode::Uinput || mode == SKeyOutputMode::Native;
 }
 
 // Content-hint capability bits that indicate a real, trusted editor in a
@@ -2210,8 +2213,8 @@ void SKeyState::clearEngineBareCapsSticky() const {
 SKeyOutputMode SKeyState::detectAutoMode() const {
   const auto autoUinput = [this](SKeyOutputMode mode) {
     if (mode == SKeyOutputMode::Uinput &&
-        engine_->config().preferLibeiAuto.value())
-      return SKeyOutputMode::Libei;
+        engine_->config().replaceUinputWithNative.value())
+      return SKeyOutputMode::Native;
     return mode;
   };
   // Runtime override: if the surrounding text API was verified as
@@ -2710,7 +2713,7 @@ void SKeyState::expireAddrBarCycle() {
 }
 
 void SKeyState::activate() {
-  libeiFailed_ = false;
+  nativeFailed_ = false;
   expireAddrBarCycle();
   uinputAckUnavailable_ = false;
   // Re-sync input method from config (handles config changes at runtime)
@@ -2868,9 +2871,9 @@ void SKeyState::activate() {
         else if (modeStr == "SurroundingTextSlow" ||
                  modeStr == "Surrounding Text")
           savedMode = SKeyOutputMode::SurroundingText;
-        else if (modeStr == "Libei")
-        savedMode = SKeyOutputMode::Libei;
-      else if (modeStr == "Uinput")
+        else if (modeStr == "Native" || modeStr == "Libei")
+          savedMode = SKeyOutputMode::Native;
+        else if (modeStr == "Uinput")
           savedMode = SKeyOutputMode::Uinput;
         else if (modeStr == "SurroundingText")
           savedMode = SKeyOutputMode::SurroundingText;
@@ -2934,10 +2937,10 @@ void SKeyState::activate() {
   }
   auto mode = effectiveMode();
   auto configuredMode = engine_->config().outputMode.value();
-  if (useLibeiMode() && !appExcluded_) engine_->libei_.start();
+  if (useNativeMode() && !appExcluded_) engine_->native_.start();
   SKEY_DEBUG() << "Activated: mode=" << outputModeName(mode)
                << " configured=" << outputModeName(configuredMode)
-               << " preferLibeiAuto=" << engine_->config().preferLibeiAuto.value()
+               << " replaceUinputWithNative=" << engine_->config().replaceUinputWithNative.value()
                << " surroundingCap="
                << caps.test(CapabilityFlag::SurroundingText)
                << " password=" << caps.test(CapabilityFlag::Password)
@@ -3105,7 +3108,7 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
   if (count == 0 && flags == 0) {
     return;
   }
-  if (!useLibeiMode() && !connectUinputServer()) {
+  if (!useNativeMode() && !connectUinputServer()) {
     SKEY_DEBUG() << "Uinput: cannot send BS, server unavailable";
     return;
   }
@@ -3161,16 +3164,16 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
                              oldWord, count - 1, bsSentAt_);
     }
   }
-  if (useLibeiMode()) {
+  if (useNativeMode()) {
     // Preserve the Uinput event contract: N deletions followed by one
     // anchor. Fcitx must pass the real deletions to the application and
     // consume only the anchor in handlePendingUinputBackspace().
-    if (engine_->libei_.backspaces(count, flags & 1, paceUsec)) {
+    if (engine_->native_.backspaces(count, flags & 1, paceUsec)) {
       uinputBsOutstanding_ += count;
-      SKEY_DEBUG() << "Libei: sent BS=" << count << " (includes sync anchor) paceUs=" << paceUsec;
+      SKEY_DEBUG() << "Native: sent BS=" << count << " (includes sync anchor) paceUs=" << paceUsec;
     } else {
-      libeiFailed_ = true;
-      SKEY_DEBUG() << "Libei: send rejected; no uinput fallback: " << engine_->libei_.status();
+      nativeFailed_ = true;
+      SKEY_DEBUG() << "Native: send rejected; no uinput fallback: " << engine_->native_.status();
     }
     return;
   }
@@ -3854,10 +3857,6 @@ void SKeyState::replayBufferedUinputKeys() {
 }
 
 void SKeyState::deactivate() {
-  if (useLibeiMode()) {
-    engine_->libei_.cancel();
-    if (uinputDeleting_ || uinputSettling_) resetForCellChange();
-  }
   expireAddrBarCycle();
   SKEY_DEBUG() << "Deactivate: deleting=" << uinputDeleting_
                << " pendingBs=" << expectedUinputBackspaces_
@@ -3922,6 +3921,10 @@ void SKeyState::deactivate() {
         CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 500000, 0,
         [this](EventSourceTime *, uint64_t) {
           SKEY_DEBUG() << "Deactivate: no reactivate, genuine focus loss";
+          if (useNativeMode()) {
+            engine_->native_.cancel();
+            resetForCellChange();
+          }
           addrBarExpectCycle_ = false;
           addrBarCycleTimer_.reset();
           // Next word in a fresh context is the first word again
@@ -3971,6 +3974,7 @@ void SKeyState::deactivate() {
               << "Deactivate: no reactivation, discarding mid-flight "
                  "replacement";
           uinputCycleTimer_.reset();
+          if (useNativeMode()) engine_->native_.cancel();
           pendingUinputCommit_.clear();
           expectedUinputBackspaces_ = 0;
           seenUinputBackspaces_ = 0;
@@ -3992,6 +3996,7 @@ void SKeyState::deactivate() {
     return;
   }
 
+  if (useNativeMode()) engine_->native_.cancel();
   expectedUinputBackspaces_ = 0;
   seenUinputBackspaces_ = 0;
   pendingUinputCommit_.clear();
@@ -4176,7 +4181,7 @@ bool SKeyState::checkCellSelection() {
 }
 
 void SKeyState::resetForCellChange() {
-  if (useLibeiMode()) engine_->libei_.cancel();
+  if (useNativeMode()) engine_->native_.cancel();
   x11BrowserFocusSettled_ = false;
   viet_.reset();
   committedLen_ = 0;
@@ -4379,15 +4384,15 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
-  if (useLibeiMode() && !modeMenuActive_ &&
+  if (useNativeMode() && !modeMenuActive_ &&
       !keyEvent.key().check(engine_->modeMenuKey())) {
-    engine_->libei_.start();
-    const auto status = engine_->libei_.status();
-    if (status != libeiStatus_) {
-      libeiStatus_ = status;
-      SKEY_INFO() << "Libei: " << status;
+    engine_->native_.start();
+    const auto status = engine_->native_.status();
+    if (status != nativeStatus_) {
+      nativeStatus_ = status;
+      SKEY_INFO() << "Native: " << status;
     }
-    if (!engine_->libei_.ready() || libeiFailed_) {
+    if (!engine_->native_.ready() || nativeFailed_) {
       if (uinputDeleting_ || uinputSettling_) resetForCellChange();
       viet_.reset(); committedLen_ = 0; clearLastWord();
       return;
@@ -6664,7 +6669,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         // into the terminal, so only the sync anchor proves the deletions
         // were dispatched before the commit is sent (kernel 7.0 PTY
         // interleaving — see the keyEvent terminal path).
-        bool usesUinputBs = useLibeiMode() ||
+        bool usesUinputBs = useNativeMode() ||
             (useUinputMode() &&
              (isWayland() || !isTerminalAppCached() || isChromiumCached())) ||
             (!isWayland() && isTerminalAppCached()) ||
@@ -7139,7 +7144,7 @@ void SKeyState::showModeMenu() {
   candList->setPageSize(6);
   candList->setLayoutHint(CandidateLayoutHint::Vertical);
 
-  const bool replaceUinput = engine_->config().preferLibeiAuto.value();
+  const bool replaceUinput = engine_->config().replaceUinputWithNative.value();
   int cursorIdx = 0;
   if (modeMenuForAddressBar_) {
     auto addressBarMode = engine_->config().chromiumAddressBarMode.value();
@@ -7149,8 +7154,8 @@ void SKeyState::showModeMenu() {
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
         engine_, this, autoLabel, SKeyChromiumAddressBarMode::Auto));
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
-        engine_, this, replaceUinput ? "2. Libei" : "2. Uinput",
-        replaceUinput ? SKeyChromiumAddressBarMode::Libei
+        engine_, this, replaceUinput ? "2. Native" : "2. Uinput",
+        replaceUinput ? SKeyChromiumAddressBarMode::Native
                       : SKeyChromiumAddressBarMode::Uinput));
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
         engine_, this, "3. Surrounding Text",
@@ -7159,14 +7164,14 @@ void SKeyState::showModeMenu() {
         engine_, this, "4. Preedit", SKeyChromiumAddressBarMode::Preedit));
     if (!replaceUinput) {
       candList->append(std::make_unique<AddressBarModeCandidateWord>(
-          engine_, this, "5. Libei", SKeyChromiumAddressBarMode::Libei));
+          engine_, this, "5. Native", SKeyChromiumAddressBarMode::Native));
     }
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
         engine_, this, std::string(replaceUinput ? "5. " : "6. ") + _("Không gõ tiếng Việt"),
         SKeyChromiumAddressBarMode::NoVietnamese));
     cursorIdx = static_cast<int>(addressBarMode);
     if (replaceUinput) {
-      if (addressBarMode == SKeyChromiumAddressBarMode::Libei) cursorIdx = 1;
+      if (addressBarMode == SKeyChromiumAddressBarMode::Native) cursorIdx = 1;
       if (addressBarMode == SKeyChromiumAddressBarMode::NoVietnamese) cursorIdx = 4;
     }
   } else {
@@ -7179,8 +7184,8 @@ void SKeyState::showModeMenu() {
     candList->append(std::make_unique<ModeCandidateWord>(
         engine_, this, autoLabel, SKeyOutputMode::Auto));
     candList->append(std::make_unique<ModeCandidateWord>(
-        engine_, this, replaceUinput ? "2. Libei" : "2. Uinput",
-        replaceUinput ? SKeyOutputMode::Libei : SKeyOutputMode::Uinput));
+        engine_, this, replaceUinput ? "2. Native" : "2. Uinput",
+        replaceUinput ? SKeyOutputMode::Native : SKeyOutputMode::Uinput));
     candList->append(std::make_unique<ModeCandidateWord>(
         engine_, this, "3. Surrounding Text", SKeyOutputMode::SurroundingText));
     candList->append(std::make_unique<ModeCandidateWord>(
@@ -7188,7 +7193,7 @@ void SKeyState::showModeMenu() {
 
     if (!replaceUinput)
       candList->append(std::make_unique<ModeCandidateWord>(
-          engine_, this, std::string("5. ") + _("Libei (experimental)"), SKeyOutputMode::Libei));
+          engine_, this, std::string("5. ") + _("Native (XTest/Libei)"), SKeyOutputMode::Native));
     std::string excludeLabel =
         std::string(replaceUinput ? "5. " : "6. ") +
         (appExcluded_ ? "✓ " : "") + _("Loại trừ ứng dụng");
@@ -7201,7 +7206,7 @@ void SKeyState::showModeMenu() {
                 : (configured == SKeyOutputMode::Auto)            ? 0
                 : (configured == SKeyOutputMode::Uinput)          ? 1
                 : (configured == SKeyOutputMode::SurroundingText) ? 2
-                : (configured == SKeyOutputMode::Libei)           ? (replaceUinput ? 1 : 4)
+                : (configured == SKeyOutputMode::Native)           ? (replaceUinput ? 1 : 4)
                 : (configured == SKeyOutputMode::Preedit)         ? 3
                                                                   : 0;
   }

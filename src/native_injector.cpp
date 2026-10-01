@@ -1,4 +1,4 @@
-#include "libei_injector.h"
+#include "native_injector.h"
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -6,6 +6,10 @@
 #include <cstdlib>
 #include <fstream>
 #include <filesystem>
+#include <unistd.h>
+#include <X11/Xlib.h>
+#include <X11/keysym.h>
+#include <X11/extensions/XTest.h>
 #ifdef SKEY_HAVE_LIBEI
 #include <libei.h>
 #include <libportal/portal.h>
@@ -13,16 +17,17 @@
 #include <linux/input-event-codes.h>
 #include <sys/eventfd.h>
 #include <sys/stat.h>
-#include <unistd.h>
 #endif
 
 namespace skey {
-struct LibeiInjector::Impl {
+struct NativeInjector::Impl {
     std::atomic<bool> ready{false}, stop{false};
     std::atomic<unsigned> generation{0};
     mutable std::mutex mutex;
     std::string message = "not started";
     std::thread worker;
+    Display *x11Display = nullptr;
+    std::mutex x11Mutex;
     void status(const std::string &s) { std::lock_guard<std::mutex> lock(mutex); message = s; }
 #ifdef SKEY_HAVE_LIBEI
     int wakeFd = -1;
@@ -172,10 +177,6 @@ struct LibeiInjector::Impl {
         wakeSource = g_unix_fd_source_new(wakeFd, G_IO_IN);
         g_source_set_callback(wakeSource, G_SOURCE_FUNC(commands), this, nullptr);
         g_source_attach(wakeSource, context);
-        // Do not use xdp_portal_initable_new() here.  That constructor
-        // validates every portal interface, including ScreenCast.  A
-        // keyboard-only Libei session only needs RemoteDesktop/EIS, and
-        // some Ubuntu portal backends do not expose ScreenCast at all.
         portal = xdp_portal_new();
         if (!portal) {
             fail("cannot create portal proxy");
@@ -185,26 +186,12 @@ struct LibeiInjector::Impl {
             // Ask the portal to persist its permission and restore it on the
             // next Fcitx restart when the compositor supports restore tokens.
 #ifdef SKEY_LIBPORTAL_PERSIST
-            // The full API asks libportal to coordinate with ScreenCast on
-            // some X11 portal implementations, which then fail with
-            // InvalidArgs when ScreenCast is not exported.  X11 does not
-            // need the restore-token path; use the basic RemoteDesktop API
-            // there and keep persistence for native Wayland sessions.
-            const bool wayland = std::getenv("WAYLAND_DISPLAY") &&
-                                 *std::getenv("WAYLAND_DISPLAY");
-            if (wayland) {
-                loadToken();
-                xdp_portal_create_remote_desktop_session_full(portal, XDP_DEVICE_KEYBOARD,
-                    static_cast<XdpOutputType>(0), XDP_REMOTE_DESKTOP_FLAG_NONE,
-                    XDP_CURSOR_MODE_HIDDEN, XDP_PERSIST_MODE_PERSISTENT,
-                    restoreToken.empty() ? nullptr : restoreToken.c_str(),
-                    cancellable, created, this);
-            } else {
-                status("requesting keyboard permission (X11 session)");
-                xdp_portal_create_remote_desktop_session(portal, XDP_DEVICE_KEYBOARD,
-                    static_cast<XdpOutputType>(0), XDP_REMOTE_DESKTOP_FLAG_NONE,
-                    XDP_CURSOR_MODE_HIDDEN, cancellable, created, this);
-            }
+            loadToken();
+            xdp_portal_create_remote_desktop_session_full(portal, XDP_DEVICE_KEYBOARD,
+                static_cast<XdpOutputType>(0), XDP_REMOTE_DESKTOP_FLAG_NONE,
+                XDP_CURSOR_MODE_HIDDEN, XDP_PERSIST_MODE_PERSISTENT,
+                restoreToken.empty() ? nullptr : restoreToken.c_str(),
+                cancellable, created, this);
 #else
             // libportal 0.7.1 supports EIS but not RemoteDesktop persistence.
             status("requesting keyboard permission (libportal < 0.8 cannot restore it)");
@@ -227,18 +214,47 @@ struct LibeiInjector::Impl {
     }
 #endif
 };
-LibeiInjector::LibeiInjector() : impl_(std::make_unique<Impl>()) {}
-LibeiInjector::~LibeiInjector() {
+NativeInjector::NativeInjector() : impl_(std::make_unique<Impl>()) {}
+NativeInjector::~NativeInjector() {
     impl_->stop = true;
 #ifdef SKEY_HAVE_LIBEI
     impl_->wake();
 #endif
     if (impl_->worker.joinable()) impl_->worker.join();
+    if (impl_->x11Display) {
+        XCloseDisplay(impl_->x11Display);
+        impl_->x11Display = nullptr;
+    }
 #ifdef SKEY_HAVE_LIBEI
     if (impl_->wakeFd >= 0) close(impl_->wakeFd);
 #endif
 }
-void LibeiInjector::start() {
+void NativeInjector::start() {
+    if (impl_->x11Display) return;
+    const char *session = std::getenv("XDG_SESSION_TYPE");
+    const char *display = std::getenv("DISPLAY");
+    const char *waylandDisplay = std::getenv("WAYLAND_DISPLAY");
+    const bool x11 = (session && std::string(session) == "x11") ||
+                     ((!waylandDisplay || !*waylandDisplay) && display && *display);
+    if (x11) {
+        XInitThreads();
+        impl_->x11Display = XOpenDisplay(nullptr);
+        if (!impl_->x11Display) {
+            impl_->status("cannot open X11 display");
+            return;
+        }
+        int eventBase = 0, errorBase = 0, major = 0, minor = 0;
+        if (!XTestQueryExtension(impl_->x11Display, &eventBase, &errorBase,
+                                 &major, &minor)) {
+            XCloseDisplay(impl_->x11Display);
+            impl_->x11Display = nullptr;
+            impl_->status("XTest extension unavailable");
+            return;
+        }
+        impl_->ready = true;
+        impl_->status("ready (XTest)");
+        return;
+    }
 #ifdef SKEY_HAVE_LIBEI
     if (impl_->worker.joinable()) return;
     impl_->wakeFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -249,12 +265,32 @@ void LibeiInjector::start() {
     impl_->status("built without libei/libportal development libraries");
 #endif
 }
-bool LibeiInjector::ready() const { return impl_->ready; }
-std::string LibeiInjector::status() const {
+bool NativeInjector::ready() const { return impl_->ready; }
+std::string NativeInjector::status() const {
     std::lock_guard<std::mutex> lock(impl_->mutex); return impl_->message;
 }
-void LibeiInjector::cancel() { ++impl_->generation; }
-bool LibeiInjector::backspaces(int count, bool escape, unsigned pace) {
+void NativeInjector::cancel() { ++impl_->generation; }
+bool NativeInjector::backspaces(int count, bool escape, unsigned pace) {
+    if (impl_->x11Display) {
+        std::lock_guard<std::mutex> lock(impl_->x11Mutex);
+        KeyCode backspace = XKeysymToKeycode(impl_->x11Display, XK_BackSpace);
+        KeyCode escapeKey = XKeysymToKeycode(impl_->x11Display, XK_Escape);
+        if (!backspace || (escape && !escapeKey) || count < 0 || count > 64)
+            return false;
+        if (escape) {
+            XTestFakeKeyEvent(impl_->x11Display, escapeKey, True, 0);
+            XTestFakeKeyEvent(impl_->x11Display, escapeKey, False, 0);
+            XFlush(impl_->x11Display);
+            usleep(std::min(pace, 100000u));
+        }
+        for (int i = 0; i < count; ++i) {
+            XTestFakeKeyEvent(impl_->x11Display, backspace, True, 0);
+            XTestFakeKeyEvent(impl_->x11Display, backspace, False, 0);
+            XFlush(impl_->x11Display);
+            if (i + 1 < count) usleep(std::min(pace, 100000u));
+        }
+        return true;
+    }
 #ifdef SKEY_HAVE_LIBEI
     if (!ready() || count < 0 || count > 64) return false;
     {

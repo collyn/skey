@@ -84,6 +84,41 @@ protected:
 
 namespace fcitx {
 struct EnginePerformanceTest {
+    static void nativeAddressBarChurn(Instance &instance, SKeyOutputMode mode,
+                                      bool settling) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome-stable");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::Preedit);
+        input.setCursorRect(Rect(239, 54, 240, 72));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome-stable";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedMode_ = mode;
+        state.modeCacheValid_ = true;
+        state.viet_.setRawInput("chaf");
+        state.committedLen_ = 3;
+        state.armAddrBarCycle();
+        state.uinputDeleting_ = true;
+        state.uinputSettling_ = settling;
+        state.pendingUinputCommit_ = "chà";
+        state.expectedUinputBackspaces_ = settling ? 0 : 4;
+        state.seenUinputBackspaces_ = settling ? 0 : 2;
+        state.uinputBsOutstanding_ = settling ? 0 : 3;
+        state.deactivate();
+        check(state.pendingUinputCommit_ == "chà" && state.uinputDeleting_,
+              "omnibox focus churn retains pending replacement for both transports");
+        check(state.uinputSettling_ == settling &&
+              state.expectedUinputBackspaces_ == (settling ? 0 : 4) &&
+              state.seenUinputBackspaces_ == (settling ? 0 : 2),
+              "omnibox churn retains deletion counters and settle state");
+        check(state.viet_.getRawInput() == "chaf",
+              "omnibox churn preserves composition until replacement commits");
+        state.addrBarCycleTimer_.reset();
+        state.resetForCellChange();
+    }
     static void replacementMenus(Instance &instance) {
         SKeyEngine engine(&instance, false);
         FocusGroup group("wayland:test", instance.inputContextManager());
@@ -93,20 +128,20 @@ struct EnginePerformanceTest {
         state.cachedProgram_ = "google-chrome";
         state.cachedIsChromium_ = 1;
         for (bool replace : {false, true}) {
-            engine.config_.preferLibeiAuto.setValue(replace);
+            engine.config_.replaceUinputWithNative.setValue(replace);
             for (bool address : {false, true}) {
                 input.setCapabilityFlags(address ? CapabilityFlag::Url : CapabilityFlags{});
                 engine.config_.outputMode.setValue(SKeyOutputMode::Uinput);
                 engine.config_.chromiumAddressBarMode.setValue(SKeyChromiumAddressBarMode::Uinput);
                 state.hasAppModeOverride_ = false;
                 state.modeCacheValid_ = false;
-                check(state.effectiveMode() == (replace ? SKeyOutputMode::Libei : SKeyOutputMode::Uinput),
+                check(state.effectiveMode() == (replace ? SKeyOutputMode::Native : SKeyOutputMode::Uinput),
                       "saved Uinput config resolves to selected transport");
                 state.showModeMenu();
                 auto list = input.inputPanel().candidateList();
                 check(list && list->size() == (replace ? 5 : 6), "replacement menu removes duplicate transport slot");
-                check(list->candidate(1).text().toString() == (replace ? "2. Libei" : "2. Uinput"),
-                      "Libei occupies Uinput menu position");
+                check(list->candidate(1).text().toString() == (replace ? "2. Native" : "2. Uinput"),
+                      "Native occupies Uinput menu position");
                 check(list->cursorIndex() == 1, "saved transport keeps correct highlighted row");
                 if (replace) for (int i = 0; i < list->size(); ++i)
                     check(list->candidate(i).text().toString().find("Uinput") == std::string::npos,
@@ -115,7 +150,7 @@ struct EnginePerformanceTest {
                 state.keyEvent(select);
                 check(select.accepted() && !state.modeMenuActive_, "numeric key selects visible candidate");
                 state.modeCacheValid_ = false;
-                check(state.effectiveMode() == (replace ? SKeyOutputMode::Libei : SKeyOutputMode::Uinput),
+                check(state.effectiveMode() == (replace ? SKeyOutputMode::Native : SKeyOutputMode::Uinput),
                       "numeric menu selection uses displayed transport");
             }
         }
@@ -1897,9 +1932,15 @@ int main(int argc, char **argv) {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::replacementMenus(instance);
     }
-    for (auto mode : {fcitx::SKeyOutputMode::Uinput, fcitx::SKeyOutputMode::Libei}) {
+    for (auto mode : {fcitx::SKeyOutputMode::Uinput, fcitx::SKeyOutputMode::Native}) {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::injectedBackspaceContract(instance, mode);
+    }
+    for (auto mode : {fcitx::SKeyOutputMode::Uinput, fcitx::SKeyOutputMode::Native}) {
+        for (bool settling : {false, true}) {
+            fcitx::Instance instance(argc, argv);
+            fcitx::EnginePerformanceTest::nativeAddressBarChurn(instance, mode, settling);
+        }
     }
     if (std::getenv("SKEY_TEST_BACKSPACE_ONLY")) {
         std::cout << "Injected Backspace contract: " << checks << " checks passed\n";

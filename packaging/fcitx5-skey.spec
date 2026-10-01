@@ -27,6 +27,8 @@ BuildRequires:  gcc-c++
 BuildRequires:  make
 BuildRequires:  pkgconfig(dbus-1)
 BuildRequires:  pkgconfig(xcb)
+BuildRequires:  pkgconfig(x11)
+BuildRequires:  pkgconfig(xtst)
 BuildRequires:  pkgconfig(libei-1.0) >= 1.0
 BuildRequires:  pkgconfig(libportal) >= 0.7.1
 # rust + cargo provided by rustup in CI; use distro packages for local builds:

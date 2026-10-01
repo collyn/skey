@@ -1096,20 +1096,20 @@ msgstr "Update successful! The system has been rebuilt with nixos-rebuild."
 msgid "Cập nhật thất bại (mã %1): %2"
 msgstr "Update failed (code %1): %2"
 
-msgid "Thay thế Uinput bằng Libei"
-msgstr "Replace Uinput with Libei"
+msgid "Thay thế Uinput bằng Native"
+msgstr "Replace Uinput with Native"
 
-msgid "Khi bật, Libei thay thế Uinput trong Auto và trong menu chọn mode."
-msgstr "When enabled, Libei replaces Uinput in Auto mode and the mode menu."
+msgid "Khi bật, Native thay thế Uinput trong Auto và trong menu chọn mode."
+msgstr "When enabled, Native replaces Uinput in Auto mode and the mode menu."
 
-msgid "Libei"
-msgstr "Libei"
+msgid "Native"
+msgstr "Native"
 
-msgid "Libei (experimental)"
-msgstr "Libei (experimental)"
+msgid "Native (XTest/Libei)"
+msgstr "Native (XTest/Libei)"
 
 msgid "Loại trừ ứng dụng"
 msgstr "Exclude application"
 
-msgid "Output Mode: Libei"
-msgstr "Output Mode: Libei"
+msgid "Output Mode: Native"
+msgstr "Output Mode: Native"

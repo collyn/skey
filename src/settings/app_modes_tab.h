@@ -31,7 +31,7 @@ public:
     std::string chromiumAddressBarMode() const;
     void setChromiumAddressBarMode(const std::string &mode);
 
-    void setLibeiReplacement(bool enabled);
+    void setNativeReplacement(bool enabled);
 
 private slots:
     void onAddApp();

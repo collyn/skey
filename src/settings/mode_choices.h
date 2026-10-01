@@ -8,14 +8,14 @@
 inline void syncTransportChoices(QComboBox *combo, bool replace) {
     QString selected = combo->currentData().toString();
     const QSignalBlocker blocker(combo);
-    for (const auto &mode : {QStringLiteral("Uinput"), QStringLiteral("Libei")}) {
+    for (const auto &mode : {QStringLiteral("Uinput"), QStringLiteral("Native")}) {
         int index = combo->findData(mode);
         if (index >= 0) combo->removeItem(index);
     }
-    combo->insertItem(1, replace ? T("Libei") : T("Uinput"),
-                      replace ? "Libei" : "Uinput");
-    if (!replace) combo->insertItem(4, T("Libei (experimental)"), "Libei");
-    if (replace && selected == QLatin1String("Uinput")) selected = "Libei";
+    combo->insertItem(1, replace ? T("Native") : T("Uinput"),
+                      replace ? "Native" : "Uinput");
+    if (!replace) combo->insertItem(4, T("Native (XTest/Libei)"), "Native");
+    if (replace && selected == QLatin1String("Uinput")) selected = "Native";
     const int index = combo->findData(selected);
     if (index >= 0) combo->setCurrentIndex(index);
 }

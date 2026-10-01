@@ -29,7 +29,7 @@
 #include <QVBoxLayout>
 
 // ── Mode values as displayed in the per-app config ─────────────────────
-static const char *kAppModeValues[] = {"Auto", "Uinput", "Surrounding Text", "Preedit", "Libei", "Excluded", nullptr};
+static const char *kAppModeValues[] = {"Auto", "Uinput", "Surrounding Text", "Preedit", "Native", "Excluded", nullptr};
 
 AppModesTab::AppModesTab(QWidget *parent) : QWidget(parent) {
     setupUI();
@@ -95,7 +95,7 @@ void AppModesTab::setupUI() {
     addrBarModeCombo_->addItem("Uinput", "Uinput");
     addrBarModeCombo_->addItem("Surrounding Text", "Surrounding Text");
     addrBarModeCombo_->addItem("Preedit", "Preedit");
-    addrBarModeCombo_->addItem("Libei", "Libei");
+    addrBarModeCombo_->addItem("Native", "Native");
     addrBarModeCombo_->addItem(T("Không gõ tiếng Việt"),
                                "No Vietnamese");
     addrBarRow->addWidget(addrBarModeCombo_);
@@ -329,7 +329,9 @@ void AppModesTab::addRow(const std::string &name, const std::string &mode,
         combo->addItem(kAppModeValues[i], kAppModeValues[i]);
     }
     syncTransportChoices(combo, replaceUinput_);
-    int idx = combo->findData(QString::fromStdString(replaceUinput_ && mode == "Uinput" ? "Libei" : mode));
+    const std::string canonical = mode == "Libei" ? "Native" :
+        (replaceUinput_ && mode == "Uinput" ? "Native" : mode);
+    int idx = combo->findData(QString::fromStdString(canonical));
     if (idx >= 0) combo->setCurrentIndex(idx);
     table_->setCellWidget(row, 1, combo);
 
@@ -551,7 +553,9 @@ std::string AppModesTab::chromiumAddressBarMode() const {
 }
 
 void AppModesTab::setChromiumAddressBarMode(const std::string &mode) {
-    int idx = addrBarModeCombo_->findData(QString::fromStdString(replaceUinput_ && mode == "Uinput" ? "Libei" : mode));
+    const std::string canonical = mode == "Libei" ? "Native" :
+        (replaceUinput_ && mode == "Uinput" ? "Native" : mode);
+    int idx = addrBarModeCombo_->findData(QString::fromStdString(canonical));
     if (idx >= 0) addrBarModeCombo_->setCurrentIndex(idx);
 }
 
@@ -569,7 +573,7 @@ void AppModesTab::onDeleteApp() {
     }
 }
 
-void AppModesTab::setLibeiReplacement(bool enabled) {
+void AppModesTab::setNativeReplacement(bool enabled) {
     replaceUinput_ = enabled;
     syncTransportChoices(addrBarModeCombo_, enabled);
     for (int row = 0; row < table_->rowCount(); ++row)

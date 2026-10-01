@@ -40,7 +40,7 @@ void GeneralTab::setupUI() {
   outputModeCombo_->addItem("Auto", "Auto");
   outputModeCombo_->addItem("Uinput", "Uinput");
   outputModeCombo_->addItem("Surrounding Text", "Surrounding Text");
-  outputModeCombo_->addItem(T("Libei (experimental)"), "Libei");
+  outputModeCombo_->addItem(T("Native (XTest/Libei)"), "Native");
   outputModeCombo_->addItem("Preedit", "Preedit");
   enumLayout->addRow(T("Chế độ xuất:"), outputModeCombo_);
 
@@ -132,14 +132,14 @@ void GeneralTab::setupUI() {
       "xoá tệp đó để quên dữ liệu đã học."));
   checkLayout->addWidget(autoDelayCheck_, 2, 1);
 
-  preferLibeiAutoCheck_ =
-      new QCheckBox(T("Thay thế Uinput bằng Libei"), checkFrame);
-  preferLibeiAutoCheck_->setToolTip(T(
-      "Khi bật, Libei thay thế Uinput trong Auto và trong menu chọn mode."));
-  checkLayout->addWidget(preferLibeiAutoCheck_, 3, 1);
+  replaceUinputWithNativeCheck_ =
+      new QCheckBox(T("Thay thế Uinput bằng Native"), checkFrame);
+  replaceUinputWithNativeCheck_->setToolTip(T(
+      "Khi bật, Native thay thế Uinput trong Auto và trong menu chọn mode."));
+  checkLayout->addWidget(replaceUinputWithNativeCheck_, 3, 1);
   checkLayout->addWidget(debugCheck_, 4, 1);
-  connect(preferLibeiAutoCheck_, &QCheckBox::toggled, this,
-          [this](bool) { syncLibeiReplacementChoice(); });
+  connect(replaceUinputWithNativeCheck_, &QCheckBox::toggled, this,
+          [this](bool) { syncNativeReplacementChoice(); });
 
   // A11y checkbox + info icon: SKey needs the browsers' a11y trees; the
   // checkbox toggles whether SKey auto-enables the system-wide
@@ -199,9 +199,9 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
   };
 
   setCombo(inputMethodCombo_, cfg.inputMethod);
-  preferLibeiAutoCheck_->setChecked(cfg.preferLibeiAuto);
-  syncLibeiReplacementChoice();
-  setCombo(outputModeCombo_, cfg.preferLibeiAuto && cfg.outputMode == "Uinput" ? "Libei" : cfg.outputMode);
+  replaceUinputWithNativeCheck_->setChecked(cfg.replaceUinputWithNative);
+  syncNativeReplacementChoice();
+  setCombo(outputModeCombo_, cfg.replaceUinputWithNative && cfg.outputMode == "Uinput" ? "Native" : cfg.outputMode);
   setCombo(charsetCombo_, cfg.charset);
   setCombo(languageCombo_, cfg.uiLanguage);
 
@@ -217,9 +217,9 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
   a11yCheck_->setChecked(cfg.autoEnableA11y);
 }
 
-void GeneralTab::syncLibeiReplacementChoice() {
-  syncTransportChoices(outputModeCombo_, preferLibeiAutoCheck_->isChecked());
-  emit libeiReplacementChanged(preferLibeiAutoCheck_->isChecked());
+void GeneralTab::syncNativeReplacementChoice() {
+  syncTransportChoices(outputModeCombo_, replaceUinputWithNativeCheck_->isChecked());
+  emit nativeReplacementChanged(replaceUinputWithNativeCheck_->isChecked());
 }
 
 SKeyConfig GeneralTab::collectConfig() const {
@@ -237,7 +237,7 @@ SKeyConfig GeneralTab::collectConfig() const {
   cfg.showPreedit = showPreeditCheck_->isChecked();
   cfg.debug = debugCheck_->isChecked();
   cfg.autoDelay = autoDelayCheck_->isChecked();
-  cfg.preferLibeiAuto = preferLibeiAutoCheck_->isChecked();
+  cfg.replaceUinputWithNative = replaceUinputWithNativeCheck_->isChecked();
   cfg.autoEnableA11y = a11yCheck_->isChecked();
   cfg.modeMenuKey = modeMenuKeyEdit_->fcitx5Value();
   return cfg;

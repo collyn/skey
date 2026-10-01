@@ -5,7 +5,7 @@ set(CMAKE_AUTORCC OFF)
 
 set(SKEY_SOURCES
     engine.cpp
-    libei_injector.cpp
+    native_injector.cpp
     vietnamese.cpp
     viet_recompose.cpp
     viet_undo.cpp
@@ -21,6 +21,7 @@ set(SKEY_SOURCES
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(DBUS REQUIRED dbus-1)
 pkg_check_modules(XCB REQUIRED xcb)
+pkg_check_modules(NATIVE_X11 REQUIRED IMPORTED_TARGET x11 xtst)
 
 add_library(skey MODULE ${SKEY_SOURCES})
 target_link_libraries(skey
@@ -28,6 +29,7 @@ target_link_libraries(skey
     skey_engine
     ${DBUS_LIBRARIES}
     ${XCB_LIBRARIES}
+    PkgConfig::NATIVE_X11
     pthread
     dl
     m
@@ -67,7 +69,7 @@ target_include_directories(test_a11y_monitor PRIVATE ${DBUS_INCLUDE_DIRS})
 target_compile_features(test_a11y_monitor PRIVATE cxx_std_17)
 add_test(NAME A11yMonitor COMMAND test_a11y_monitor)
 add_executable(test_engine_performance test_engine_performance.cpp ${SKEY_SOURCES})
-target_link_libraries(test_engine_performance Fcitx5::Core skey_engine ${DBUS_LIBRARIES} ${XCB_LIBRARIES} pthread dl m)
+target_link_libraries(test_engine_performance Fcitx5::Core skey_engine ${DBUS_LIBRARIES} ${XCB_LIBRARIES} PkgConfig::NATIVE_X11 pthread dl m)
 target_include_directories(test_engine_performance PRIVATE ${SKEY_ENGINE_DIR} ${DBUS_INCLUDE_DIRS} ${XCB_INCLUDE_DIRS})
 target_compile_features(test_engine_performance PRIVATE cxx_std_17)
 target_compile_definitions(test_engine_performance PRIVATE FCITX_SKEY_ICON_PATH="/tmp/skey-test.svg" FCITX_SKEY_ICON_DIR="/tmp")
