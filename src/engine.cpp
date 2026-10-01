@@ -1655,6 +1655,7 @@ void SKeyState::finishSurroundingMeasurement() {
 bool SKeyState::commitText(const std::string &utf8, bool uinputReplacement) {
   if (utf8.empty())
     return false;
+  const uint64_t commitStartedAt = now(CLOCK_MONOTONIC);
   // A replacement timer may fire after a click but before the next key.
   // Never insert the previous cell's pending text into the newly selected
   // cell. Use the same synchronous boundary check as keyEvent().
@@ -1701,16 +1702,23 @@ bool SKeyState::commitText(const std::string &utf8, bool uinputReplacement) {
     preedit.setCursor(text.size());
     ic_->inputPanel().setClientPreedit(preedit);
     ic_->updatePreedit();
+    SKEY_DEBUG() << "Commit timing: updatePreedit="
+                 << (now(CLOCK_MONOTONIC) - commitStartedAt) / 1000 << "ms";
     SKEY_DEBUG() << "Uinput: composition commit '" << text
                  << (isX11Tabby() ? "' [tabby-x11]" : firefoxX11Replacement ? "' [firefox-x11]"
                      : isWayland() ? "' [chromium-wayland]" : "' [chromium-x11]");
   }
   ic_->commitString(text);
+  SKEY_DEBUG() << "Commit timing: commitString="
+               << (now(CLOCK_MONOTONIC) - commitStartedAt) / 1000 << "ms"
+               << " textBytes=" << text.size();
   if (composeReplacement) {
     // Protocol composition is immediately committed, independent of the
     // Show preedit preference. Never leave a visible/pending composition.
     ic_->inputPanel().setClientPreedit(Text());
     ic_->updatePreedit();
+    SKEY_DEBUG() << "Commit timing: clearPreedit="
+                 << (now(CLOCK_MONOTONIC) - commitStartedAt) / 1000 << "ms";
   }
   return true;
 }
@@ -1826,6 +1834,16 @@ bool SKeyState::inChromiumAddressBar() const {
   // Wayland would misclassify the Ctrl+F find bar as an address bar, causing
   // Escape-key autocomplete dismissal to close the find bar.
   if (!isWayland()) {
+    auto *mon = engine_->a11yMonitor();
+    // A fresh web-content verdict is authoritative.  Return before the
+    // cursor/DPI and active-window X11 queries below; those queries are
+    // synchronous and were needlessly run on every key in Chrome page
+    // editors when AT-SPI had already identified the focused document.
+    if (mon && mon->isFocusSnapshotFresh(5000000) &&
+        mon->isWebContentFocused()) {
+      addrBarUiVerdictAtUsec_ = 0;
+      return false;
+    }
     // Caret-geometry gates below are scaled by the display DPI.  Fixed
     // pixel thresholds assume 96 DPI and break on scaled displays
     // (125%/150%/200%), where Chrome's omnibox caret is proportionally
@@ -1843,7 +1861,6 @@ bool SKeyState::inChromiumAddressBar() const {
     // X11 cursor rectangles are root-relative. Comparing their absolute Y
     // to the toolbar height misclassifies an omnibox when its window moves.
     const int caretTop = ic_->cursorRect().top() - x11ActiveWindowTop().value_or(0);
-    auto *mon = engine_->a11yMonitor();
     // Fresh snapshot with WEB CONTENT focus means the user is in a web
     // page (Facebook chat, forms...) — never the omnibox.  Must be
     // checked BEFORE the verdict latch and the cursor-rect fallback: a
@@ -1852,11 +1869,6 @@ bool SKeyState::inChromiumAddressBar() const {
     // omnibox), would otherwise keep the address-bar machinery running
     // in web editors, adding a full BS round-trip + commit sleep to
     // every tone key.
-    if (mon && mon->isFocusSnapshotFresh(5000000) &&
-        mon->isWebContentFocused()) {
-      addrBarUiVerdictAtUsec_ = 0;
-      return false;
-    }
     if (mon && mon->isBrowserUIFocused()) {
       // Only a FRESH browser-UI verdict counts, AND the caret must be
       // addrbar-shaped.  Web-page buttons (FB's own UI) also produce
