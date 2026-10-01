@@ -17,9 +17,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-18 clang-tools-18 cmake extra-cmake-modules \
-            libfcitx5core-dev fcitx5 pkg-config gettext libdbus-1-dev libxcb1-dev \
+            libfcitx5core-dev fcitx5 pkg-config gettext libdbus-1-dev libxcb1-dev libx11-dev libxtst-dev \
+            libei-dev libportal-dev \
             qt6-base-dev libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev \
             dbus-daemon python3
+          pkg-config --print-errors --exists x11 xtst 'libei-1.0 >= 1.0' 'libportal >= 0.7.1'
       - name: Build, test, and audit includes
         env:
           CC: clang-18

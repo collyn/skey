@@ -1094,3 +1094,21 @@ msgstr "Cập nhật thành công! Hệ thống đã được build lại bằng
 #: src/settings/updater.cpp:580
 msgid "Cập nhật thất bại (mã %1): %2"
 msgstr "Cập nhật thất bại (mã %1): %2"
+
+msgid "Thay thế Uinput bằng Native"
+msgstr "Thay thế Uinput bằng Native"
+
+msgid "Khi bật, Native thay thế Uinput trong Auto và trong menu chọn mode."
+msgstr "Khi bật, Native thay thế Uinput trong Auto và trong menu chọn mode."
+
+msgid "Native"
+msgstr "Native"
+
+msgid "Native (XTest/Libei)"
+msgstr "Native (XTest/Libei)"
+
+msgid "Loại trừ ứng dụng"
+msgstr "Loại trừ ứng dụng"
+
+msgid "Output Mode: Native"
+msgstr "Output Mode: Native"

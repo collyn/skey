@@ -17,6 +17,10 @@
   librsvg, # rsvg-convert for PNG tray icons
   dbus,
   libxcb, # X11 WM_CLASS detection
+  libX11,
+  libXtst,
+  libei,
+  libportal,
   fcitx5,
   qt6, # settings GUI (qtbase/qtwayland/qtsvg) + wrapQtAppsHook
   rustPlatform,
@@ -119,6 +123,10 @@ stdenv.mkDerivation (finalAttrs: {
     fcitx5
     dbus
     libxcb
+    libX11
+    libXtst
+    libei
+    libportal
     qt6.qtbase
     qt6.qtwayland # runtime platform plugin for the settings GUI on Wayland
     qt6.qtsvg # QIcon SVG loading at runtime

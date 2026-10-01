@@ -89,7 +89,8 @@ SKeyConfig readSkeyConfig() {
         stripQuotes(val);
 
         if (key == "InputMethod")      cfg.inputMethod  = val;
-        else if (key == "OutputMode")   cfg.outputMode   = val;
+        else if (key == "OutputMode")   cfg.outputMode   = val == "Libei" ? "Native" : val;
+        else if (key == "PreferLibeiAuto") cfg.replaceUinputWithNative = parseBool(val);
         else if (key == "Charset")      cfg.charset       = val;
         else if (key == "ShortW")       cfg.shortW        = parseBool(val);
         else if (key == "BracketUO")    cfg.bracketUO     = parseBool(val);
@@ -98,7 +99,7 @@ SKeyConfig readSkeyConfig() {
         else if (key == "Dict")         cfg.dict          = parseBool(val);
         else if (key == "ShowPreedit")  cfg.showPreedit   = parseBool(val);
         else if (key == "AutoEnableA11y") cfg.autoEnableA11y = parseBool(val);
-        else if (key == "ChromiumAddressBarMode") cfg.chromiumAddressBarMode = val;
+        else if (key == "ChromiumAddressBarMode") cfg.chromiumAddressBarMode = val == "Libei" ? "Native" : val;
         else if (key == "Debug")        cfg.debug         = parseBool(val);
         else if (key == "AutoDelay")    cfg.autoDelay     = parseBool(val);
         else if (key == "EnableMacro")   cfg.enableMacro    = parseBool(val);
@@ -134,6 +135,7 @@ bool writeSkeyConfig(const SKeyConfig &cfg) {
     out << "InputMethod="   << maybeQuote(cfg.inputMethod)  << "\n";
     out << "# Output Mode"                  << "\n";
     out << "OutputMode="    << maybeQuote(cfg.outputMode)   << "\n";
+    out << "PreferLibeiAuto=" << boolStr(cfg.replaceUinputWithNative) << "\n";
     out << "# Character set (Unicode / TCVN3 (ABC) / VNI Windows / Windows CP1258 / VIQR)" << "\n";
     out << "Charset="       << maybeQuote(cfg.charset)      << "\n";
     out << "# Telex: type w as ư"           << "\n";

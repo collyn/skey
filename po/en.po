@@ -1095,3 +1095,21 @@ msgstr "Update successful! The system has been rebuilt with nixos-rebuild."
 #: src/settings/updater.cpp:580
 msgid "Cập nhật thất bại (mã %1): %2"
 msgstr "Update failed (code %1): %2"
+
+msgid "Thay thế Uinput bằng Native"
+msgstr "Replace Uinput with Native"
+
+msgid "Khi bật, Native thay thế Uinput trong Auto và trong menu chọn mode."
+msgstr "When enabled, Native replaces Uinput in Auto mode and the mode menu."
+
+msgid "Native"
+msgstr "Native"
+
+msgid "Native (XTest/Libei)"
+msgstr "Native (XTest/Libei)"
+
+msgid "Loại trừ ứng dụng"
+msgstr "Exclude application"
+
+msgid "Output Mode: Native"
+msgstr "Output Mode: Native"

@@ -21,7 +21,8 @@ jobs:
     # which already attached its artifacts — the follow-up tag push must
     # not rebuild everything (it would also strip the dev version suffix).
     if: ${{ !contains(github.ref_name, '-dev.') }}
-    runs-on: ubuntu-22.04
+    # libei-dev is available starting with Ubuntu 24.04.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
@@ -32,7 +33,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake extra-cmake-modules libfcitx5core-dev \
             fcitx5 pkg-config gettext dpkg-dev apt-utils librsvg2-bin libdbus-1-dev \
-            libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev libxcb1-dev qt6-base-dev
+            libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev libxcb1-dev libx11-dev libxtst-dev qt6-base-dev \
+            libei-dev libportal-dev
+          pkg-config --print-errors --exists x11 xtst 'libei-1.0 >= 1.0' 'libportal >= 0.7.1'
 
       - name: Install Rust toolchain
         run: |
@@ -77,8 +80,9 @@ jobs:
             pre_install: dnf install -y tar git
             install: |
               dnf install -y cmake extra-cmake-modules fcitx5-devel fcitx5 \
-                dbus-devel libxcb-devel gettext gcc-c++ make \
+                dbus-devel libxcb-devel libX11-devel libXtst-devel gettext gcc-c++ make \
                 qt6-qtbase-devel librsvg2-tools \
+                'pkgconfig(libei-1.0)' 'pkgconfig(libportal)' \
                 rpm-build rpm-sign gpg createrepo_c
           - distro: opensuse
             image: opensuse/tumbleweed
@@ -87,8 +91,9 @@ jobs:
             install: |
               zypper --non-interactive install --force-resolution \
                 cmake extra-cmake-modules \
-                fcitx5-devel fcitx5 dbus-1-devel libxcb-devel gettext gcc-c++ make \
+                fcitx5-devel fcitx5 dbus-1-devel libxcb-devel libX11-devel libXtst-devel gettext gcc-c++ make \
                 qt6-base-devel rsvg-convert \
+                'pkgconfig(libei-1.0)' 'pkgconfig(libportal)' \
                 rpm-build gpg2 createrepo_c
 
     container:
@@ -102,7 +107,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install build dependencies
-        run: ${{ matrix.install }}
+        run: |
+          ${{ matrix.install }}
+          pkg-config --print-errors --exists x11 xtst 'libei-1.0 >= 1.0' 'libportal >= 0.7.1'
 
       - name: Import GPG key
         env:

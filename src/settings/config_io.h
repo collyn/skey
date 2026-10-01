@@ -26,6 +26,7 @@ enum class UpdateChannel { Stable = 0, Dev = 1 };
 struct SKeyConfig {
     std::string inputMethod  = "Telex";       // "Telex", "VNI"
     std::string outputMode   = "Auto";        // "Auto", "Uinput", "Surrounding Text", "Preedit"
+    bool replaceUinputWithNative = false; // Replace Uinput in Auto, explicit modes and menus
     std::string charset      = "Unicode";     // "Unicode", "TCVN3 (ABC)", "VNI Windows"
     bool shortW       = false;   // Telex: bare 'w' → 'ư'
     bool bracketUO    = false;   // Telex: '[' → 'ơ', ']' → 'ư'
@@ -34,7 +35,7 @@ struct SKeyConfig {
     bool dict         = false;  // auto-restore checks the word list, not rules
     bool showPreedit  = true;
     bool autoEnableA11y = true; // auto-set toolkit-accessibility at start
-    std::string chromiumAddressBarMode = "Auto";  // "Auto", "Uinput", "Surrounding Text", "Preedit", "No Vietnamese"
+    std::string chromiumAddressBarMode = "Auto";  // "Auto", "Uinput", "Surrounding Text", "Preedit", "Native", "No Vietnamese"
     bool debug        = false;
     bool autoDelay    = false;  // learn per-app uinput round trip, seed commit delay
     bool enableMacro         = true;
