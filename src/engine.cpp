@@ -2542,7 +2542,9 @@ int SKeyState::a11yAppPid() const {
   // the program is a Chromium browser (rejecting them killed the entire
   // pid pipeline for Chrome even after the monitor-side fix, 2026-09-07).
   if (!commMatches && isChromiumBrowser(prog) &&
-      (comm == "chrome" || comm == "CrRendererMain" || comm == "CrGpuMain" ||
+      (comm == "chrome" || comm == "msedge" || comm == "chromium" ||
+       comm == "brave" || comm == "vivaldi" || comm == "opera" ||
+       comm == "CrRendererMain" || comm == "CrGpuMain" ||
        comm == "CrUtilityMain")) {
     commMatches = true;
   }
