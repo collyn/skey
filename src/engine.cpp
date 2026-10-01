@@ -2238,6 +2238,16 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     return autoUinput(SKeyOutputMode::Uinput);
   }
 
+  // Some Chromium Wayland frontends temporarily clear the IM program name
+  // when focus moves between editable elements in the same page.  AT-SPI
+  // still identifies the focused process in that window.  Keep the proven
+  // Native/Uinput replacement path during this short identity gap instead
+  // of falling through to SurroundingText because of stale capability bits.
+  if (appProgram().empty() && isChromiumCached()) {
+    SKEY_DEBUG() << "Auto: empty app with Chromium a11y process → Uinput";
+    return autoUinput(SKeyOutputMode::Uinput);
+  }
+
   // A Chromium browser tab whose a11y focus is NOT a text entry cannot
   // receive surrounding-text replacements.  Clicking a Google Sheets cell
   // focuses the document/combo box while caps still carry the previous
@@ -2504,9 +2514,6 @@ int SKeyState::a11yAppPid() const {
     return -1;
   }
   const std::string &prog = appProgram();
-  if (prog.empty()) {
-    return -1;
-  }
   std::ifstream commFile("/proc/" + std::to_string(pid) + "/comm");
   std::string comm;
   if (!commFile.is_open() || !std::getline(commFile, comm)) {
@@ -2514,6 +2521,18 @@ int SKeyState::a11yAppPid() const {
   }
   if (!comm.empty() && comm.back() == '\n') {
     comm.pop_back();
+  }
+  if (prog.empty()) {
+    // Native Wayland Chromium frontends can report an empty IM program during
+    // an in-page focus transition.  Accept only well-known Chromium process
+    // names so an old a11y snapshot from another application is not reused.
+    static constexpr const char *chromiumComms[] = {
+        "chrome", "chromium", "chromium-browser", "msedge", "brave",
+        "vivaldi", "opera"};
+    for (const char *name : chromiumComms) {
+      if (comm == name) return pid;
+    }
+    return -1;
   }
   bool commMatches = comm == prog || prog.compare(0, 15, comm) == 0 ||
                      comm.compare(0, 15, prog) == 0;
