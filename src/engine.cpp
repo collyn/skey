@@ -2238,6 +2238,16 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
     return autoUinput(SKeyOutputMode::Uinput);
   }
 
+  // Some Chromium Wayland frontends temporarily clear the IM program name
+  // when focus moves between editable elements in the same page.  AT-SPI
+  // still identifies the focused process in that window.  Keep the proven
+  // Native/Uinput replacement path during this short identity gap instead
+  // of falling through to SurroundingText because of stale capability bits.
+  if (appProgram().empty() && isChromiumCached()) {
+    SKEY_DEBUG() << "Auto: empty app with Chromium a11y process → Uinput";
+    return autoUinput(SKeyOutputMode::Uinput);
+  }
+
   // A Chromium browser tab whose a11y focus is NOT a text entry cannot
   // receive surrounding-text replacements.  Clicking a Google Sheets cell
   // focuses the document/combo box while caps still carry the previous
@@ -2504,9 +2514,6 @@ int SKeyState::a11yAppPid() const {
     return -1;
   }
   const std::string &prog = appProgram();
-  if (prog.empty()) {
-    return -1;
-  }
   std::ifstream commFile("/proc/" + std::to_string(pid) + "/comm");
   std::string comm;
   if (!commFile.is_open() || !std::getline(commFile, comm)) {
@@ -2514,6 +2521,18 @@ int SKeyState::a11yAppPid() const {
   }
   if (!comm.empty() && comm.back() == '\n') {
     comm.pop_back();
+  }
+  if (prog.empty()) {
+    // Native Wayland Chromium frontends can report an empty IM program during
+    // an in-page focus transition.  Accept only well-known Chromium process
+    // names so an old a11y snapshot from another application is not reused.
+    static constexpr const char *chromiumComms[] = {
+        "chrome", "chromium", "chromium-browser", "msedge", "brave",
+        "vivaldi", "opera"};
+    for (const char *name : chromiumComms) {
+      if (comm == name) return pid;
+    }
+    return -1;
   }
   bool commMatches = comm == prog || prog.compare(0, 15, comm) == 0 ||
                      comm.compare(0, 15, prog) == 0;
@@ -2523,7 +2542,9 @@ int SKeyState::a11yAppPid() const {
   // the program is a Chromium browser (rejecting them killed the entire
   // pid pipeline for Chrome even after the monitor-side fix, 2026-09-07).
   if (!commMatches && isChromiumBrowser(prog) &&
-      (comm == "chrome" || comm == "CrRendererMain" || comm == "CrGpuMain" ||
+      (comm == "chrome" || comm == "msedge" || comm == "chromium" ||
+       comm == "brave" || comm == "vivaldi" || comm == "opera" ||
+       comm == "CrRendererMain" || comm == "CrGpuMain" ||
        comm == "CrUtilityMain")) {
     commMatches = true;
   }
@@ -4894,11 +4915,24 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         unsigned int selEnd =
             std::max(surrounding.anchor(), surrounding.cursor());
         unsigned int deleteSize = selEnd - selStart;
+        const bool chromiumWaylandSelection = isWayland() && isChromiumCached();
         SKEY_DEBUG() << "SurrBS: delete selection size=" << deleteSize
-                     << " via forwardKey";
-        // Forward a raw Backspace key so the app handles selection
-        // deletion natively, then update local cache.
-        ic_->forwardKey(Key(FcitxKey_BackSpace));
+                     << (chromiumWaylandSelection ? " via surrounding text"
+                                                   : " via forwardKey");
+        if (chromiumWaylandSelection) {
+          // Chromium Wayland may consume a forwarded Backspace without
+          // applying it to a DOM selection.  The surrounding-text request
+          // carries the exact selected range and is handled by the same text
+          // input protocol that supplied the snapshot.
+          ic_->deleteSurroundingText(
+              static_cast<int>(selStart) -
+                  static_cast<int>(surrounding.cursor()),
+              deleteSize);
+        } else {
+          // Other clients keep the native key path, which preserves their
+          // selection semantics and existing KDE/X11 behavior.
+          ic_->forwardKey(Key(FcitxKey_BackSpace));
+        }
         if (ic_->surroundingText().isValid()) {
           mirrorSurroundingDelete(
               static_cast<int>(selStart) -
@@ -6880,10 +6914,19 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
               mirrorSurroundingDelete(-deleteLen, deleteLen);
             }
           } else {
-            for (int i = 0; i < deleteLen; ++i) {
-              ic_->deleteSurroundingText(-1, 1);
-              if (ic_->surroundingText().isValid()) {
-                mirrorSurroundingDelete(-1, 1);
+            // Chromium Wayland clients can reorder/coalesce consecutive
+            // single-character delete requests while their surrounding
+            // snapshot is being refreshed.  Send one atomic suffix delete
+            // for that path; this keeps the replacement transaction ordered
+            // and avoids removing the prefix ("ban" -> "ạn").
+            if (isWayland() && isChromiumCached()) {
+              ic_->deleteSurroundingText(-deleteLen, deleteLen);
+            } else {
+              for (int i = 0; i < deleteLen; ++i) {
+                ic_->deleteSurroundingText(-1, 1);
+                if (ic_->surroundingText().isValid()) {
+                  mirrorSurroundingDelete(-1, 1);
+                }
               }
             }
           }
