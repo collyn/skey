@@ -4915,11 +4915,24 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         unsigned int selEnd =
             std::max(surrounding.anchor(), surrounding.cursor());
         unsigned int deleteSize = selEnd - selStart;
+        const bool chromiumWaylandSelection = isWayland() && isChromiumCached();
         SKEY_DEBUG() << "SurrBS: delete selection size=" << deleteSize
-                     << " via forwardKey";
-        // Forward a raw Backspace key so the app handles selection
-        // deletion natively, then update local cache.
-        ic_->forwardKey(Key(FcitxKey_BackSpace));
+                     << (chromiumWaylandSelection ? " via surrounding text"
+                                                   : " via forwardKey");
+        if (chromiumWaylandSelection) {
+          // Chromium Wayland may consume a forwarded Backspace without
+          // applying it to a DOM selection.  The surrounding-text request
+          // carries the exact selected range and is handled by the same text
+          // input protocol that supplied the snapshot.
+          ic_->deleteSurroundingText(
+              static_cast<int>(selStart) -
+                  static_cast<int>(surrounding.cursor()),
+              deleteSize);
+        } else {
+          // Other clients keep the native key path, which preserves their
+          // selection semantics and existing KDE/X11 behavior.
+          ic_->forwardKey(Key(FcitxKey_BackSpace));
+        }
         if (ic_->surroundingText().isValid()) {
           mirrorSurroundingDelete(
               static_cast<int>(selStart) -
@@ -6901,10 +6914,19 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
               mirrorSurroundingDelete(-deleteLen, deleteLen);
             }
           } else {
-            for (int i = 0; i < deleteLen; ++i) {
-              ic_->deleteSurroundingText(-1, 1);
-              if (ic_->surroundingText().isValid()) {
-                mirrorSurroundingDelete(-1, 1);
+            // Chromium Wayland clients can reorder/coalesce consecutive
+            // single-character delete requests while their surrounding
+            // snapshot is being refreshed.  Send one atomic suffix delete
+            // for that path; this keeps the replacement transaction ordered
+            // and avoids removing the prefix ("ban" -> "ạn").
+            if (isWayland() && isChromiumCached()) {
+              ic_->deleteSurroundingText(-deleteLen, deleteLen);
+            } else {
+              for (int i = 0; i < deleteLen; ++i) {
+                ic_->deleteSurroundingText(-1, 1);
+                if (ic_->surroundingText().isValid()) {
+                  mirrorSurroundingDelete(-1, 1);
+                }
               }
             }
           }
