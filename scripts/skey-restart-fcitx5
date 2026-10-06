@@ -19,7 +19,12 @@
 # Redirect BOTH streams: the daemon keeps stdout/stderr open across the
 # fork, and when this script runs under `systemd-run --wait --pipe`
 # (postinst), an open pipe FD makes --pipe never see EOF.
-fcitx5 -r -d >/dev/null 2>&1 || true
+# Ask the existing daemon to reload first. Starting `fcitx5 -r -d` from a
+# transient package-update unit can leave a second daemon alive after the unit
+# exits; that races the libei portal restore token with the old addon session.
+if ! fcitx5-remote -r >/dev/null 2>&1; then
+    fcitx5 -r -d >/dev/null 2>&1 || true
+fi
 
 # No Wayland / no KDE Plasma → nothing to reconnect.
 if [ "${XDG_SESSION_TYPE:-}" != "wayland" ]; then
