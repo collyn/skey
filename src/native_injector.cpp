@@ -59,11 +59,16 @@ struct NativeInjector::Impl {
         const auto path = tokenPath();
         std::error_code ec;
         std::filesystem::create_directories(path.parent_path(), ec);
-        std::ofstream out(path, std::ios::trunc);
+        // Write replacement token atomically; a killed Fcitx must not leave a
+        // zero-length token that looks like a valid restore state.
+        const auto tmp = path.string() + ".tmp-" + std::to_string(getpid());
+        std::ofstream out(tmp, std::ios::trunc);
         if (out) {
             out << token << '\n';
             out.close();
-            chmod(path.c_str(), 0600);
+            chmod(tmp.c_str(), 0600);
+            std::filesystem::rename(tmp, path, ec);
+            if (ec) std::filesystem::remove(tmp, ec);
         }
         g_free(token);
     }
@@ -206,7 +211,20 @@ struct NativeInjector::Impl {
         if (wakeSource) { g_source_destroy(wakeSource); g_source_unref(wakeSource); }
         if (keyboard) keyboard = ei_device_unref(keyboard);
         if (connection) connection = ei_unref(connection);
-        if (session) { xdp_session_close(session); g_object_unref(session); }
+        if (session) {
+            // The portal consumes a restore token before starting a restored
+            // session and writes it back only when Close is delivered. The
+            // close call is asynchronous; give GLib time to flush it before
+            // tearing down the portal connection during Fcitx shutdown.
+            xdp_session_close(session);
+            const gint64 deadline = g_get_monotonic_time() + 250000;
+            while (g_get_monotonic_time() < deadline) {
+                while (g_main_context_pending(context))
+                    g_main_context_iteration(context, FALSE);
+                g_usleep(10000);
+            }
+            g_object_unref(session);
+        }
         if (portal) g_object_unref(portal);
         g_object_unref(cancellable);
         g_main_context_pop_thread_default(context);

@@ -4915,11 +4915,18 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         unsigned int selEnd =
             std::max(surrounding.anchor(), surrounding.cursor());
         unsigned int deleteSize = selEnd - selStart;
-        const bool chromiumWaylandSelection = isWayland() && isChromiumCached();
+        // GTK's GNOME Text Editor has the same Wayland behaviour as
+        // Chromium here: a forwarded Backspace first collapses Ctrl+A's
+        // selection, requiring a second physical Backspace to delete it.
+        // Send the exact selected range through the surrounding-text API so
+        // one user Backspace performs one atomic deletion.
+        const bool nativeWaylandSelection =
+            isWayland() &&
+            (isChromiumCached() || appProgram() == "gnome-text-editor");
         SKEY_DEBUG() << "SurrBS: delete selection size=" << deleteSize
-                     << (chromiumWaylandSelection ? " via surrounding text"
-                                                   : " via forwardKey");
-        if (chromiumWaylandSelection) {
+                     << (nativeWaylandSelection ? " via surrounding text"
+                                                : " via forwardKey");
+        if (nativeWaylandSelection) {
           // Chromium Wayland may consume a forwarded Backspace without
           // applying it to a DOM selection.  The surrounding-text request
           // carries the exact selected range and is handled by the same text
@@ -4952,8 +4959,18 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       // character and cannot clear a multi-character selection.
       if ((!surrounding.isValid() || surrounding.cursor() == 0) &&
           committedLen_ <= 0) {
-        SKEY_DEBUG() << "SurrBS: forwardKey (valid=" << surrounding.isValid()
-                     << " cursor=" << surrounding.cursor() << ")";
+        // Native Wayland clients can expose the SurroundingText capability
+        // while publishing no usable snapshot (GTK does this after Ctrl+A).
+        // forwardKey() is a synthetic fcitx event and is ignored by this
+        // path, so accepting the event would swallow the user's Backspace.
+        // Leave it unaccepted and let the compositor deliver the original
+        // key, preserving application selection deletion.
+        SKEY_DEBUG() << "SurrBS: pass-through (valid=" << surrounding.isValid()
+                     << " cursor=" << surrounding.cursor()
+                     << (isWayland() ? " wayland" : "") << ")";
+        if (isWayland()) {
+          return;
+        }
         ic_->forwardKey(Key(FcitxKey_BackSpace));
         keyEvent.filterAndAccept();
         return;
