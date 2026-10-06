@@ -26,7 +26,7 @@ if ! fcitx5-remote -r >/dev/null 2>&1; then
     fcitx5 -r -d >/dev/null 2>&1 || true
 fi
 
-# No Wayland / no KDE Plasma → nothing to reconnect.
+# No Wayland / no KDE Plasma → reload is complete.
 if [ "${XDG_SESSION_TYPE:-}" != "wayland" ]; then
     exit 0
 fi
@@ -48,10 +48,9 @@ for _ in $(seq 1 40); do
     sleep 0.25
 done
 # Wait for the skey addon to fully register (the last addon to load,
-# ~2s after daemon start) before toggling.  A fixed 1s margin raced with
-# it: toggling KWin while fcitx5 was half-initialized left text-input-v3
-# clients that never re-commit (STerm) dead until app restart, while
-# Chromium apps recovered on their own and masked the problem.
+# ~2s after daemon start). Do not toggle KWin here: that tears down and
+# recreates the Wayland launcher, causing another Fcitx5/libei session while
+# the previous portal restore token is still being saved.
 if [ "$ready" = 1 ]; then
     for _ in $(seq 1 40); do
         if [ -n "$("$QBUS" org.fcitx.Fcitx5 /controller \
@@ -61,14 +60,3 @@ if [ "$ready" = 1 ]; then
         sleep 0.25
     done
 fi
-
-# Minimal 100ms off window: short enough that apps keep their text input
-# registration, long enough for KWin to tear down and re-spawn the
-# fcitx5-wayland-launcher against the new instance.
-"$QBUS" org.kde.KWin /VirtualKeyboard \
-    org.freedesktop.DBus.Properties.Set \
-    org.kde.kwin.VirtualKeyboard enabled false 2>/dev/null || true
-sleep 0.1
-"$QBUS" org.kde.KWin /VirtualKeyboard \
-    org.freedesktop.DBus.Properties.Set \
-    org.kde.kwin.VirtualKeyboard enabled true 2>/dev/null || true
