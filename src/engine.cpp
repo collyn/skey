@@ -1800,6 +1800,8 @@ void SKeyState::refreshAppMode() {
 }
 
 bool SKeyState::forwardUserBackspace() const {
+  if (effectiveMode() == SKeyOutputMode::SurroundingText &&
+      webkitGtkSurroundingFallback()) return true;
   // Electron terminal helper textareas can publish valid surrounding text
   // while native deletes never reach the terminal. A user Backspace already
   // specifies the desired edit: let the app handle it, including selection.
@@ -2018,6 +2020,14 @@ bool SKeyState::useSurroundingText() const {
 
 bool SKeyState::useNativeMode() const {
   return effectiveMode() == SKeyOutputMode::Native;
+}
+
+bool SKeyState::useNativeBackspaceTransport() const {
+  // The omnibox uses injected deletions even in Surrounding Text.
+  // Keep the output mode, but honor the configured replacement transport.
+  return useNativeMode() ||
+         (effectiveMode() == SKeyOutputMode::SurroundingText &&
+          engine_->config().replaceUinputWithNative.value() && inChromiumAddressBar());
 }
 
 bool SKeyState::useUinputMode() const {
@@ -2702,11 +2712,51 @@ bool SKeyState::waylandNativeSurroundingProbe() const {
          !isChromiumCached() && !isTerminalAppCached();
 }
 
+bool SKeyState::webkitGtkSurroundingFallback() const {
+  const auto program = appProgram();
+  if (cachedWebKitProgram_ != program) {
+    cachedWebKitProgram_ = program;
+    cachedIsWebKitGtk_ = -1;
+  }
+  if (cachedIsWebKitGtk_ >= 0) return cachedIsWebKitGtk_;
+  cachedIsWebKitGtk_ = 0;
+  if (program.empty()) return false;
+  // WebKitGTK's GTK3 IM context handles retrieve-surrounding but not
+  // delete-surrounding. Detect the loaded toolkit, never application names.
+  // GTK4 has a different library/forward-key contract and is not included.
+  DIR *dir = opendir("/proc");
+  if (!dir) return false;
+  while (auto *entry = readdir(dir)) {
+    if (!isdigit(entry->d_name[0])) continue;
+    const std::string base = std::string("/proc/") + entry->d_name;
+    char exe[PATH_MAX];
+    const auto length = readlink((base + "/exe").c_str(), exe, sizeof(exe) - 1);
+    if (length <= 0) continue;
+    exe[length] = '\0';
+    const char *filename = std::strrchr(exe, '/');
+    if (!filename || program != filename + 1) continue;
+    std::ifstream maps(base + "/maps");
+    std::string line;
+    while (std::getline(maps, line)) {
+      const auto slash = line.rfind('/');
+      if (slash != std::string::npos &&
+          line.compare(slash + 1, 14, "libwebkit2gtk-") == 0) {
+        cachedIsWebKitGtk_ = 1;
+        break;
+      }
+    }
+    if (cachedIsWebKitGtk_) break;
+  }
+  closedir(dir);
+  return cachedIsWebKitGtk_;
+}
+
 bool SKeyState::useNativeSurroundingApi() const {
   // Single effectiveMode() call — avoids double-evaluating detectAutoMode()
   // (which scans /proc via isChromiumBasedApp) on every keystroke.
   auto mode = effectiveMode();
   return mode == SKeyOutputMode::SurroundingText &&
+         !webkitGtkSurroundingFallback() &&
          (ic_->capabilityFlags().test(CapabilityFlag::SurroundingText) ||
           waylandNativeSurroundingProbe());
 }
@@ -2935,6 +2985,7 @@ void SKeyState::activate() {
   cachedIsChromium_ = -1;
   cachedIsFirefoxOrSnap_ = -1;
   cachedIsTerminalApp_ = -1;
+  cachedIsWebKitGtk_ = -1;
   // A bare-caps decision belongs to the previous focus session.  A stale
   // pending/deadline must not leak into the new window — detectAutoMode
   // would otherwise lock sticky instantly on the first keystroke if the old
@@ -2970,7 +3021,7 @@ void SKeyState::activate() {
   }
   auto mode = effectiveMode();
   auto configuredMode = engine_->config().outputMode.value();
-  if (useNativeMode() && !appExcluded_) engine_->native_.start();
+  if (useNativeBackspaceTransport() && !appExcluded_) engine_->native_.start();
   SKEY_DEBUG() << "Activated: mode=" << outputModeName(mode)
                << " configured=" << outputModeName(configuredMode)
                << " replaceUinputWithNative=" << engine_->config().replaceUinputWithNative.value()
@@ -3133,17 +3184,17 @@ bool SKeyState::connectUinputServer() {
   return true;
 }
 
-void SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view oldWord) {
+bool SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view oldWord) {
   uinputDeleteAck_.reset();
   if (count < 0) {
-    return;
+    return false;
   }
   if (count == 0 && flags == 0) {
-    return;
+    return true;
   }
-  if (!useNativeMode() && !connectUinputServer()) {
+  if (!useNativeBackspaceTransport() && !connectUinputServer()) {
     SKEY_DEBUG() << "Uinput: cannot send BS, server unavailable";
-    return;
+    return false;
   }
 
   // Protocol v3: int32_t count, uint32_t flags, uint32_t textLen,
@@ -3197,18 +3248,19 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
                              oldWord, count - 1, bsSentAt_);
     }
   }
-  if (useNativeMode()) {
+  if (useNativeBackspaceTransport()) {
     // Preserve the Uinput event contract: N deletions followed by one
     // anchor. Fcitx must pass the real deletions to the application and
     // consume only the anchor in handlePendingUinputBackspace().
     if (engine_->native_.backspaces(count, flags & 1, paceUsec)) {
       uinputBsOutstanding_ += count;
       SKEY_DEBUG() << "Native: sent BS=" << count << " (includes sync anchor) paceUs=" << paceUsec;
+      return true;
     } else {
       nativeFailed_ = true;
       SKEY_DEBUG() << "Native: send rejected; no uinput fallback: " << engine_->native_.status();
     }
-    return;
+    return false;
   }
   ssize_t n = send(uinputClientFd_, msg.data(), msg.size(), MSG_NOSIGNAL);
   if (n < 0) {
@@ -3216,9 +3268,10 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
     close(uinputClientFd_);
     uinputClientFd_ = -1;
     if (connectUinputServer()) {
-      send(uinputClientFd_, msg.data(), msg.size(), MSG_NOSIGNAL);
+      n = send(uinputClientFd_, msg.data(), msg.size(), MSG_NOSIGNAL);
     }
   }
+  if (n != static_cast<ssize_t>(msg.size())) return false;
   // Track injected BS that will loop back through fcitx5 — used to
   // swallow late loopbacks instead of mistaking them for user backspaces.
   uinputBsOutstanding_ += count;
@@ -3226,6 +3279,7 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
                << (paceUsec != 1000
                        ? " pace=" + std::to_string(paceUsec / 1000) + "ms"
                        : "");
+  return true;
 }
 
 skey::AppDelayOverride SKeyState::appDelayOverrideResolved() const {
@@ -3954,7 +4008,7 @@ void SKeyState::deactivate() {
         CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 500000, 0,
         [this](EventSourceTime *, uint64_t) {
           SKEY_DEBUG() << "Deactivate: no reactivate, genuine focus loss";
-          if (useNativeMode()) {
+          if (useNativeBackspaceTransport()) {
             engine_->native_.cancel();
             resetForCellChange();
           }
@@ -4007,7 +4061,7 @@ void SKeyState::deactivate() {
               << "Deactivate: no reactivation, discarding mid-flight "
                  "replacement";
           uinputCycleTimer_.reset();
-          if (useNativeMode()) engine_->native_.cancel();
+          if (useNativeBackspaceTransport()) engine_->native_.cancel();
           pendingUinputCommit_.clear();
           expectedUinputBackspaces_ = 0;
           seenUinputBackspaces_ = 0;
@@ -4029,7 +4083,7 @@ void SKeyState::deactivate() {
     return;
   }
 
-  if (useNativeMode()) engine_->native_.cancel();
+  if (useNativeBackspaceTransport()) engine_->native_.cancel();
   expectedUinputBackspaces_ = 0;
   seenUinputBackspaces_ = 0;
   pendingUinputCommit_.clear();
@@ -4214,7 +4268,7 @@ bool SKeyState::checkCellSelection() {
 }
 
 void SKeyState::resetForCellChange() {
-  if (useNativeMode()) engine_->native_.cancel();
+  if (useNativeBackspaceTransport()) engine_->native_.cancel();
   x11BrowserFocusSettled_ = false;
   viet_.reset();
   committedLen_ = 0;
@@ -4417,7 +4471,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
-  if (useNativeMode() && !modeMenuActive_ &&
+  if (useNativeBackspaceTransport() && !modeMenuActive_ &&
       !keyEvent.key().check(engine_->modeMenuKey())) {
     engine_->native_.start();
     const auto status = engine_->native_.status();
@@ -4884,7 +4938,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       SKEY_DEBUG() << "SurrBS: Firefox X11 idle BS passthrough (app selection)";
       return;
     }
-    if (useNativeSurroundingApi() && !inChromiumAddressBar()) {
+    if ((useNativeSurroundingApi() ||
+         (effectiveMode() == SKeyOutputMode::SurroundingText && webkitGtkSurroundingFallback())) &&
+        !inChromiumAddressBar()) {
       if (forwardUserBackspace()) {
         const auto &surrounding = ic_->surroundingText();
         const bool selected = surrounding.isValid() &&
@@ -6052,6 +6108,9 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
                                            const std::string &fullComposed,
                                            bool oldComposedIsAscii,
                                            const std::string &oldComposed) {
+  const bool hadFirstWord = addrBarHadFirstWord_;
+  const bool didFullReplace = addrBarDidFullReplace_;
+  const bool keepState = addrBarKeepState_;
   // Use uinput BS + adaptive EWMA timer delay before D-Bus commitString.
   // uinput BS goes through kernel → Chrome processes it as a real keystroke
   // (omnibox update, autocomplete dismissal).  The EWMA-based delay adapts
@@ -6347,7 +6406,19 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
     seenUinputBackspaces_ = 0;
     pendingUinputCommit_ = commitText;
     uinputDeleting_ = true;
-    sendBackspaceUinput(totalBs + 1, uinputFlags); // +1 sync BS
+    const bool sent = sendBackspaceUinput(totalBs + 1, uinputFlags); // +1 sync BS
+    if (!sent) {
+      // No deletion was queued: a timeout must not insert the whole word
+      // over the unchanged omnibox text. Keep tracking what is on screen.
+      SKEY_DEBUG() << "AddrBar: deletion not sent, cancel replacement";
+      resetForCellChange();
+      viet_.setRawInput(oldComposed);
+      committedLen_ = oldComposedLen;
+      addrBarHadFirstWord_ = hadFirstWord;
+      addrBarDidFullReplace_ = didFullReplace;
+      addrBarKeepState_ = keepState;
+      return;
+    }
     // The sync-anchor BS proves the deletions reached Chrome — the
     // screen state is known-good again, so the backspace-desync guard
     // (armed by a previous user BS) must not fire on stale snapshots.
@@ -6732,7 +6803,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         // into the terminal, so only the sync anchor proves the deletions
         // were dispatched before the commit is sent (kernel 7.0 PTY
         // interleaving — see the keyEvent terminal path).
-        bool usesUinputBs = useNativeMode() ||
+        bool usesUinputBs = useNativeBackspaceTransport() ||
             (useUinputMode() &&
              (isWayland() || !isTerminalAppCached() || isChromiumCached())) ||
             (!isWayland() && isTerminalAppCached()) ||
@@ -6797,7 +6868,8 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         deferredBsSentAt_ = now(CLOCK_MONOTONIC);
         committedLen_ = newLen;
         if (!addedPart.empty()) {
-          if ((isWayland() && (isChromiumCached() || isFirefoxOrSnap())) ||
+          if (webkitGtkSurroundingFallback() ||
+              (isWayland() && (isChromiumCached() || isFirefoxOrSnap())) ||
               (!isWayland() && isChromiumBrowser(appProgram()))) {
             // Wayland has no ordering guarantee between forwardKey (via
             // the compositor's virtual-keyboard protocol) and commitString
@@ -6974,7 +7046,8 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       } else {
         const auto &surrounding = ic_->surroundingText();
         SKEY_DEBUG() << "Surr: Backspace fallback reason="
-                     << (!useNativeSurroundingApi() ? "native-api-unavailable"
+                     << (webkitGtkSurroundingFallback() ? "webkit-gtk-no-delete-handler"
+                         : !useNativeSurroundingApi() ? "native-api-unavailable"
                          : inChromiumAddressBar() ? "chromium-address-bar"
                                                   : "firefox-docs-x11-policy")
                      << " surrValid=" << surrounding.isValid()

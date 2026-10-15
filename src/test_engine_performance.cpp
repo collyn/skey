@@ -11,6 +11,8 @@
 #include <iostream>
 #include <filesystem>
 #include <limits>
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -84,6 +86,202 @@ protected:
 
 namespace fcitx {
 struct EnginePerformanceTest {
+    static void omniboxSurrounding(Instance &instance, bool native, bool wayland) {
+        class Editor : public TestInput {
+        public:
+            using TestInput::TestInput;
+            std::string text = "chaexample1";
+            bool selected = true;
+            void backspace() {
+                if (selected) { text.resize(3); selected = false; }
+                else if (!text.empty()) text.pop_back();
+            }
+        protected:
+            void commitStringImpl(const std::string &value) override {
+                TestInput::commitStringImpl(value);
+                text += value;
+            }
+        };
+        SKeyEngine engine(&instance, false);
+        engine.config_.outputMode.setValue(SKeyOutputMode::Auto);
+        engine.config_.chromiumAddressBarMode.setValue(SKeyChromiumAddressBarMode::SurroundingText);
+        engine.config_.replaceUinputWithNative.setValue(native);
+        FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
+        Editor input(instance.inputContextManager(), "google-chrome");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(wayland ? CapabilityFlags(0x72) | CapabilityFlag::Url : CapabilityFlags(0x72));
+        if (!wayland) input.setCursorRect(Rect(200, 54, 201, 72));
+        input.surroundingText().setText(input.text, 3, 11);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = state.cachedIsWebKitGtk_ = 0;
+        state.cachedWebKitProgram_ = "google-chrome";
+        check(state.effectiveMode() == SKeyOutputMode::SurroundingText,
+              "omnibox override preserves Surrounding Text output");
+        check(state.useNativeBackspaceTransport() == native,
+              "omnibox Surrounding Text honors replacement transport preference");
+        int sockets[2];
+        check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+              "isolate omnibox transport without desktop injection");
+        state.uinputClientFd_ = sockets[0];
+        state.viet_.setRawInput(native ? "chaf" : "cha");
+        state.committedLen_ = 3;
+        if (native) {
+            // An unstarted native injector rejects deterministically. It
+            // must neither fall back to the connected Uinput socket nor
+            // schedule a timeout that commits over unchanged text.
+            state.scheduleAddrBarReplacement(1, "à", 3, 0, 0, "chà", false, "cha");
+            uint32_t request[4];
+            check(recv(sockets[1], request, sizeof(request), 0) < 0 && errno == EAGAIN,
+                  "Native preference must not send through Uinput in Surrounding Text");
+            check(state.nativeFailed_ && !state.uinputDeleting_ && !state.uinputSafetyTimer_ &&
+                      state.pendingUinputCommit_.empty() && input.commits.empty() &&
+                      state.viet_.getComposed() == "cha" && !state.addrBarHadFirstWord_,
+                  "rejected deletion cancels replacement and retains the actual on-screen word");
+            auto stop = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+                now(CLOCK_MONOTONIC) + 150000, 1,
+                [&](EventSourceTime *, uint64_t) { instance.eventLoop().exit(); return true; });
+            instance.eventLoop().exec();
+            check(input.text == "chaexample1" && input.commits.empty(),
+                  "no timeout may append chà when Backspaces were never sent");
+        } else {
+            KeyEvent tone(&input, Key(FcitxKey_f));
+            state.keyEvent(tone);
+            uint32_t request[4] = {};
+            check(recv(sockets[1], request, sizeof(request), 0) == sizeof(request) && request[0] == 5,
+                  "first-word replacement sends selection dismissal, three deletions and one anchor");
+            KeyEvent append(&input, Key(FcitxKey_o));
+            state.keyEvent(append);
+            for (uint32_t i = 0; i < request[0]; ++i) {
+                KeyEvent deletion(&input, Key(FcitxKey_BackSpace));
+                state.keyEvent(deletion);
+                check(deletion.accepted() == (i + 1 == request[0]),
+                      "only the omnibox synchronization anchor is consumed");
+                if (!deletion.accepted()) input.backspace();
+            }
+            state.finishUinputSettle(0, 0);
+            if (state.settledReplayTimer_) {
+                auto stop = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+                    now(CLOCK_MONOTONIC) + 80000, 1,
+                    [&](EventSourceTime *, uint64_t) { instance.eventLoop().exit(); return true; });
+                instance.eventLoop().exec();
+            }
+            if (input.text != "chào" || state.uinputDeleting_)
+                std::cerr << "Omnibox wayland=" << wayland << " text='" << input.text
+                          << "' pending='" << state.pendingUinputCommit_
+                          << "' buffered=" << state.bufferedUinputKeys_.size() << "\n";
+            check(input.text == "chào" && !state.uinputDeleting_,
+                  "omnibox full replacement plus buffered o renders chào, not chachào");
+        }
+        // Transport policy must remain local to the omnibox.
+        input.setCapabilityFlags(CapabilityFlags(0x72));
+        input.setCursorRect(Rect(200, 400, 201, 420));
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::SurroundingText;
+        state.addrBarUiVerdictAtUsec_ = 0;
+        check(!state.useNativeBackspaceTransport(), "web content keeps its existing Surrounding Text transport");
+        close(sockets[1]);
+    }
+    static void webkitToolkitDetection(Instance &instance) {
+        // Exercise /proc detection using a mapped toolkit-named file in our
+        // own process; no dependency on an installed WebKit or live desktop.
+        const auto program = std::filesystem::read_symlink("/proc/self/exe").filename().string();
+        SKeyEngine engine(&instance, false);
+        TestInput input(instance.inputContextManager(), program);
+        auto &state = *input.propertyFor(&engine.factory_);
+        check(!state.webkitGtkSurroundingFallback(), "ordinary process must not be classified as WebKitGTK");
+        char directory[] = "/tmp/skey-webkit-maps-XXXXXX";
+        check(mkdtemp(directory) != nullptr, "create isolated toolkit mapping fixture");
+        const std::string path = std::string(directory) + "/libwebkit2gtk-test.so";
+        int fd = open(path.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+        check(fd >= 0 && ftruncate(fd, 4096) == 0, "create toolkit mapping fixture");
+        void *mapping = mmap(nullptr, 4096, PROT_READ, MAP_PRIVATE, fd, 0);
+        close(fd);
+        check(mapping != MAP_FAILED, "map toolkit fixture");
+        state.cachedIsWebKitGtk_ = -1;
+        check(state.webkitGtkSurroundingFallback(), "loaded toolkit is recognized without application-name exceptions");
+        munmap(mapping, 4096);
+        unlink(path.c_str());
+        rmdir(directory);
+        state.cachedIsWebKitGtk_ = -1;
+        check(!state.webkitGtkSurroundingFallback(), "unmapped toolkit must not leave a positive detector result after refresh");
+    }
+    static void webkitSurrounding(Instance &instance, bool wayland, bool perApp,
+                                   const std::string &keys) {
+        class Editor : public TestInput {
+        public:
+            using TestInput::TestInput;
+            const char *frontend() const override { return "dbus"; }
+            std::string text = "xin ";
+            unsigned pending = 0;
+            void backspace() {
+                check(!text.empty(), "WebKit replacement preserves prefix");
+                size_t last = text.size() - 1;
+                while (last && (static_cast<unsigned char>(text[last]) & 0xc0) == 0x80) --last;
+                text.resize(last);
+            }
+        protected:
+            void commitStringImpl(const std::string &value) override {
+                commits.push_back(value);
+                text += value;
+            }
+            void forwardKeyImpl(const ForwardKeyEvent &event) override {
+                TestInput::forwardKeyImpl(event);
+                if (!event.isRelease()) ++pending;
+            }
+        };
+        SKeyEngine engine(&instance, false);
+        engine.config_.outputMode.setValue(perApp ? SKeyOutputMode::Auto : SKeyOutputMode::SurroundingText);
+        FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
+        Editor input(instance.inputContextManager(), "unknown-webkit-editor");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlags(0xe001010060ULL));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = state.cachedWebKitProgram_ = "unknown-webkit-editor";
+        state.cachedIsWebKitGtk_ = 1; // toolkit detection, independent of application identity
+        state.cachedIsChromium_ = state.cachedIsTerminalApp_ = state.cachedIsFirefoxOrSnap_ = 0;
+        state.hasAppModeOverride_ = perApp;
+        state.appModeOverride_ = SKeyOutputMode::SurroundingText;
+        auto press = [&](KeySym sym) {
+            auto cursor = utf8::length(input.text);
+            input.surroundingText().setText(input.text, cursor, cursor);
+            input.updateSurroundingText();
+            KeyEvent event(&input, Key(sym));
+            state.keyEvent(event);
+            if (!event.accepted() && sym == FcitxKey_BackSpace) input.backspace();
+            check(input.deletions == 0, "WebKit retrieval must not imply deletion support");
+        };
+        check(state.effectiveMode() == SKeyOutputMode::SurroundingText, "explicit Surrounding Text stays selected");
+        for (size_t i = 0; i < keys.size(); ++i) {
+            press(static_cast<KeySym>(keys[i]));
+            if (state.hasDeferredCommitPending()) {
+                check(input.pending > 0 && input.commits.back() == (keys == "chafo" ? "a" : "o"),
+                      "accent waits for Backspace instead of immediately duplicating a");
+                if (keys == "chafo" && i + 1 < keys.size()) press(static_cast<KeySym>(keys[++i]));
+                while (input.pending) { --input.pending; input.backspace(); }
+                state.finishDeferredCommit(0);
+            }
+        }
+        check(input.text == "xin chào", "WebKit Surrounding Text renders chào for both tone orders");
+        press(FcitxKey_BackSpace);
+        while (input.pending) { --input.pending; input.backspace(); }
+        check(input.text == "xin chà", "WebKit composing Backspace deletes exactly once");
+        state.viet_.reset();
+        press(FcitxKey_BackSpace);
+        while (input.pending) { --input.pending; input.backspace(); }
+        check(input.text == "xin ch", "WebKit idle Backspace deletes exactly once");
+        // Auto's decision must stay Surrounding Text, with or without Preedit.
+        state.hasAppModeOverride_ = false;
+        engine.config_.outputMode.setValue(SKeyOutputMode::Auto);
+        for (uint64_t caps : {0x10072ULL, 0xe001010060ULL}) {
+            input.setCapabilityFlags(CapabilityFlags(caps));
+            state.modeCacheValid_ = false;
+            check(state.effectiveMode() == SKeyOutputMode::SurroundingText, "WebKit fix must not change Auto mode selection");
+        }
+        state.cachedIsWebKitGtk_ = 0;
+        check(state.useNativeSurroundingApi(), "non-WebKit native deletion policy is unchanged");
+    }
     static void nativeAddressBarChurn(Instance &instance, SKeyOutputMode mode,
                                       bool settling) {
         SKeyEngine engine(&instance, false);
@@ -1944,6 +2142,39 @@ int main(int argc, char **argv) {
     }
     if (std::getenv("SKEY_TEST_BACKSPACE_ONLY")) {
         std::cout << "Injected Backspace contract: " << checks << " checks passed\n";
+        return 0;
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::webkitToolkitDetection(instance);
+    }
+    for (bool wayland : {false, true})
+      for (bool perApp : {false, true})
+        for (const char *keys : {"chafo", "chaof"}) {
+            fcitx::Instance instance(argc, argv);
+            fcitx::EnginePerformanceTest::webkitSurrounding(instance, wayland, perApp, keys);
+        }
+    if (std::getenv("SKEY_TEST_WEBKIT_ONLY")) {
+        std::cout << "WebKit Surrounding Text: " << checks << " checks passed\n";
+        return 0;
+    }
+    for (bool native : {false, true}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::omniboxSurrounding(instance, native, true);
+    }
+    if (std::getenv("SKEY_TEST_WAYLAND_OMNIBOX_ONLY")) {
+        std::cout << "Wayland omnibox Surrounding Text: " << checks << " checks passed\n";
+        return 0;
+    }
+    for (bool native : {false, true}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::omniboxSurrounding(instance, native, false);
+    }
+    if (std::getenv("SKEY_TEST_X11_OMNIBOX_ONLY")) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::addressBarSuffixReplacement(instance);
+        fcitx::EnginePerformanceTest::addressBarSuffixReplacement(instance, true);
+        std::cout << "X11 omnibox Surrounding Text: " << checks << " checks passed\n";
         return 0;
     }
     policies();

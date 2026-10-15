@@ -94,6 +94,7 @@ private:
     bool isAutofillCertain() const;
     bool useSurroundingText() const;
     bool useNativeSurroundingApi() const;
+    bool webkitGtkSurroundingFallback() const;
     /// True when the app is a native Wayland app (non-Chromium,
     /// non-terminal) that omits the SurroundingText capability on the
     /// compositor path — the engine probes the native surrounding-text
@@ -103,6 +104,7 @@ private:
     const struct UinputTiming& uinputTiming() const;
     bool useUinputMode() const;
     bool useNativeMode() const;
+    bool useNativeBackspaceTransport() const;
     bool nativeFailed_ = false;
     std::string nativeStatus_;
     bool isChromiumCached() const;
@@ -147,7 +149,7 @@ private:
     void clearEngineBareCapsSticky() const;
     SKeyOutputMode detectAutoMode() const;
     bool connectUinputServer();
-    void sendBackspaceUinput(int count, uint32_t flags = 0,
+    bool sendBackspaceUinput(int count, uint32_t flags = 0,
                             std::string_view oldWord = {});
 
     /// Copy of the current app's manual override (all -1 when none).
@@ -267,6 +269,8 @@ private:
     int addrBarLeftEdgeCaretX_ = -1;
     mutable int cachedIsTerminalApp_ = -1; // tristate: name list + shell scan
     mutable int cachedIsFirefoxOrSnap_ = -1;
+    mutable int cachedIsWebKitGtk_ = -1;
+    mutable std::string cachedWebKitProgram_;
     // Sticky Uinput for Chromium-family apps that initially report bare caps
     // (0x72, no content hints).  Caps may later gain hints after the app
     // enters edit mode, but commitString still won't work without Uinput.

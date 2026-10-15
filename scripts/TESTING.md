@@ -77,6 +77,37 @@ The application model verifies that the native delete removes `o` before
 committing `õ`, and that no Uinput request is sent. Separate cases retain
 the Uinput fallback for missing/stale snapshots and Docs-suite editors.
 
+`WebKitSurroundingText` covers GTK3 WebKitGTK editors which implement
+`retrieve-surrounding` but not `delete-surrounding`. The engine detects the
+loaded `libwebkit2gtk-*` library in the matching application's own process,
+cached per focus/program, without an application-name list. Only Surrounding
+Text deletion uses the existing forwarded Backspace/deferred-commit fallback;
+Auto mode selection and Native/Uinput/Preedit modes are unchanged. GTK4's
+different forward-key contract is outside this fallback.
+
+Tests exercise the `/proc` detector with an isolated mapped library fixture,
+then model fresh surrounding snapshots, ignored native deletion, delayed
+forwarded Backspaces, `chafo`/`chaof` → `xin chào`, an `o` arriving before
+deletion, composing/idle Backspace, X11/Wayland and global/per-app selection.
+They also assert unchanged Auto selection with both reported capability sets
+(`0x10072`, `0xe001010060`) and native deletion for non-WebKit clients. These
+are application-model tests, not live KDE verification.
+
+`WaylandOmniboxSurroundingText` and `X11OmniboxSurroundingText` cover Chrome's omnibox with the
+Surrounding Text address-bar override and inline autocomplete selected.
+Its injected Backspace transport honors `replaceUinputWithNative` without
+changing the output mode. The application model checks a full first-word
+replacement plus a buffered `o` produces `chào`, not `chachào`. An unstarted
+Native injector must reject without touching an available Uinput socket,
+arming a force-commit timeout or inserting the replacement over unchanged
+text. Native readiness/cancellation uses the same transport policy. Chrome
+page editors retain their existing transport selection. X11 cases use caret
+geometry without the Url capability and drain the ordered replay timer before
+checking the queued `o`. Existing X11 suffix/autocomplete cases also run in
+the dedicated X11 test. The successful
+transaction uses an isolated Uinput socket; live portal/Chrome integration
+is not exercised by this test.
+
 Preedit visibility cases run with X11/Wayland focus groups, both with and
 without client preedit capability. They cover toggling visibility mid-word,
 hidden tone composition and Space commit, changing the display destination,

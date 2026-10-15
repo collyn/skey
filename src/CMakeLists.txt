@@ -76,6 +76,12 @@ target_compile_definitions(test_engine_performance PRIVATE FCITX_SKEY_ICON_PATH=
 add_test(NAME EnginePerformance COMMAND test_engine_performance)
 add_test(NAME InjectedBackspaceContract COMMAND ${CMAKE_COMMAND} -E env
     SKEY_TEST_BACKSPACE_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+add_test(NAME WebKitSurroundingText COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_WEBKIT_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+add_test(NAME WaylandOmniboxSurroundingText COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_WAYLAND_OMNIBOX_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+add_test(NAME X11OmniboxSurroundingText COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_X11_OMNIBOX_ONLY=1 $<TARGET_FILE:test_engine_performance>)
 set_tests_properties(EnginePerformance PROPERTIES TIMEOUT 15)
 find_program(DBUS_RUN_SESSION dbus-run-session)
 if(DBUS_RUN_SESSION)
