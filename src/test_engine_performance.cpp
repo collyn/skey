@@ -433,6 +433,8 @@ struct EnginePerformanceTest {
                 state.showModeMenu();
                 auto list = input.inputPanel().candidateList();
                 check(list && list->size() == (replace ? 5 : 6), "replacement menu removes duplicate transport slot");
+                check(list->candidate(list->size() - 1).text().toString().find("0. ") == 0,
+                      "both menus expose their disable action as zero");
                 check(list->candidate(1).text().toString() == (replace ? "2. Native" : "2. Uinput"),
                       "Native occupies Uinput menu position");
                 check(list->cursorIndex() == 1, "saved transport keeps correct highlighted row");
@@ -445,6 +447,19 @@ struct EnginePerformanceTest {
                 state.modeCacheValid_ = false;
                 check(state.effectiveMode() == (replace ? SKeyOutputMode::Native : SKeyOutputMode::Uinput),
                       "numeric menu selection uses displayed transport");
+                for (auto zero : {FcitxKey_0, FcitxKey_KP_0}) {
+                    state.showModeMenu();
+                    KeyEvent exclude(&input, Key(zero));
+                    state.keyEvent(exclude);
+                    check(exclude.accepted() && !state.modeMenuActive_, "zero selects the menu disable action");
+                    if (address) {
+                        check(engine.config_.chromiumAddressBarMode.value() == SKeyChromiumAddressBarMode::NoVietnamese,
+                              "zero disables Vietnamese in address bars");
+                        check(!state.appExcluded_, "address bar zero does not exclude the application");
+                    } else {
+                        check(state.appExcluded_ == (zero == FcitxKey_0), "zero toggles application exclusion");
+                    }
+                }
             }
         }
     }

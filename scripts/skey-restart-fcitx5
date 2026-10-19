@@ -31,10 +31,37 @@ vk_set() {
     "$QBUS" org.kde.KWin /VirtualKeyboard \
         org.freedesktop.DBus.Properties.Set org.kde.kwin.VirtualKeyboard "$1" "$2"
 }
+wait_vk() {
+    local attempt
+    for ((attempt=0; attempt<40; ++attempt)); do
+        [ "$(vk_get "$1" 2>/dev/null)" = "$2" ] && return 0
+        sleep 0.25
+    done
+    return 1
+}
+set_kwin_input_method() {
+    kwriteconfig6 --file kwinrc --group Wayland --key InputMethod \
+        --type path --notify "$1"
+}
+restore_kwin() {
+    if [ "$kwin_reconnect" = input_method ]; then
+        set_kwin_input_method "$kwin_input_method" || return 1
+        wait_vk available true
+    else
+        vk_set enabled true
+    fi
+}
+retire_kwin_context() {
+    vk_set active false || fail "cannot retire KWin input context"
+    restore_keyboard=1
+    trap 'if [ "$restore_keyboard" = 1 ]; then restore_kwin; fi' EXIT
+    trap 'exit 1' HUP INT TERM
+}
 
 old_owner=""
 previous_im=""
 restore_keyboard=0
+kwin_reconnect=enabled
 if [ -n "$QBUS" ]; then
     old_owner=$(owner) || true
     if [ -n "$old_owner" ]; then
@@ -45,16 +72,44 @@ fi
 
 if [ "$plasma" = 1 ]; then
     [ -n "$QBUS" ] || fail "qdbus6/qdbus is required to reconnect Plasma input methods"
-    enabled=$(vk_get enabled) || fail "cannot read KWin virtual keyboard state"
-    if [ "$enabled" = true ]; then
-        # enabled=false stops the launcher, but does not call setActive(false)
-        # in KWin. Explicitly deactivate while the old server can acknowledge
-        # it, then disconnect its privileged Wayland socket.
-        vk_set active false || fail "cannot retire KWin input context"
-        restore_keyboard=1
-        trap 'if [ "$restore_keyboard" = 1 ]; then vk_set enabled true; fi' EXIT
-        trap 'exit 1' HUP INT TERM
-        vk_set enabled false || fail "cannot disconnect KWin input method"
+    if enabled=$(vk_get enabled 2>/dev/null); then
+        case "$enabled" in
+            true|false) ;;
+            *) fail "invalid KWin virtual keyboard enabled state: $enabled" ;;
+        esac
+        if [ "$enabled" = true ]; then
+            # enabled=false stops the launcher, but does not call setActive(false)
+            # in KWin. Explicitly deactivate while the old server can acknowledge
+            # it, then disconnect its privileged Wayland socket.
+            retire_kwin_context
+            vk_set enabled false || fail "cannot disconnect KWin input method"
+        fi
+    elif mode=$(vk_get mode 2>&1); then
+        # New KWin replaces enabled with mode. Unlike enabled, mode only
+        # controls visibility (including Never=0); it does not stop/restart
+        # the launcher. Cycle the selected IM through KConfig instead and
+        # preserve the user's visibility mode without writing it.
+        case "$mode" in
+            ''|*[!0-9]*) fail "invalid KWin virtual keyboard mode: $mode" ;;
+        esac
+        available=$(vk_get available) || fail "cannot read KWin input method availability"
+        case "$available" in
+            true)
+                command -v kreadconfig6 >/dev/null && command -v kwriteconfig6 >/dev/null ||
+                    fail "kreadconfig6/kwriteconfig6 is required to reconnect this KWin version"
+                kwin_input_method=$(kreadconfig6 --file kwinrc --group Wayland \
+                    --key InputMethod --type path) || fail "cannot read KWin input method selection"
+                [ -n "$kwin_input_method" ] || fail "KWin Wayland/InputMethod selection is empty"
+                kwin_reconnect=input_method
+                retire_kwin_context
+                set_kwin_input_method "" || fail "cannot disconnect KWin input method"
+                wait_vk available false || fail "KWin input method did not disconnect"
+                ;;
+            false) ;; # No input method selected: leave KWin configuration alone.
+            *) fail "invalid KWin input method availability: $available" ;;
+        esac
+    else
+        fail "cannot read KWin virtual keyboard state (enabled or mode): $mode"
     fi
 fi
 
@@ -78,7 +133,7 @@ done
 [ "$ready" = 1 ] || fail "new Fcitx5/SKey instance did not become ready"
 
 if [ "$restore_keyboard" = 1 ]; then
-    vk_set enabled true || fail "cannot reconnect KWin input method"
+    restore_kwin || fail "cannot reconnect KWin input method"
     # The launcher hands its socket to fcitx5 asynchronously (~1s later).
     # Check the frontend, not CurrentInputMethod: Settings may have no focused
     # text field, and absence of focus is not a failed connection.

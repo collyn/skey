@@ -4499,11 +4499,15 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       }
     }
 
-    if (auto candList = ic_->inputPanel().candidateList();
-        candList && choice > 0 && choice <= candList->size()) {
-      candList->candidate(choice - 1).select(ic_);
-      keyEvent.filterAndAccept();
-      return;
+    if (auto candList = ic_->inputPanel().candidateList()) {
+      const bool zeroShortcut = sym == FcitxKey_0 || sym == FcitxKey_KP_0;
+      const int numberedModes = candList->size() - 1;
+      if (zeroShortcut || (choice > 0 && choice <= numberedModes)) {
+        const int index = zeroShortcut ? candList->size() - 1 : choice - 1;
+        candList->candidate(index).select(ic_);
+        keyEvent.filterAndAccept();
+        return;
+      }
     }
     // Any other key: dismiss menu, pass key through to app
     SKEY_DEBUG() << "Menu: dismissed by key";
@@ -7242,7 +7246,7 @@ void SKeyState::showModeMenu() {
           engine_, this, "5. Native", SKeyChromiumAddressBarMode::Native));
     }
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
-        engine_, this, std::string(replaceUinput ? "5. " : "6. ") + _("Không gõ tiếng Việt"),
+        engine_, this, std::string("0. ") + _("Không gõ tiếng Việt"),
         SKeyChromiumAddressBarMode::NoVietnamese));
     cursorIdx = static_cast<int>(addressBarMode);
     if (replaceUinput) {
@@ -7269,21 +7273,22 @@ void SKeyState::showModeMenu() {
     if (!replaceUinput)
       candList->append(std::make_unique<ModeCandidateWord>(
           engine_, this, std::string("5. ") + _("Native (XTest/Libei)"), SKeyOutputMode::Native));
-    std::string excludeLabel =
-        std::string(replaceUinput ? "5. " : "6. ") +
-        (appExcluded_ ? "✓ " : "") + _("Loại trừ ứng dụng");
-    candList->append(
-        std::make_unique<ExcludeCandidateWord>(engine_, this, excludeLabel));
-
     // When configured to Auto, cursor stays on Auto (0).
     // Otherwise cursor follows the manually selected mode.
-    cursorIdx = appExcluded_                                      ? (replaceUinput ? 4 : 5)
-                : (configured == SKeyOutputMode::Auto)            ? 0
+    cursorIdx = (configured == SKeyOutputMode::Auto)              ? 0
                 : (configured == SKeyOutputMode::Uinput)          ? 1
                 : (configured == SKeyOutputMode::SurroundingText) ? 2
                 : (configured == SKeyOutputMode::Native)           ? (replaceUinput ? 1 : 4)
                 : (configured == SKeyOutputMode::Preedit)         ? 3
                                                                   : 0;
+  }
+  if (!modeMenuForAddressBar_) {
+    std::string excludeLabel =
+        std::string("0. ") + (appExcluded_ ? "✓ " : "") + _("Loại trừ ứng dụng");
+    candList->append(
+        std::make_unique<ExcludeCandidateWord>(engine_, this, excludeLabel));
+    if (appExcluded_)
+      cursorIdx = candList->size() - 1;
   }
   candList->setGlobalCursorIndex(cursorIdx);
 
