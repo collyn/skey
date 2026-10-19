@@ -11,6 +11,8 @@
 #include <iostream>
 #include <filesystem>
 #include <limits>
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -84,6 +86,297 @@ protected:
 
 namespace fcitx {
 struct EnginePerformanceTest {
+    static void uinputPendingTransport(Instance &instance, bool settling) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager());
+        input.setFocusGroup(&group);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "skey-test";
+        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.uinputRequest_ = std::make_shared<skey::UinputInjector::Request>();
+        state.pendingUinputCommit_ = "õ";
+        state.uinputDeleting_ = true;
+        if (settling) {
+            state.scheduleUinputSettle(0, 0, 0);
+        } else {
+            state.uinputSafetyRetried_ = true; // exercise the final timeout
+            state.armUinputSafetyTimer();
+            state.uinputSafetyTimer_->setTime(now(CLOCK_MONOTONIC));
+        }
+        auto complete = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+            now(CLOCK_MONOTONIC) + 20000, 1, [&](EventSourceTime *, uint64_t) {
+                check(input.commits.empty() && state.pendingUinputCommit_ == "õ" && state.uinputDeleting_,
+                      "a timeout must not commit while the worker is still emitting Backspaces");
+                state.uinputRequest_->state.store(skey::UinputInjector::State::Complete);
+                return true;
+            });
+        auto stop = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+            now(CLOCK_MONOTONIC) + 40000, 1,
+            [&](EventSourceTime *, uint64_t) { instance.eventLoop().exit(); return true; });
+        instance.eventLoop().exec();
+        check(input.commits == std::vector<std::string>{"õ"} && !state.uinputDeleting_,
+              "a deferred timer resumes exactly once after the worker completes");
+    }
+
+    static void uinputFailures(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager());
+        input.setFocusGroup(&group);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "skey-test";
+        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.uinputTestReady_ = false;
+        KeyEvent first(&input, Key(FcitxKey_d));
+        state.keyEvent(first);
+        check(!first.accepted() && state.viet_.getRawInput().empty() && input.commits.empty(),
+              "unready Uinput must pass the first key through without changing composition");
+        state.uinputTestReady_ = true;
+        int calls = 0;
+        state.uinputTestSend_ = [&](int, uint32_t, uint32_t) { ++calls; return false; };
+        state.viet_.setRawInput("ban"); state.committedLen_ = 3;
+        KeyEvent tone(&input, Key(FcitxKey_j));
+        state.keyEvent(tone);
+        check(calls == 1 && !tone.accepted() && !tone.filtered() &&
+              !state.uinputDeleting_ && !state.uinputSafetyTimer_ &&
+              state.pendingUinputCommit_.empty() && input.commits.empty(),
+              "rejected suffix deletion passes the key through without a replacement commit");
+        state.surroundingCommit("go", "gõ");
+        check(calls == 2 && !state.uinputDeleting_ && !state.uinputSafetyTimer_ && input.commits.empty(),
+              "rejected surrounding fallback must not commit over undeleted text");
+        state.uinputRequest_ = std::make_shared<skey::UinputInjector::Request>();
+        state.uinputRequest_->state.store(skey::UinputInjector::State::Failed);
+        state.uinputBsOutstanding_ = 2;
+        state.expectedUinputBackspaces_ = 1;
+        state.pendingUinputCommit_ = "õ";
+        state.uinputDeleting_ = true;
+        state.scheduleUinputSettle(0, 0, 0);
+        state.finishUinputSettle(0, 0);
+        check(input.commits.empty() && !state.uinputDeleting_ && !state.uinputCommitTimer_ &&
+              state.pendingUinputCommit_.empty() && state.uinputBsOutstanding_ == 0,
+              "partial failure cancels the commit and unsent outstanding count");
+        KeyEvent late(&input, Key(FcitxKey_BackSpace));
+        state.keyEvent(late);
+        check(late.accepted(), "late partial-write loopback retains the existing grace");
+        check(!state.sendBackspaceUinput(2), "failed batch must drain before the next replacement");
+        KeyEvent draining(&input, Key(FcitxKey_j));
+        state.keyEvent(draining);
+        check(!draining.accepted() && state.viet_.getRawInput().empty() && calls == 2,
+              "new physical keys pass through while cancelled Backspaces drain");
+        state.uinputLateBsDeadlineUsec_ = now(CLOCK_MONOTONIC) - 1;
+        KeyEvent user(&input, Key(FcitxKey_BackSpace));
+        state.keyEvent(user);
+        check(!user.accepted(), "unsent cancelled keys must not swallow future user Backspace");
+    }
+
+    static void captureUinput(SKeyState &state, int fd) {
+        auto owned = std::shared_ptr<int>(new int(fd), [](int *p) { close(*p); delete p; });
+        state.uinputTestSend_ = [fd, owned](int count, uint32_t flags, uint32_t pace) {
+            const uint32_t request[] = {static_cast<uint32_t>(count), flags, 0, pace};
+            return send(fd, request, sizeof(request), MSG_NOSIGNAL) == sizeof(request);
+        };
+    }
+    static void omniboxSurrounding(Instance &instance, bool native, bool wayland) {
+        class Editor : public TestInput {
+        public:
+            using TestInput::TestInput;
+            std::string text = "chaexample1";
+            bool selected = true;
+            void backspace() {
+                if (selected) { text.resize(3); selected = false; }
+                else if (!text.empty()) text.pop_back();
+            }
+        protected:
+            void commitStringImpl(const std::string &value) override {
+                TestInput::commitStringImpl(value);
+                text += value;
+            }
+        };
+        SKeyEngine engine(&instance, false);
+        engine.config_.outputMode.setValue(SKeyOutputMode::Auto);
+        engine.config_.chromiumAddressBarMode.setValue(SKeyChromiumAddressBarMode::SurroundingText);
+        engine.config_.replaceUinputWithNative.setValue(native);
+        FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
+        Editor input(instance.inputContextManager(), "google-chrome");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(wayland ? CapabilityFlags(0x72) | CapabilityFlag::Url : CapabilityFlags(0x72));
+        if (!wayland) input.setCursorRect(Rect(200, 54, 201, 72));
+        input.surroundingText().setText(input.text, 3, 11);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = state.cachedIsWebKitGtk_ = 0;
+        state.cachedWebKitProgram_ = "google-chrome";
+        check(state.effectiveMode() == SKeyOutputMode::SurroundingText,
+              "omnibox override preserves Surrounding Text output");
+        check(state.useNativeBackspaceTransport() == native,
+              "omnibox Surrounding Text honors replacement transport preference");
+        int sockets[2];
+        check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+              "isolate omnibox transport without desktop injection");
+        captureUinput(state, sockets[0]);
+        state.viet_.setRawInput(native ? "chaf" : "cha");
+        state.committedLen_ = 3;
+        if (native) {
+            // An unstarted native injector rejects deterministically. It
+            // must neither fall back to the Uinput request capture nor
+            // schedule a timeout that commits over unchanged text.
+            state.scheduleAddrBarReplacement(1, "à", 3, 0, 0, "chà", false, "cha");
+            uint32_t request[4];
+            check(recv(sockets[1], request, sizeof(request), 0) < 0 && errno == EAGAIN,
+                  "Native preference must not send through Uinput in Surrounding Text");
+            check(state.nativeFailed_ && !state.uinputDeleting_ && !state.uinputSafetyTimer_ &&
+                      state.pendingUinputCommit_.empty() && input.commits.empty() &&
+                      state.viet_.getComposed() == "cha" && !state.addrBarHadFirstWord_,
+                  "rejected deletion cancels replacement and retains the actual on-screen word");
+            auto stop = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+                now(CLOCK_MONOTONIC) + 150000, 1,
+                [&](EventSourceTime *, uint64_t) { instance.eventLoop().exit(); return true; });
+            instance.eventLoop().exec();
+            check(input.text == "chaexample1" && input.commits.empty(),
+                  "no timeout may append chà when Backspaces were never sent");
+        } else {
+            KeyEvent tone(&input, Key(FcitxKey_f));
+            state.keyEvent(tone);
+            uint32_t request[4] = {};
+            check(recv(sockets[1], request, sizeof(request), 0) == sizeof(request) && request[0] == 5,
+                  "first-word replacement sends selection dismissal, three deletions and one anchor");
+            KeyEvent append(&input, Key(FcitxKey_o));
+            state.keyEvent(append);
+            for (uint32_t i = 0; i < request[0]; ++i) {
+                KeyEvent deletion(&input, Key(FcitxKey_BackSpace));
+                state.keyEvent(deletion);
+                check(deletion.accepted() == (i + 1 == request[0]),
+                      "only the omnibox synchronization anchor is consumed");
+                if (!deletion.accepted()) input.backspace();
+            }
+            state.finishUinputSettle(0, 0);
+            if (state.settledReplayTimer_) {
+                auto stop = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+                    now(CLOCK_MONOTONIC) + 80000, 1,
+                    [&](EventSourceTime *, uint64_t) { instance.eventLoop().exit(); return true; });
+                instance.eventLoop().exec();
+            }
+            if (input.text != "chào" || state.uinputDeleting_)
+                std::cerr << "Omnibox wayland=" << wayland << " text='" << input.text
+                          << "' pending='" << state.pendingUinputCommit_
+                          << "' buffered=" << state.bufferedUinputKeys_.size() << "\n";
+            check(input.text == "chào" && !state.uinputDeleting_,
+                  "omnibox full replacement plus buffered o renders chào, not chachào");
+        }
+        // Transport policy must remain local to the omnibox.
+        input.setCapabilityFlags(CapabilityFlags(0x72));
+        input.setCursorRect(Rect(200, 400, 201, 420));
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::SurroundingText;
+        state.addrBarUiVerdictAtUsec_ = 0;
+        check(!state.useNativeBackspaceTransport(), "web content keeps its existing Surrounding Text transport");
+        close(sockets[1]);
+    }
+    static void webkitToolkitDetection(Instance &instance) {
+        // Exercise /proc detection using a mapped toolkit-named file in our
+        // own process; no dependency on an installed WebKit or live desktop.
+        const auto program = std::filesystem::read_symlink("/proc/self/exe").filename().string();
+        SKeyEngine engine(&instance, false);
+        TestInput input(instance.inputContextManager(), program);
+        auto &state = *input.propertyFor(&engine.factory_);
+        check(!state.webkitGtkSurroundingFallback(), "ordinary process must not be classified as WebKitGTK");
+        char directory[] = "/tmp/skey-webkit-maps-XXXXXX";
+        check(mkdtemp(directory) != nullptr, "create isolated toolkit mapping fixture");
+        const std::string path = std::string(directory) + "/libwebkit2gtk-test.so";
+        int fd = open(path.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+        check(fd >= 0 && ftruncate(fd, 4096) == 0, "create toolkit mapping fixture");
+        void *mapping = mmap(nullptr, 4096, PROT_READ, MAP_PRIVATE, fd, 0);
+        close(fd);
+        check(mapping != MAP_FAILED, "map toolkit fixture");
+        state.cachedIsWebKitGtk_ = -1;
+        check(state.webkitGtkSurroundingFallback(), "loaded toolkit is recognized without application-name exceptions");
+        munmap(mapping, 4096);
+        unlink(path.c_str());
+        rmdir(directory);
+        state.cachedIsWebKitGtk_ = -1;
+        check(!state.webkitGtkSurroundingFallback(), "unmapped toolkit must not leave a positive detector result after refresh");
+    }
+    static void webkitSurrounding(Instance &instance, bool wayland, bool perApp,
+                                   const std::string &keys) {
+        class Editor : public TestInput {
+        public:
+            using TestInput::TestInput;
+            const char *frontend() const override { return "dbus"; }
+            std::string text = "xin ";
+            unsigned pending = 0;
+            void backspace() {
+                check(!text.empty(), "WebKit replacement preserves prefix");
+                size_t last = text.size() - 1;
+                while (last && (static_cast<unsigned char>(text[last]) & 0xc0) == 0x80) --last;
+                text.resize(last);
+            }
+        protected:
+            void commitStringImpl(const std::string &value) override {
+                commits.push_back(value);
+                text += value;
+            }
+            void forwardKeyImpl(const ForwardKeyEvent &event) override {
+                TestInput::forwardKeyImpl(event);
+                if (!event.isRelease()) ++pending;
+            }
+        };
+        SKeyEngine engine(&instance, false);
+        engine.config_.outputMode.setValue(perApp ? SKeyOutputMode::Auto : SKeyOutputMode::SurroundingText);
+        FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
+        Editor input(instance.inputContextManager(), "unknown-webkit-editor");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlags(0xe001010060ULL));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = state.cachedWebKitProgram_ = "unknown-webkit-editor";
+        state.cachedIsWebKitGtk_ = 1; // toolkit detection, independent of application identity
+        state.cachedIsChromium_ = state.cachedIsTerminalApp_ = state.cachedIsFirefoxOrSnap_ = 0;
+        state.hasAppModeOverride_ = perApp;
+        state.appModeOverride_ = SKeyOutputMode::SurroundingText;
+        auto press = [&](KeySym sym) {
+            auto cursor = utf8::length(input.text);
+            input.surroundingText().setText(input.text, cursor, cursor);
+            input.updateSurroundingText();
+            KeyEvent event(&input, Key(sym));
+            state.keyEvent(event);
+            if (!event.accepted() && sym == FcitxKey_BackSpace) input.backspace();
+            check(input.deletions == 0, "WebKit retrieval must not imply deletion support");
+        };
+        check(state.effectiveMode() == SKeyOutputMode::SurroundingText, "explicit Surrounding Text stays selected");
+        for (size_t i = 0; i < keys.size(); ++i) {
+            press(static_cast<KeySym>(keys[i]));
+            if (state.hasDeferredCommitPending()) {
+                check(input.pending > 0 && input.commits.back() == (keys == "chafo" ? "a" : "o"),
+                      "accent waits for Backspace instead of immediately duplicating a");
+                if (keys == "chafo" && i + 1 < keys.size()) press(static_cast<KeySym>(keys[++i]));
+                while (input.pending) { --input.pending; input.backspace(); }
+                state.finishDeferredCommit(0);
+            }
+        }
+        check(input.text == "xin chào", "WebKit Surrounding Text renders chào for both tone orders");
+        press(FcitxKey_BackSpace);
+        while (input.pending) { --input.pending; input.backspace(); }
+        check(input.text == "xin chà", "WebKit composing Backspace deletes exactly once");
+        state.viet_.reset();
+        press(FcitxKey_BackSpace);
+        while (input.pending) { --input.pending; input.backspace(); }
+        check(input.text == "xin ch", "WebKit idle Backspace deletes exactly once");
+        // Auto's decision must stay Surrounding Text, with or without Preedit.
+        state.hasAppModeOverride_ = false;
+        engine.config_.outputMode.setValue(SKeyOutputMode::Auto);
+        for (uint64_t caps : {0x10072ULL, 0xe001010060ULL}) {
+            input.setCapabilityFlags(CapabilityFlags(caps));
+            state.modeCacheValid_ = false;
+            check(state.effectiveMode() == SKeyOutputMode::SurroundingText, "WebKit fix must not change Auto mode selection");
+        }
+        state.cachedIsWebKitGtk_ = 0;
+        check(state.useNativeSurroundingApi(), "non-WebKit native deletion policy is unchanged");
+    }
     static void nativeAddressBarChurn(Instance &instance, SKeyOutputMode mode,
                                       bool settling) {
         SKeyEngine engine(&instance, false);
@@ -553,7 +846,7 @@ struct EnginePerformanceTest {
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "isolate repeated tone transport");
-        state.uinputClientFd_ = sockets[0];
+        captureUinput(state, sockets[0]);
         for (char tone : {'s', 'j'}) {
             const std::string suffix = tone == 's' ? "áo" : "ạo";
             KeyEvent key(&input, Key(static_cast<KeySym>(tone)));
@@ -583,8 +876,7 @@ struct EnginePerformanceTest {
         check(input.commits == std::vector<std::string>{"áo", "ạo"},
               "repeated tones emit both replacement suffixes exactly once");
         state.resetForCellChange();
-        close(sockets[0]);
-        state.uinputClientFd_ = -1;
+        state.uinputTestSend_ = {};
         close(sockets[1]);
     }
 
@@ -608,7 +900,7 @@ struct EnginePerformanceTest {
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "isolate Chrome X11 surrounding fallback transport");
-        state.uinputClientFd_ = sockets[0];
+        captureUinput(state, sockets[0]);
         for (auto sym : {FcitxKey_t, FcitxKey_w}) {
             KeyEvent key(&input, Key(sym));
             state.keyEvent(key);
@@ -655,8 +947,7 @@ struct EnginePerformanceTest {
                   "replacement suffix commits once after deletion, preserving t");
         }
         state.resetForCellChange();
-        close(sockets[0]);
-        state.uinputClientFd_ = -1;
+        state.uinputTestSend_ = {};
         close(sockets[1]);
     }
 
@@ -761,7 +1052,7 @@ struct EnginePerformanceTest {
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "create isolated Chrome deletion transport");
-        state.uinputClientFd_ = sockets[0];
+        captureUinput(state, sockets[0]);
         KeyEvent t(&input, Key(FcitxKey_t));
         state.keyEvent(t);
         check(!t.accepted(), "initial Chrome Uinput letter is forwarded");
@@ -868,8 +1159,7 @@ struct EnginePerformanceTest {
                 check(!state.uinputDeleteAck_.active(), "silent input must not pay 80ms on every replacement");
             }
         }
-        close(sockets[0]);
-        state.uinputClientFd_ = -1;
+        state.uinputTestSend_ = {};
         close(sockets[1]);
     }
 
@@ -902,7 +1192,7 @@ struct EnginePerformanceTest {
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "create scope-test transport");
-        state.uinputClientFd_ = sockets[0];
+        captureUinput(state, sockets[0]);
         state.sendBackspaceUinput(2, 0, "tư");
         check(state.uinputDeleteAck_.active() == expected,
               "ack timing is limited to automatic browser page replacements");
@@ -917,8 +1207,7 @@ struct EnginePerformanceTest {
                   "manual override enabled mid-transaction cancels acknowledgement waiting");
             state.resetForCellChange();
         }
-        close(sockets[0]);
-        state.uinputClientFd_ = -1;
+        state.uinputTestSend_ = {};
         close(sockets[1]);
     }
 
@@ -943,7 +1232,7 @@ struct EnginePerformanceTest {
         engine.appDelayOverrides_[appKey].preCommitMs = overrideMs;
         // Match the reported replacement's post-BS state. A surrounding
         // cursor of 1 must not be taken as proof that the renderer is ready
-        // to accept the replacement. No real Uinput server is involved.
+        // to accept the replacement. No real Uinput device is involved.
         input.surroundingText().setText("t", 1, 1);
         input.updateSurroundingText();
         state.viet_.setRawInput("tự");
@@ -1065,7 +1354,7 @@ struct EnginePerformanceTest {
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "isolate address-bar replacement transport");
-        state.uinputClientFd_ = sockets[0];
+        captureUinput(state, sockets[0]);
         state.addrBarHadFirstWord_ = state.addrBarHadSpace_ = true;
         state.viet_.setRawInput("nhaats");
         state.scheduleAddrBarReplacement(2, "ất", 4, FcitxKey_s, 1000,
@@ -1115,8 +1404,7 @@ struct EnginePerformanceTest {
             }
         }
         state.resetForCellChange();
-        close(sockets[0]);
-        state.uinputClientFd_ = -1;
+        state.uinputTestSend_ = {};
         close(sockets[1]);
     }
 
@@ -1353,7 +1641,7 @@ struct EnginePerformanceTest {
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "create Firefox regression transport");
-        state.uinputClientFd_ = sockets[0];
+        captureUinput(state, sockets[0]);
         for (char ch : std::string("gox")) {
             KeyEvent event(&input, Key(static_cast<KeySym>(ch)));
             state.keyEvent(event);
@@ -1369,8 +1657,7 @@ struct EnginePerformanceTest {
         check(recv(sockets[1], request, sizeof(request), MSG_DONTWAIT) < 0 &&
                   errno == EAGAIN,
               "matching Firefox surrounding text must not send Uinput Backspace");
-        close(sockets[0]);
-        state.uinputClientFd_ = -1;
+        state.uinputTestSend_ = {};
         close(sockets[1]);
     }
 
@@ -1395,7 +1682,7 @@ struct EnginePerformanceTest {
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "create Firefox fallback transport");
-        state.uinputClientFd_ = sockets[0];
+        captureUinput(state, sockets[0]);
         state.surroundingCommit("go", "gõ");
         uint32_t request[4] = {};
         check(recv(sockets[1], request, sizeof(request), 0) == sizeof(request) && request[0] == 2,
@@ -1403,8 +1690,7 @@ struct EnginePerformanceTest {
         check(input.deletions == 0 && input.commits.empty() && state.uinputDeleting_,
               "fallback must wait for Backspace before committing");
         state.resetForCellChange();
-        close(sockets[0]);
-        state.uinputClientFd_ = -1;
+        state.uinputTestSend_ = {};
         close(sockets[1]);
     }
 
@@ -1422,12 +1708,12 @@ struct EnginePerformanceTest {
         state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::Uinput;
-        // Capture actual server requests without connecting to the desktop
-        // uinput service or injecting any keys into the user's applications.
+        // Capture engine requests without opening a real uinput device or
+        // injecting any keys into the user's applications.
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "create isolated uinput transport");
-        state.uinputClientFd_ = sockets[0]; // owned/closed by SKeyState
+        captureUinput(state, sockets[0]);
         auto press = [&](char ch) {
             KeyEvent event(&input, Key(static_cast<KeySym>(ch)));
             state.keyEvent(event);
@@ -1441,13 +1727,22 @@ struct EnginePerformanceTest {
             for (size_t i = 2; i < keys.size(); ++i) press(keys[i]);
         };
         auto drain = [&] {
-            while (state.uinputDeleting_) {
+            int steps = 0;
+            while (state.uinputDeleting_ || state.settledReplayTimer_) {
+                check(++steps <= 20, "Office replay must terminate");
+                if (state.settledReplayTimer_) {
+                    // Model the dispatch barrier as well as the settle timer.
+                    input.flushCommits();
+                    state.settledReplayTimer_.reset();
+                    state.replayBufferedUinputKeys();
+                    continue;
+                }
                 check(++replacements <= 4, "replacement replay must terminate");
                 uint32_t request[4] = {};
                 const auto received = recv(sockets[1], request, sizeof(request), 0);
                 if (received != sizeof(request))
                     std::cerr << "uinput recv=" << received << " errno=" << errno
-                              << " fd=" << state.uinputClientFd_ << " expected="
+                              << " expected="
                               << state.expectedUinputBackspaces_ << "\n";
                 check(received == sizeof(request),
                       "replacement must send one complete uinput v3 request");
@@ -1928,6 +2223,14 @@ int main(int argc, char **argv) {
     // active-window origin or DPI. Live X11 geometry is tested separately.
     unsetenv("DISPLAY");
     unsetenv("WAYLAND_DISPLAY");
+    for (bool settling : {false, true}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::uinputPendingTransport(instance, settling);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::uinputFailures(instance);
+    }
     {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::replacementMenus(instance);
@@ -1944,6 +2247,39 @@ int main(int argc, char **argv) {
     }
     if (std::getenv("SKEY_TEST_BACKSPACE_ONLY")) {
         std::cout << "Injected Backspace contract: " << checks << " checks passed\n";
+        return 0;
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::webkitToolkitDetection(instance);
+    }
+    for (bool wayland : {false, true})
+      for (bool perApp : {false, true})
+        for (const char *keys : {"chafo", "chaof"}) {
+            fcitx::Instance instance(argc, argv);
+            fcitx::EnginePerformanceTest::webkitSurrounding(instance, wayland, perApp, keys);
+        }
+    if (std::getenv("SKEY_TEST_WEBKIT_ONLY")) {
+        std::cout << "WebKit Surrounding Text: " << checks << " checks passed\n";
+        return 0;
+    }
+    for (bool native : {false, true}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::omniboxSurrounding(instance, native, true);
+    }
+    if (std::getenv("SKEY_TEST_WAYLAND_OMNIBOX_ONLY")) {
+        std::cout << "Wayland omnibox Surrounding Text: " << checks << " checks passed\n";
+        return 0;
+    }
+    for (bool native : {false, true}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::omniboxSurrounding(instance, native, false);
+    }
+    if (std::getenv("SKEY_TEST_X11_OMNIBOX_ONLY")) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::addressBarSuffixReplacement(instance);
+        fcitx::EnginePerformanceTest::addressBarSuffixReplacement(instance, true);
+        std::cout << "X11 omnibox Surrounding Text: " << checks << " checks passed\n";
         return 0;
     }
     policies();

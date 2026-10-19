@@ -407,7 +407,7 @@ append_config_block() {
     rm -f "$blockfile"
 }
 
-# 4) configuration.nix: uinput server + fcitx5 addon
+# 4) configuration.nix: uinput device access + fcitx5 addon
 if grep -q 'services\.fcitx5-skey' "$CONFIG"; then
     echo "✓ $CONFIG already configures services.fcitx5-skey"
 else
@@ -415,15 +415,11 @@ else
         echo "⚠ $CONFIG already configures i18n.inputMethod — merge the fcitx5 addon block manually to avoid option conflicts."
         MISSING=1
     fi
-    if [ "$USER_NAME" = "root" ]; then
-        echo "⚠ Could not determine your user (script ran as root) — edit users in $CONFIG after the rebuild fails."
-    fi
     append_config_block <<EOF
 
 # ── fcitx5-skey (added by install script) ──
 services.fcitx5-skey = {
   enable = true;
-  users = [ "$USER_NAME" ];
 };
 i18n.inputMethod = {
   enable = true;
@@ -434,7 +430,7 @@ i18n.inputMethod = {
 };
 # ── end fcitx5-skey ──
 EOF
-    echo "✓ Added skey config to $CONFIG (uinput server for user: $USER_NAME)"
+    echo "✓ Added skey config to $CONFIG (active-seat uinput access)"
 fi
 
 # 5) lock the inputs so the first rebuild does not fail on eval

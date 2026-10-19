@@ -8,7 +8,7 @@
 
 - [ ] Build OK: `cmake -B build -S . && cmake --build build -j$(nproc)`
 - [ ] Settings GUI test (đổi cấu hình → Áp dụng → restart fcitx5)
-- [ ] Gõ thử Telex / VNI (Surrounding Text + Uinput nếu động tới server/engine)
+- [ ] Gõ thử Telex / VNI (Surrounding Text + Uinput nếu động tới injector/engine)
 
 ## Packaging
 
@@ -16,7 +16,7 @@
 
 - [ ] `bash -n` các script sửa (build.sh, scripts/*)
 - [ ] CI dev: push nhánh `dev` → prerelease `vX.Y.Z-dev.N` chạy xanh (deb/rpm/arch)
-- [ ] Path cài đặt khớp `%files`/dpkg (udev, sysusers, polkit, unit, profile.d)
+- [ ] Path cài đặt khớp `%files`/dpkg (udev, modules-load, helper)
 
 ## Phiên bản / Kênh
 

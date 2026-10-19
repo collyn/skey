@@ -54,6 +54,8 @@ Requires:       qt6-svg
 Requires:       fcitx5
 Requires:       hicolor-icon-theme
 Requires:       systemd
+Requires:       /usr/bin/udevadm
+Requires:       kmod
 Requires:       acl
 # RPM generates shared-library requirements automatically, including the
 # correct providers on openSUSE (libei1 / libportal1).
@@ -95,23 +97,7 @@ if [ -x /usr/bin/gtk-update-icon-cache ]; then
     /usr/bin/gtk-update-icon-cache %{_datadir}/icons/breeze-dark >/dev/null 2>&1 || :
 fi
 
-# systemd daemon-reload for the new/updated uinput service unit
-if [ -x /usr/bin/systemctl ]; then
-    /usr/bin/systemctl daemon-reload 2>/dev/null || :
-fi
-
-# Create the skey_uinput system user (the uinput server runs as this
-# unprivileged user instead of root) and re-apply udev rules so the
-# /dev/uinput ACL grants it rw access.
-if [ -x /usr/bin/systemd-sysusers ]; then
-    /usr/bin/systemd-sysusers %{_prefix}/lib/sysusers.d/skey-uinput.conf 2>/dev/null || :
-elif ! getent passwd skey_uinput >/dev/null 2>&1 && [ -x /usr/sbin/useradd ]; then
-    /usr/sbin/useradd --system --no-create-home --user-group --shell /usr/sbin/nologin skey_uinput 2>/dev/null || :
-fi
-if [ -x /usr/bin/udevadm ]; then
-    /usr/bin/udevadm control --reload-rules 2>/dev/null || :
-    /usr/bin/udevadm trigger --subsystem-match=misc 2>/dev/null || :
-fi
+%{_bindir}/skey-uinput-access configure || exit $?
 
 # Find the console user (SUDO_USER not available in rpm scripts)
 CONSOLE_USER=""
@@ -120,39 +106,9 @@ if [ -x /usr/bin/loginctl ]; then
         awk '$4=="seat0" {print $3}' | sort -u | head -1)
 fi
 
-if [ "$1" -eq 1 ]; then
-    # ── First install: enable the uinput server as root ──
-    # Deb postinst and the NixOS module both enable the service during
-    # packaging; without this, the first `skey-setup` run hits the
-    # enable branch as the user, and `systemctl enable` uses the
-    # manage-unit-files polkit action which cannot be scoped per unit —
-    # the graphical polkit agent pops a root-password dialog that appears
-    # to hang the terminal.  Do it here so the service is already enabled
-    # by the time skey-setup runs.  %preun disables each instance on
-    # removal, so fresh installs start clean.
-    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && \
-       [ -x /usr/bin/systemctl ]; then
-        # No group membership needed: the server socket sits in a 0700 RuntimeDirectory
-        # with a per-user named ACL granted by ExecStartPost (traverse only);
-        # authorization happens at accept time
-        # (SO_PEERCRED + /proc/pid/exe) — so users work immediately after
-        # an upgrade without a re-login.
-        /usr/bin/systemctl enable "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
-        /usr/bin/systemctl start "fcitx5-skey-uinput-server@${CONSOLE_USER}.service" 2>/dev/null || :
-    fi
-fi
-
 # User configuration is performed manually with skey-setup.
 if [ "$1" -ge 2 ]; then
     # ── Upgrade ──
-    # Restart every running uinput server instance so it picks up the new
-    # binary.  Instance-agnostic on purpose: CONSOLE_USER only finds a
-    # seat0 session, so a headless/multi-seat or SSH-driven upgrade used to
-    # skip the restart.  The glob only matches instances systemd has
-    # already loaded.
-    if [ -x /usr/bin/systemctl ]; then
-        /usr/bin/systemctl try-restart "fcitx5-skey-uinput-server@*.service" 2>/dev/null || :
-    fi
     # Restart fcitx5 to load the new skey.so and gently reconnect KWin's
     # zwp_input_method_v2.  The helper script must run INSIDE the user's
     # graphical session — `su -` loses XDG_SESSION_TYPE /
@@ -177,10 +133,7 @@ fi
 
 %preun
 if [ "$1" = "0" ]; then
-    # Stop all running uinput server instances before removal
-    if [ -x /usr/bin/systemctl ]; then
-        /usr/bin/systemctl stop "fcitx5-skey-uinput-server@*.service" 2>/dev/null || :
-    fi
+    %{_bindir}/skey-uinput-access remove || exit $?
 
     # ── Remove per-user config on removal (not upgrade) ──
     # skey-setup -u strips the env-var blocks from shell rc files, removes
@@ -211,41 +164,16 @@ fi
 
 %postun
 if [ "$1" = "0" ]; then
-    if [ -x /usr/bin/systemctl ]; then
-        # Disable all enabled uinput server instances
-        for link in /etc/systemd/system/multi-user.target.wants/fcitx5-skey-uinput-server@*; do
-            if [ -L "$link" ]; then
-                instance=$(basename "$link")
-                /usr/bin/systemctl disable "$instance" 2>/dev/null || :
-            fi
-        done
-        /usr/bin/systemctl daemon-reload 2>/dev/null || :
-    fi
     # Refresh icon cache after removal
     if [ -x /usr/bin/gtk-update-icon-cache ]; then
         /usr/bin/gtk-update-icon-cache %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
         /usr/bin/gtk-update-icon-cache %{_datadir}/icons/breeze >/dev/null 2>&1 || :
         /usr/bin/gtk-update-icon-cache %{_datadir}/icons/breeze-dark >/dev/null 2>&1 || :
     fi
-    # Remove the dedicated sysuser created by sysusers.d — sysusers only
-    # creates, never deletes.  %preun already stopped the service, so the
-    # RuntimeDirectory is gone.  Order matters: drop the /dev/uinput ACL
-    # entry first (it references the user by name), then evict group
-    # members (groupdel refuses a non-empty group), then userdel, then
-    # groupdel as a safety net.
-    if [ -x /usr/bin/setfacl ] && [ -c /dev/uinput ]; then
-        /usr/bin/setfacl -x u:skey_uinput /dev/uinput 2>/dev/null || :
-    fi
-    if [ -x /usr/bin/gpasswd ] && getent group skey_uinput >/dev/null 2>&1; then
-        for member in $(getent group skey_uinput | cut -d: -f4 | tr ',' ' '); do
-            [ -n "$member" ] && /usr/bin/gpasswd -d "$member" skey_uinput 2>/dev/null || :
-        done
-    fi
-    if getent passwd skey_uinput >/dev/null 2>&1; then
-        /usr/sbin/userdel skey_uinput 2>/dev/null || :
-    fi
-    if getent group skey_uinput >/dev/null 2>&1; then
-        /usr/sbin/groupdel skey_uinput 2>/dev/null || :
+    # Keep the retired account; never recycle its uid during removal.
+    if [ -x /usr/bin/udevadm ]; then
+        /usr/bin/udevadm control --reload-rules 2>/dev/null || :
+        /usr/bin/udevadm trigger --action=change --subsystem-match=misc --sysname-match=uinput 2>/dev/null || :
     fi
 fi
 
@@ -253,7 +181,7 @@ fi
 %license LICENSE
 %doc README.md
 %{_libdir}/fcitx5/skey.so
-%{_bindir}/fcitx5-skey-uinput-server
+%{_bindir}/skey-uinput-access
 %{_bindir}/fcitx5-skey-settings
 %{_bindir}/skey-setup
 %{_bindir}/skey-restart-fcitx5
@@ -288,10 +216,8 @@ fi
 %{_datadir}/pixmaps/fcitx-skey-vn-flag.svg
 %{_datadir}/applications/fcitx5-skey-settings.desktop
 %{_datadir}/locale/*/LC_MESSAGES/fcitx5-skey.mo
-/lib/systemd/system/fcitx5-skey-uinput-server@.service
-%config(noreplace) /etc/polkit-1/rules.d/60-fcitx5-skey-uinput.rules
-%{_prefix}/lib/udev/rules.d/99-skey-uinput.rules
-%{_prefix}/lib/sysusers.d/skey-uinput.conf
+%{_prefix}/lib/udev/rules.d/70-skey-uinput.rules
+%{_prefix}/lib/modules-load.d/skey-uinput.conf
 
 %changelog
 * Sat Aug 01 2026 Huy <collyn094@gmail.com> - 0.4.4-1

@@ -35,7 +35,6 @@
 #include <fcitx/statusarea.h>
 
 #include <algorithm>
-#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -44,11 +43,8 @@
 #include <ctime>
 #include <dirent.h>
 #include <fstream>
-#include <pwd.h>
 #include <iomanip>
 #include <sstream>
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <unistd.h>
 #include <vector>
 
@@ -383,45 +379,6 @@ static std::string outputModeName(SKeyOutputMode mode) {
 }
 
 static constexpr size_t maxBufferedUinputKeys = 32;
-
-// Probe helper: one-shot connect to the uinput server (fs socket, then
-// legacy abstract name), returning a trusted fd or -1.  Defined near
-// connectUinputServer (needs peerIsTrusted).
-static int probeUinputServer();
-
-struct UinputSocketPaths {
-  std::string fsPath;       // "/run/skey-uinput-<user>/kb_socket"; empty if
-                            // longer than sun_path
-  std::string abstractName; // legacy "skeysocket-<user>-kb_socket"
-};
-
-static UinputSocketPaths uinputSocketPaths(const char *suffix) {
-  struct passwd pwd{};
-  struct passwd *result = nullptr;
-  long bufSize = sysconf(_SC_GETPW_R_SIZE_MAX);
-  if (bufSize < 0) {
-    bufSize = 16384;
-  }
-  std::vector<char> buf(static_cast<size_t>(bufSize));
-  std::string username = "unknown";
-  if (getpwuid_r(getuid(), &pwd, buf.data(), buf.size(), &result) == 0 &&
-      result) {
-    username = result->pw_name;
-  }
-
-  UinputSocketPaths paths;
-  paths.abstractName = std::string("skeysocket-") + username + "-" + suffix;
-  constexpr size_t maxAbstractSocketName =
-      sizeof(((sockaddr_un *)0)->sun_path) - 1;
-  if (paths.abstractName.size() > maxAbstractSocketName) {
-    paths.abstractName.resize(maxAbstractSocketName);
-  }
-  paths.fsPath = "/run/skey-uinput-" + username + "/" + suffix;
-  if (paths.fsPath.size() >= sizeof(((sockaddr_un *)0)->sun_path)) {
-    paths.fsPath.clear();
-  }
-  return paths;
-}
 
 FCITX_DEFINE_LOG_CATEGORY(skey_log, "skey");
 #define SKEY_DEBUG() SKeyLogger()
@@ -911,6 +868,7 @@ SKeyEngine::SKeyEngine(Instance *instance, bool initializeDesktop)
         if (it != liveStates_.end()) it->second->surroundingTextChanged();
       });
   if (!initializeDesktop) return;
+  uinput_.start();
   reloadConfig();
   setupTrayMenu();
 
@@ -1577,7 +1535,7 @@ std::string SKeyEngine::subModeIconImpl(const InputMethodEntry &entry,
 // ---------------------------------------------------------------------------
 
 SKeyState::SKeyState(SKeyEngine *engine, InputContext *ic)
-    : engine_(engine), ic_(ic) {
+    : engine_(engine), ic_(ic), uinputOwner_(++engine->nextUinputOwner_) {
   auto &cfg = engine_->config();
   skey::InputMethod im = skey::InputMethod::Telex;
   if (*cfg.inputMethod == SKeyInputMethod::VNI) {
@@ -1597,6 +1555,7 @@ SKeyState::SKeyState(SKeyEngine *engine, InputContext *ic)
 }
 
 SKeyState::~SKeyState() {
+  engine_->uinput_.cancel(uinputOwner_);
   engine_->liveStates_.erase(ic_);
 }
 
@@ -1653,6 +1612,7 @@ void SKeyState::finishSurroundingMeasurement() {
 }
 
 bool SKeyState::commitText(const std::string &utf8, bool uinputReplacement) {
+  if (abortFailedUinput()) return false;
   if (utf8.empty())
     return false;
   const uint64_t commitStartedAt = now(CLOCK_MONOTONIC);
@@ -1800,6 +1760,8 @@ void SKeyState::refreshAppMode() {
 }
 
 bool SKeyState::forwardUserBackspace() const {
+  if (effectiveMode() == SKeyOutputMode::SurroundingText &&
+      webkitGtkSurroundingFallback()) return true;
   // Electron terminal helper textareas can publish valid surrounding text
   // while native deletes never reach the terminal. A user Backspace already
   // specifies the desired edit: let the app handle it, including selection.
@@ -2018,6 +1980,14 @@ bool SKeyState::useSurroundingText() const {
 
 bool SKeyState::useNativeMode() const {
   return effectiveMode() == SKeyOutputMode::Native;
+}
+
+bool SKeyState::useNativeBackspaceTransport() const {
+  // The omnibox uses injected deletions even in Surrounding Text.
+  // Keep the output mode, but honor the configured replacement transport.
+  return useNativeMode() ||
+         (effectiveMode() == SKeyOutputMode::SurroundingText &&
+          engine_->config().replaceUinputWithNative.value() && inChromiumAddressBar());
 }
 
 bool SKeyState::useUinputMode() const {
@@ -2702,11 +2672,51 @@ bool SKeyState::waylandNativeSurroundingProbe() const {
          !isChromiumCached() && !isTerminalAppCached();
 }
 
+bool SKeyState::webkitGtkSurroundingFallback() const {
+  const auto program = appProgram();
+  if (cachedWebKitProgram_ != program) {
+    cachedWebKitProgram_ = program;
+    cachedIsWebKitGtk_ = -1;
+  }
+  if (cachedIsWebKitGtk_ >= 0) return cachedIsWebKitGtk_;
+  cachedIsWebKitGtk_ = 0;
+  if (program.empty()) return false;
+  // WebKitGTK's GTK3 IM context handles retrieve-surrounding but not
+  // delete-surrounding. Detect the loaded toolkit, never application names.
+  // GTK4 has a different library/forward-key contract and is not included.
+  DIR *dir = opendir("/proc");
+  if (!dir) return false;
+  while (auto *entry = readdir(dir)) {
+    if (!isdigit(entry->d_name[0])) continue;
+    const std::string base = std::string("/proc/") + entry->d_name;
+    char exe[PATH_MAX];
+    const auto length = readlink((base + "/exe").c_str(), exe, sizeof(exe) - 1);
+    if (length <= 0) continue;
+    exe[length] = '\0';
+    const char *filename = std::strrchr(exe, '/');
+    if (!filename || program != filename + 1) continue;
+    std::ifstream maps(base + "/maps");
+    std::string line;
+    while (std::getline(maps, line)) {
+      const auto slash = line.rfind('/');
+      if (slash != std::string::npos &&
+          line.compare(slash + 1, 14, "libwebkit2gtk-") == 0) {
+        cachedIsWebKitGtk_ = 1;
+        break;
+      }
+    }
+    if (cachedIsWebKitGtk_) break;
+  }
+  closedir(dir);
+  return cachedIsWebKitGtk_;
+}
+
 bool SKeyState::useNativeSurroundingApi() const {
   // Single effectiveMode() call — avoids double-evaluating detectAutoMode()
   // (which scans /proc via isChromiumBasedApp) on every keystroke.
   auto mode = effectiveMode();
   return mode == SKeyOutputMode::SurroundingText &&
+         !webkitGtkSurroundingFallback() &&
          (ic_->capabilityFlags().test(CapabilityFlag::SurroundingText) ||
           waylandNativeSurroundingProbe());
 }
@@ -2935,6 +2945,7 @@ void SKeyState::activate() {
   cachedIsChromium_ = -1;
   cachedIsFirefoxOrSnap_ = -1;
   cachedIsTerminalApp_ = -1;
+  cachedIsWebKitGtk_ = -1;
   // A bare-caps decision belongs to the previous focus session.  A stale
   // pending/deadline must not leak into the new window — detectAutoMode
   // would otherwise lock sticky instantly on the first keystroke if the old
@@ -2970,7 +2981,10 @@ void SKeyState::activate() {
   }
   auto mode = effectiveMode();
   auto configuredMode = engine_->config().outputMode.value();
-  if (useNativeMode() && !appExcluded_) engine_->native_.start();
+  if (useNativeBackspaceTransport() && !appExcluded_) engine_->native_.start();
+#ifndef SKEY_TESTING
+  if (!appExcluded_) engine_->uinput_.start();
+#endif
   SKEY_DEBUG() << "Activated: mode=" << outputModeName(mode)
                << " configured=" << outputModeName(configuredMode)
                << " replaceUinputWithNative=" << engine_->config().replaceUinputWithNative.value()
@@ -3014,147 +3028,18 @@ void SKeyState::activate() {
   x11BrowserFocusSettled_ = false;
 }
 
-// Connect to a unix socket: filesystem path or abstract name (abstract =
-// NUL-prefixed sun_path).
-static bool connectUnixSocket(int fd, const std::string &path, bool abstract) {
-  if (path.size() >= sizeof(((sockaddr_un *)0)->sun_path)) {
-    return false;
-  }
-  sockaddr_un addr{};
-  addr.sun_family = AF_UNIX;
-  size_t len = path.size();
-  if (abstract) {
-    addr.sun_path[0] = '\0';
-    memcpy(&addr.sun_path[1], path.c_str(), len);
-    // len now counts the leading NUL: the address is exactly these bytes.
-    // Do NOT add a further "+1" — the kernel compares abstract names byte
-    // for byte up to the given length, and one stray trailing NUL makes
-    // every connect fail with ECONNREFUSED against the server's bind
-    // (which is len = offsetof + name.size() + 1, i.e. NUL + name, no
-    // extra terminator).  Verified with a standalone repro, 2026-08-21.
-    len += 1;
-    socklen_t slen = offsetof(sockaddr_un, sun_path) + len;
-    return connect(fd, reinterpret_cast<sockaddr *>(&addr), slen) == 0;
-  }
-  memcpy(addr.sun_path, path.c_str(), len);
-  // Pathname sockets: include the terminating NUL, as usual.
-  socklen_t slen = offsetof(sockaddr_un, sun_path) + len + 1;
-  return connect(fd, reinterpret_cast<sockaddr *>(&addr), slen) == 0;
-}
-
-// The peer must be the real uinput server.  Accepted peers:
-//  - our own uid  — the old hardened server that dropped privileges to us
-//  - root (0)     — the legacy root server
-//  - skey_uinput  — the current server, which runs as its own dedicated
-//                   sysuser from start (never root, never drops)
-// Anything else — a squatter on the abstract name, another user's process —
-// is refused.
-static bool peerIsTrusted(int fd) {
-  ucred cred{};
-  socklen_t credLen = sizeof(cred);
-  if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &credLen) != 0) {
-    SKEY_DEBUG() << "Uinput: probe SO_PEERCRED failed: " << strerror(errno);
-    return false;
-  }
-  if (cred.uid == getuid() || cred.uid == 0) {
-    return true;
-  }
-  // Resolve the sysuser uid once (getpwnam is cheap; the result is cached).
-  static uid_t sysUserUid = [] {
-    passwd pw{};
-    passwd *result = nullptr;
-    std::vector<char> buf(16384);
-    if (getpwnam_r("skey_uinput", &pw, buf.data(), buf.size(), &result) == 0 &&
-        result != nullptr) {
-      return result->pw_uid;
-    }
-    return static_cast<uid_t>(-1);
-  }();
-  if (sysUserUid != static_cast<uid_t>(-1) && cred.uid == sysUserUid) {
-    return true;
-  }
-  SKEY_DEBUG() << "Uinput: probe peer uid " << cred.uid
-               << " untrusted (self=" << getuid()
-               << " sysuser=" << static_cast<long>(sysUserUid) << ")";
-  return false;
-}
-
-// One-shot probe connect: fs socket first, legacy abstract name second.
-// Returns a connected+trusted fd or -1.  Never caches — callers decide
-// whether to keep the fd (connectUinputServer) or discard it.
-static int probeUinputServer() {
-  auto tryConnect = [](const std::string &path, bool abstract) -> int {
-    int fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0);
-    if (fd < 0) {
-      SKEY_DEBUG() << "Uinput: socket failed: " << strerror(errno);
-      return -1;
-    }
-    if (!connectUnixSocket(fd, path, abstract)) {
-      SKEY_DEBUG() << "Uinput: probe connect failed ("
-                   << (abstract ? "abstract" : "fs")
-                   << "): " << strerror(errno);
-      close(fd);
-      return -1;
-    }
-    if (!peerIsTrusted(fd)) {
-      close(fd);
-      return -1;
-    }
-    return fd;
-  };
-
-  UinputSocketPaths paths = uinputSocketPaths("kb_socket");
-  if (!paths.fsPath.empty()) {
-    int fd = tryConnect(paths.fsPath, /*abstract=*/false);
-    if (fd >= 0) {
-      return fd;
-    }
-  }
-  if (!paths.abstractName.empty()) {
-    int fd = tryConnect(paths.abstractName, /*abstract=*/true);
-    if (fd >= 0) {
-      return fd;
-    }
-  }
-  return -1;
-}
-
-bool SKeyState::connectUinputServer() {
-  if (uinputClientFd_ >= 0) {
-    return true;
-  }
-  int fd = probeUinputServer();
-  if (fd < 0) {
-    SKEY_DEBUG() << "Uinput: server unavailable";
-    return false;
-  }
-  uinputClientFd_ = fd;
-  SKEY_DEBUG() << "Uinput: connected";
-  return true;
-}
-
-void SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view oldWord) {
+bool SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view oldWord) {
   uinputDeleteAck_.reset();
   if (count < 0) {
-    return;
+    return false;
   }
   if (count == 0 && flags == 0) {
-    return;
+    return true;
   }
-  if (!useNativeMode() && !connectUinputServer()) {
-    SKEY_DEBUG() << "Uinput: cannot send BS, server unavailable";
-    return;
+  if (!useNativeBackspaceTransport() && uinputLateBsDeadlineUsec_ > now(CLOCK_MONOTONIC)) {
+    return false; // let late events drain before accepting another transaction
   }
-
-  // Protocol v3: int32_t count, uint32_t flags, uint32_t textLen,
-  // uint32_t paceUsec, then text.  textLen is always 0 — replacement text
-  // is committed via ic_->commitString() (see
-  // handlePendingUinputBackspace), never typed through uinput.
-  // flags bit 0: Escape before BS (X11 first-word autocomplete dismissal
-  // when no accessibility selection snapshot is available).
-  // paceUsec: gap between injected BS (manual per-app override; 1000 =
-  //   the server's 1ms default).  The server detects v1/v2/v3 by message
-  //   size; a v2 server ignores the trailing field and uses the default.
+  // flags bit 0 dismisses autocomplete with Escape before Backspace.
   uint32_t paceUsec = 1000;
   if (const skey::AppDelayOverride *ov =
           engine_->appDelayOverride(appProgram(), isWayland());
@@ -3171,16 +3056,6 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
     // overrides win over this default.
     paceUsec = 10000;
   }
-  int32_t count32 = count;
-  uint32_t textLen = 0;
-  std::vector<char> msg(sizeof(int32_t) + sizeof(uint32_t) * 3); // 16 bytes
-  memcpy(msg.data(), &count32, sizeof(count32));
-  memcpy(msg.data() + sizeof(count32), &flags, sizeof(flags));
-  memcpy(msg.data() + sizeof(count32) + sizeof(flags), &textLen,
-         sizeof(textLen));
-  memcpy(msg.data() + sizeof(count32) + sizeof(flags) + sizeof(textLen),
-         &paceUsec, sizeof(paceUsec));
-
   bsSentAt_ = now(CLOCK_MONOTONIC);
   const auto *monitor = engine_->a11yMonitor();
   const bool x11SheetsEditor = !isWayland() && monitor &&
@@ -3197,27 +3072,34 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
                              oldWord, count - 1, bsSentAt_);
     }
   }
-  if (useNativeMode()) {
+  if (useNativeBackspaceTransport()) {
     // Preserve the Uinput event contract: N deletions followed by one
     // anchor. Fcitx must pass the real deletions to the application and
     // consume only the anchor in handlePendingUinputBackspace().
     if (engine_->native_.backspaces(count, flags & 1, paceUsec)) {
       uinputBsOutstanding_ += count;
       SKEY_DEBUG() << "Native: sent BS=" << count << " (includes sync anchor) paceUs=" << paceUsec;
+      return true;
     } else {
       nativeFailed_ = true;
       SKEY_DEBUG() << "Native: send rejected; no uinput fallback: " << engine_->native_.status();
     }
-    return;
+    return false;
   }
-  ssize_t n = send(uinputClientFd_, msg.data(), msg.size(), MSG_NOSIGNAL);
-  if (n < 0) {
-    SKEY_DEBUG() << "Uinput: send failed: " << strerror(errno);
-    close(uinputClientFd_);
-    uinputClientFd_ = -1;
-    if (connectUinputServer()) {
-      send(uinputClientFd_, msg.data(), msg.size(), MSG_NOSIGNAL);
+#ifdef SKEY_TESTING
+  if (uinputTestSend_) {
+    if (!uinputTestSend_(count, flags, paceUsec)) return false;
+  } else
+#endif
+  {
+    auto ticket = engine_->uinput_.backspaces(uinputOwner_, count, flags & 1, paceUsec);
+    if (!ticket) {
+      uinputDeleteAck_.reset();
+      SKEY_DEBUG() << "Uinput: request rejected: " << engine_->uinput_.status();
+      return false;
     }
+    uinputRequest_ = std::move(ticket);
+    watchUinputRequest();
   }
   // Track injected BS that will loop back through fcitx5 — used to
   // swallow late loopbacks instead of mistaking them for user backspaces.
@@ -3226,6 +3108,56 @@ void SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
                << (paceUsec != 1000
                        ? " pace=" + std::to_string(paceUsec / 1000) + "ms"
                        : "");
+  return true;
+}
+
+bool SKeyState::abortFailedUinput() {
+  if (!uinputRequest_) return false;
+  const auto state = uinputRequest_->state.load();
+  if (state != skey::UinputInjector::State::Failed &&
+      state != skey::UinputInjector::State::Cancelled) return false;
+  SKEY_DEBUG() << "Uinput: discard failed/cancelled replacement";
+  resetForCellChange();
+  return true;
+}
+
+bool SKeyState::deferUinputTimer(EventSourceTime *source) {
+  if (abortFailedUinput()) return true;
+  if (!uinputRequest_ ||
+      uinputRequest_->state.load() != skey::UinputInjector::State::Queued)
+    return false;
+  // The safety deadline may expire during a long paced batch. A commit
+  // must never overtake deletions still being emitted by our worker.
+  if (source) {
+    source->setTime(now(CLOCK_MONOTONIC) + 1000);
+    source->setOneShot();
+  }
+  return true;
+}
+
+void SKeyState::cancelUinputRequest() {
+  engine_->uinput_.cancel(uinputOwner_);
+  // Some accepted events may already be in the kernel. Reuse the existing
+  // late-loopback grace, without counting keys that cancellation never sent.
+  if (uinputRequest_ && uinputBsOutstanding_ > 0) {
+    uinputLateBsDeadlineUsec_ = now(CLOCK_MONOTONIC) + 400000;
+    uinputBsOutstanding_ = 0;
+  }
+  uinputRequestTimer_.reset();
+  uinputRequest_.reset();
+}
+
+void SKeyState::watchUinputRequest() {
+  uinputRequestTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+      CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 1000, 1,
+      [this](EventSourceTime *, uint64_t) {
+        uinputRequestTimer_.reset();
+        if (abortFailedUinput()) return true;
+        if (uinputRequest_ &&
+            uinputRequest_->state.load() == skey::UinputInjector::State::Queued)
+          watchUinputRequest();
+        return true;
+      });
 }
 
 skey::AppDelayOverride SKeyState::appDelayOverrideResolved() const {
@@ -3280,7 +3212,7 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   if (!isTrackedKey || expectedUinputBackspaces_ == 0) {
     auto sym = keyEvent.key().sym();
 
-    // Escape sent by our own uinput server (flags=1) must pass
+    // Escape sent by our own uinput injector (flags=1) must pass
     // through to Chrome — don't filter it.  It dismisses Chrome
     // inline autocomplete without deleting any characters, which
     // extra BS would incorrectly do.
@@ -3565,9 +3497,6 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   // Wayland only: on X11 the sync anchor is a true barrier (X server
   // serializes key delivery), so the fast adaptive timing is already
   // safe and the 20ms slow-mode sleep would only add latency.
-  // Wayland only: on X11 the sync anchor is a true barrier (X server
-  // serializes key delivery), so the fast adaptive timing is already
-  // safe and the 20ms slow-mode sleep would only add latency.
   // Standalone Electron apps (antigravity): their multi-process key
   // queue lags far behind the anchor loopback.  Terminals and the
   // address bar (own machinery) are excluded.
@@ -3639,6 +3568,7 @@ void SKeyState::scheduleUinputSettle(uint64_t delay, int retries, int postMs) {
 }
 
 void SKeyState::finishUinputSettle(int retries, int postMs) {
+  if (deferUinputTimer(uinputCommitTimer_.get())) return;
   if (!uinputSettling_ || !uinputDeleting_) return;
   if (checkCellSelection()) return; // never commit the previous Sheets cell
   if (uinputDeleteAck_.active()) {
@@ -3934,10 +3864,6 @@ void SKeyState::deactivate() {
     }
   }
 
-  if (uinputClientFd_ >= 0) {
-    close(uinputClientFd_);
-    uinputClientFd_ = -1;
-  }
   // Firefox/Snap: preserve uinput state during spurious deactivate.
   if (uinputKeyForwarded_ && isFirefoxOrSnap()) {
     SKEY_DEBUG() << "Deactivate: Firefox/Snap guard hit, preserving state";
@@ -3954,10 +3880,7 @@ void SKeyState::deactivate() {
         CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 500000, 0,
         [this](EventSourceTime *, uint64_t) {
           SKEY_DEBUG() << "Deactivate: no reactivate, genuine focus loss";
-          if (useNativeMode()) {
-            engine_->native_.cancel();
-            resetForCellChange();
-          }
+          resetForCellChange();
           addrBarExpectCycle_ = false;
           addrBarCycleTimer_.reset();
           // Next word in a fresh context is the first word again
@@ -4007,7 +3930,8 @@ void SKeyState::deactivate() {
               << "Deactivate: no reactivation, discarding mid-flight "
                  "replacement";
           uinputCycleTimer_.reset();
-          if (useNativeMode()) engine_->native_.cancel();
+          if (useNativeBackspaceTransport()) engine_->native_.cancel();
+          cancelUinputRequest();
           pendingUinputCommit_.clear();
           expectedUinputBackspaces_ = 0;
           seenUinputBackspaces_ = 0;
@@ -4029,7 +3953,8 @@ void SKeyState::deactivate() {
     return;
   }
 
-  if (useNativeMode()) engine_->native_.cancel();
+  if (useNativeBackspaceTransport()) engine_->native_.cancel();
+  cancelUinputRequest();
   expectedUinputBackspaces_ = 0;
   seenUinputBackspaces_ = 0;
   pendingUinputCommit_.clear();
@@ -4110,6 +4035,7 @@ void SKeyState::reset() {
   if (hasDeferredCommitPending()) {
     SKEY_DEBUG() << "Reset: keeping deferred commit";
   }
+  cancelUinputRequest();
   // Save uncommitted preedit to engine (global, survives IC
   // destruction) and set spurious-cycle flag (per-IC).
   // commitString() during reset() is silently dropped on some
@@ -4214,7 +4140,8 @@ bool SKeyState::checkCellSelection() {
 }
 
 void SKeyState::resetForCellChange() {
-  if (useNativeMode()) engine_->native_.cancel();
+  if (useNativeBackspaceTransport()) engine_->native_.cancel();
+  cancelUinputRequest();
   x11BrowserFocusSettled_ = false;
   viet_.reset();
   committedLen_ = 0;
@@ -4249,6 +4176,7 @@ void SKeyState::resetForCellChange() {
 }
 
 void SKeyState::keyEvent(KeyEvent &keyEvent) {
+  abortFailedUinput();
   // Chrome X11 can reuse the same IC and report old omnibox geometry during
   // Reset/Activate. By the first physical key the page's caret/a11y verdict
   // can already be current. A transition out of the bar is a boundary even
@@ -4417,7 +4345,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
-  if (useNativeMode() && !modeMenuActive_ &&
+  if (useNativeBackspaceTransport() && !modeMenuActive_ &&
       !keyEvent.key().check(engine_->modeMenuKey())) {
     engine_->native_.start();
     const auto status = engine_->native_.status();
@@ -4428,6 +4356,27 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     if (!engine_->native_.ready() || nativeFailed_) {
       if (uinputDeleting_ || uinputSettling_) resetForCellChange();
       viet_.reset(); committedLen_ = 0; clearLastWord();
+      return;
+    }
+  }
+
+  if (!useNativeBackspaceTransport() && !modeMenuActive_ &&
+      !keyEvent.key().check(engine_->modeMenuKey()) &&
+      (useUinputMode() || (useSurroundingText() && inChromiumAddressBar()))) {
+#ifdef SKEY_TESTING
+    const bool ready = uinputTestReady_;
+#else
+    engine_->uinput_.start();
+    const bool ready = engine_->uinput_.ready();
+    const auto status = engine_->uinput_.status();
+    if (status != uinputStatus_) {
+      uinputStatus_ = status;
+      SKEY_INFO() << "Uinput: " << status;
+    }
+#endif
+    if (!ready || uinputLateBsDeadlineUsec_ > now(CLOCK_MONOTONIC)) {
+      if (handlePendingUinputBackspace(keyEvent)) return;
+      resetForCellChange();
       return;
     }
   }
@@ -4884,7 +4833,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       SKEY_DEBUG() << "SurrBS: Firefox X11 idle BS passthrough (app selection)";
       return;
     }
-    if (useNativeSurroundingApi() && !inChromiumAddressBar()) {
+    if ((useNativeSurroundingApi() ||
+         (effectiveMode() == SKeyOutputMode::SurroundingText && webkitGtkSurroundingFallback())) &&
+        !inChromiumAddressBar()) {
       if (forwardUserBackspace()) {
         const auto &surrounding = ic_->surroundingText();
         const bool selected = surrounding.isValid() &&
@@ -5188,7 +5139,10 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                        << postRestore << "'";
           if (useUinputMode()) {
             int oldLen = static_cast<int>(utf8::length(preRestore));
-            sendBackspaceUinput(oldLen + 1);
+            if (!sendBackspaceUinput(oldLen + 1)) {
+              resetForCellChange();
+              return;
+            }
             expectedUinputBackspaces_ = oldLen;
             seenUinputBackspaces_ = 0;
             pendingUinputCommit_ = postRestore + "\n";
@@ -5199,7 +5153,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
                 CLOCK_MONOTONIC,
                 now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec, 0,
-                [this](EventSourceTime *, uint64_t) {
+                [this](EventSourceTime *source, uint64_t) {
+                  if (deferUinputTimer(source)) return true;
                   SKEY_DEBUG() << "AutoRestore: safety timeout, force commit";
                   uinputSafetyTimer_.reset();
                   uinputCommitTimer_.reset();
@@ -5290,7 +5245,10 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             // Include the space in the pending commit so it arrives
             // AFTER the BS events (avoids race with D-Bus commitString).
             int oldLen = static_cast<int>(utf8::length(preRestore));
-            sendBackspaceUinput(oldLen + 1); // +1 sync BS
+            if (!sendBackspaceUinput(oldLen + 1)) {
+              resetForCellChange();
+              return;
+            }
             expectedUinputBackspaces_ = oldLen;
             seenUinputBackspaces_ = 0;
             pendingUinputCommit_ = postRestore + " ";
@@ -5301,7 +5259,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
                 CLOCK_MONOTONIC,
                 now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec, 0,
-                [this](EventSourceTime *, uint64_t) {
+                [this](EventSourceTime *source, uint64_t) {
+                  if (deferUinputTimer(source)) return true;
                   SKEY_DEBUG() << "AutoRestore: safety timeout, force commit";
                   uinputSafetyTimer_.reset();
                   uinputCommitTimer_.reset();
@@ -5420,7 +5379,10 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                        << postRestore << "'";
           if (useUinputMode()) {
             int oldLen = static_cast<int>(utf8::length(preRestore));
-            sendBackspaceUinput(oldLen + 1);
+            if (!sendBackspaceUinput(oldLen + 1)) {
+              resetForCellChange();
+              return;
+            }
             expectedUinputBackspaces_ = oldLen;
             seenUinputBackspaces_ = 0;
             pendingUinputCommit_ = postRestore + "\t";
@@ -5431,7 +5393,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
                 CLOCK_MONOTONIC,
                 now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec, 0,
-                [this](EventSourceTime *, uint64_t) {
+                [this](EventSourceTime *source, uint64_t) {
+                  if (deferUinputTimer(source)) return true;
                   SKEY_DEBUG() << "AutoRestore: safety timeout, force commit";
                   uinputSafetyTimer_.reset();
                   uinputCommitTimer_.reset();
@@ -5777,8 +5740,6 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             std::string addPart = newComposed.substr(pfx);
             int deleteLen = static_cast<int>(utf8::length(delPart));
 
-            keyEvent.filterAndAccept();
-
             if (deleteLen > 0) {
               SKEY_DEBUG() << "Uinput: consume '" << keyUtf8
                            << "' replace (del=" << deleteLen << " add='"
@@ -5799,6 +5760,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                   }
                 }
                 committedLen_ = static_cast<int>(utf8::length(newComposed));
+                keyEvent.filterAndAccept();
                 scheduleAddrBarReplacement(
                     deleteLen, addPart,
                     static_cast<int>(utf8::length(oldComposed)),
@@ -5820,7 +5782,10 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               // byte stream stays ordered and the shell sees the deletions
               // before the replacement text.  The adaptive sleep is cheap
               // on kernel 7.0's fast loopbacks.
-              sendBackspaceUinput(deleteLen + 1, 0, oldComposed); // +1 sync BS
+              if (!sendBackspaceUinput(deleteLen + 1, 0, oldComposed)) {
+                resetForCellChange();
+                return;
+              }
               expectedUinputBackspaces_ = deleteLen;
               seenUinputBackspaces_ = 0;
               pendingUinputCommit_ = addPart;
@@ -5868,6 +5833,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 commitText(addPart);
               }
             }
+            // A rejected deletion returned above without consuming the key.
+            keyEvent.filterAndAccept();
             committedLen_ = static_cast<int>(utf8::length(newComposed));
             return;
           }
@@ -5935,7 +5902,10 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             // Full replacement via uinput: include punctuation in
             // pending commit so it arrives AFTER BS events.
             int oldLen = static_cast<int>(utf8::length(preRestore));
-            sendBackspaceUinput(oldLen + 1); // +1 sync BS
+            if (!sendBackspaceUinput(oldLen + 1)) {
+              resetForCellChange();
+              return;
+            }
             expectedUinputBackspaces_ = oldLen;
             seenUinputBackspaces_ = 0;
             pendingUinputCommit_ = postRestore + std::string(1, ch);
@@ -5946,7 +5916,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
                 CLOCK_MONOTONIC,
                 now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec, 0,
-                [this](EventSourceTime *, uint64_t) {
+                [this](EventSourceTime *source, uint64_t) {
+                  if (deferUinputTimer(source)) return true;
                   SKEY_DEBUG() << "AutoRestore: safety timeout, force commit";
                   uinputSafetyTimer_.reset();
                   uinputCommitTimer_.reset();
@@ -6052,6 +6023,9 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
                                            const std::string &fullComposed,
                                            bool oldComposedIsAscii,
                                            const std::string &oldComposed) {
+  const bool hadFirstWord = addrBarHadFirstWord_;
+  const bool didFullReplace = addrBarDidFullReplace_;
+  const bool keepState = addrBarKeepState_;
   // Use uinput BS + adaptive EWMA timer delay before D-Bus commitString.
   // uinput BS goes through kernel → Chrome processes it as a real keystroke
   // (omnibox update, autocomplete dismissal).  The EWMA-based delay adapts
@@ -6347,7 +6321,19 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
     seenUinputBackspaces_ = 0;
     pendingUinputCommit_ = commitText;
     uinputDeleting_ = true;
-    sendBackspaceUinput(totalBs + 1, uinputFlags); // +1 sync BS
+    const bool sent = sendBackspaceUinput(totalBs + 1, uinputFlags); // +1 sync BS
+    if (!sent) {
+      // No deletion was queued: a timeout must not insert the whole word
+      // over the unchanged omnibox text. Keep tracking what is on screen.
+      SKEY_DEBUG() << "AddrBar: deletion not sent, cancel replacement";
+      resetForCellChange();
+      viet_.setRawInput(oldComposed);
+      committedLen_ = oldComposedLen;
+      addrBarHadFirstWord_ = hadFirstWord;
+      addrBarDidFullReplace_ = didFullReplace;
+      addrBarKeepState_ = keepState;
+      return;
+    }
     // The sync-anchor BS proves the deletions reached Chrome — the
     // screen state is known-good again, so the backspace-desync guard
     // (armed by a previous user BS) must not fire on stale snapshots.
@@ -6356,7 +6342,8 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
     uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC,
         now(CLOCK_MONOTONIC) + uinputTiming().safetyTimeoutUsec, 0,
-        [this](EventSourceTime *, uint64_t) {
+        [this](EventSourceTime *source, uint64_t) {
+          if (deferUinputTimer(source)) return true;
           SKEY_DEBUG() << "Uinput: safety timeout, force commit";
           uinputSafetyTimer_.reset();
           std::string text = std::move(pendingUinputCommit_);
@@ -6732,7 +6719,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         // into the terminal, so only the sync anchor proves the deletions
         // were dispatched before the commit is sent (kernel 7.0 PTY
         // interleaving — see the keyEvent terminal path).
-        bool usesUinputBs = useNativeMode() ||
+        bool usesUinputBs = useNativeBackspaceTransport() ||
             (useUinputMode() &&
              (isWayland() || !isTerminalAppCached() || isChromiumCached())) ||
             (!isWayland() && isTerminalAppCached()) ||
@@ -6764,7 +6751,10 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         // sterm Surr mode) forwards BS and commits immediately instead.
         // Wayland terminals keep the anchor (no X-serialization there).
         if (usesUinputBs) {
-          sendBackspaceUinput(deleteLen + 1, 0, oldComposed); // +1 sync BS
+          if (!sendBackspaceUinput(deleteLen + 1, 0, oldComposed)) {
+            resetForCellChange();
+            return;
+          }
           expectedUinputBackspaces_ = deleteLen;
           seenUinputBackspaces_ = 0;
           pendingUinputCommit_ = addedPart;
@@ -6797,7 +6787,8 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         deferredBsSentAt_ = now(CLOCK_MONOTONIC);
         committedLen_ = newLen;
         if (!addedPart.empty()) {
-          if ((isWayland() && (isChromiumCached() || isFirefoxOrSnap())) ||
+          if (webkitGtkSurroundingFallback() ||
+              (isWayland() && (isChromiumCached() || isFirefoxOrSnap())) ||
               (!isWayland() && isChromiumBrowser(appProgram()))) {
             // Wayland has no ordering guarantee between forwardKey (via
             // the compositor's virtual-keyboard protocol) and commitString
@@ -6974,7 +6965,8 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       } else {
         const auto &surrounding = ic_->surroundingText();
         SKEY_DEBUG() << "Surr: Backspace fallback reason="
-                     << (!useNativeSurroundingApi() ? "native-api-unavailable"
+                     << (webkitGtkSurroundingFallback() ? "webkit-gtk-no-delete-handler"
+                         : !useNativeSurroundingApi() ? "native-api-unavailable"
                          : inChromiumAddressBar() ? "chromium-address-bar"
                                                   : "firefox-docs-x11-policy")
                      << " surrValid=" << surrounding.isValid()
@@ -7082,7 +7074,8 @@ void SKeyState::armUinputSafetyTimer() {
   }
   uinputSafetyTimer_ = engine_->instance()->eventLoop().addTimeEvent(
       CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + budget, 0,
-      [this](EventSourceTime *, uint64_t) {
+      [this](EventSourceTime *source, uint64_t) {
+        if (deferUinputTimer(source)) return true;
         // If our sent BS are still outstanding, they may just be slow
         // (loopback latency > safety window).  Extend the window once —
         // force-committing now would corrupt the screen when the late

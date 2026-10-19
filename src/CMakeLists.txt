@@ -6,6 +6,7 @@ set(CMAKE_AUTORCC OFF)
 set(SKEY_SOURCES
     engine.cpp
     native_injector.cpp
+    uinput_injector.cpp
     vietnamese.cpp
     viet_recompose.cpp
     viet_undo.cpp
@@ -44,8 +45,16 @@ target_compile_definitions(skey PRIVATE
 # Include path for skey_engine.h
 target_include_directories(skey PRIVATE "${SKEY_ENGINE_DIR}")
 
-add_executable(fcitx5-skey-uinput-server uinput_server.cpp)
-target_compile_features(fcitx5-skey-uinput-server PRIVATE cxx_std_17)
+add_executable(test_uinput_injector test_uinput_injector.cpp uinput_injector.cpp)
+target_compile_features(test_uinput_injector PRIVATE cxx_std_17)
+target_link_libraries(test_uinput_injector pthread)
+add_test(NAME UinputInjector COMMAND test_uinput_injector)
+set_tests_properties(UinputInjector PROPERTIES TIMEOUT 10)
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME UinputMigration COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_SOURCE_DIR}/scripts/test_uinput_migration.py")
+endif()
 
 # ── Test executable: Vietnamese typing tests ─────────────────────────
 add_executable(test_vietnamese test_vietnamese.cpp vietnamese.cpp viet_recompose.cpp viet_undo.cpp viet_restore.cpp charset.cpp)
@@ -72,10 +81,16 @@ add_executable(test_engine_performance test_engine_performance.cpp ${SKEY_SOURCE
 target_link_libraries(test_engine_performance Fcitx5::Core skey_engine ${DBUS_LIBRARIES} ${XCB_LIBRARIES} PkgConfig::NATIVE_X11 pthread dl m)
 target_include_directories(test_engine_performance PRIVATE ${SKEY_ENGINE_DIR} ${DBUS_INCLUDE_DIRS} ${XCB_INCLUDE_DIRS})
 target_compile_features(test_engine_performance PRIVATE cxx_std_17)
-target_compile_definitions(test_engine_performance PRIVATE FCITX_SKEY_ICON_PATH="/tmp/skey-test.svg" FCITX_SKEY_ICON_DIR="/tmp")
+target_compile_definitions(test_engine_performance PRIVATE SKEY_TESTING=1 FCITX_SKEY_ICON_PATH="/tmp/skey-test.svg" FCITX_SKEY_ICON_DIR="/tmp")
 add_test(NAME EnginePerformance COMMAND test_engine_performance)
 add_test(NAME InjectedBackspaceContract COMMAND ${CMAKE_COMMAND} -E env
     SKEY_TEST_BACKSPACE_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+add_test(NAME WebKitSurroundingText COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_WEBKIT_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+add_test(NAME WaylandOmniboxSurroundingText COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_WAYLAND_OMNIBOX_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+add_test(NAME X11OmniboxSurroundingText COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_X11_OMNIBOX_ONLY=1 $<TARGET_FILE:test_engine_performance>)
 set_tests_properties(EnginePerformance PROPERTIES TIMEOUT 15)
 find_program(DBUS_RUN_SESSION dbus-run-session)
 if(DBUS_RUN_SESSION)
@@ -89,7 +104,6 @@ endif()
 enable_testing()
 
 install(TARGETS skey DESTINATION "${FCITX_INSTALL_ADDONDIR}")
-install(TARGETS fcitx5-skey-uinput-server DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
 # Install addon config - use configure_file since we have no translations yet
 configure_file(

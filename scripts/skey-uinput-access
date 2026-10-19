@@ -1,0 +1,108 @@
+#!/bin/sh
+# Package install/upgrade helper. No desktop configuration or IM restart.
+set -eu
+[ "$(id -u)" -eq 0 ] || { echo "Run skey-uinput-access as root" >&2; exit 1; }
+umask 077
+action=${1:-configure}
+case "$action" in
+    configure|remove) ;;
+    *) echo "Usage: skey-uinput-access [configure|remove]" >&2; exit 2 ;;
+esac
+
+# Stop before touching unit files or permissions. A failed stop must be
+# visible to the installer: two virtual keyboards must not run together.
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+    legacy_units=$(systemctl list-units --all --plain --no-legend --no-pager \
+        'fcitx5-skey-uinput-server@*.service') || {
+        echo "SKey: cannot query legacy uinput services; migration aborted" >&2
+        exit 1
+    }
+    if ! printf '%s\n' "$legacy_units" | while read -r unit rest; do
+        case "$unit" in
+            fcitx5-skey-uinput-server@*.service) systemctl stop "$unit" || exit 1 ;;
+        esac
+    done; then
+        echo "SKey: cannot stop the legacy uinput service; migration aborted" >&2
+        exit 1
+    fi
+fi
+# Also detect source installs or orphan processes outside systemd. Do not
+# kill by a broad command-line pattern, or revoke access under a live server.
+for exe in /proc/[0-9]*/exe; do
+    target=$(readlink "$exe" 2>/dev/null) || continue
+    case "$target" in
+        */fcitx5-skey-uinput-server|*/fcitx5-skey-uinput-server\ \(deleted\))
+            echo "SKey: legacy uinput server still running (${exe%/exe}); stop it and retry skey-uinput-access $action" >&2
+            exit 1 ;;
+    esac
+done
+
+# Keep local edits outside all active configuration directories. Repeated
+# installs are idempotent; a subsequent local edit never overwrites a backup.
+archive() {
+    [ -e "$1" ] || [ -L "$1" ] || return 0
+    destination="/var/lib/fcitx5-skey/legacy-uinput$1"
+    while [ -e "$destination" ] || [ -L "$destination" ]; do
+        destination="$destination.old"
+    done
+    mkdir -p "$(dirname "$destination")"
+    mv "$1" "$destination"
+}
+archive_config() {
+    for suffix in '' .rpmsave .rpmnew .dpkg-old .dpkg-dist .skey-legacy-disabled; do
+        archive "$1$suffix"
+    done
+}
+for dir in /etc/systemd/system /run/systemd/system /usr/local/lib/systemd/system \
+           /usr/lib/systemd/system /lib/systemd/system; do
+    for link in "$dir"/*.wants/fcitx5-skey-uinput-server@*.service \
+                "$dir"/*.requires/fcitx5-skey-uinput-server@*.service; do
+        [ -L "$link" ] || continue
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl disable "${link##*/}" 2>/dev/null || :
+        fi
+        # disable may fail when the package already removed the template.
+        rm -f "$link"
+    done
+    for file in "$dir"/fcitx5-skey-uinput-server@*.service \
+                "$dir"/fcitx5-skey-uinput-server@*.service.d \
+                "$dir"/fcitx5-skey-uinput-server@*.service.*; do
+        archive "$file"
+    done
+done
+for dir in /etc/udev/rules.d /usr/local/lib/udev/rules.d /usr/lib/udev/rules.d /lib/udev/rules.d; do
+    archive_config "$dir/99-skey-uinput.rules"
+done
+for dir in /etc/polkit-1/rules.d /usr/local/share/polkit-1/rules.d \
+           /usr/share/polkit-1/rules.d /usr/local/lib/polkit-1/rules.d \
+           /usr/lib/polkit-1/rules.d /lib/polkit-1/rules.d; do
+    archive_config "$dir/60-fcitx5-skey-uinput.rules"
+done
+for dir in /etc/sysusers.d /run/sysusers.d /usr/local/lib/sysusers.d /usr/lib/sysusers.d /lib/sysusers.d; do
+    archive_config "$dir/skey-uinput.conf"
+done
+for dir in /usr/local/bin /usr/bin; do
+    archive "$dir/fcitx5-skey-uinput-server"
+done
+# Only the known legacy socket; leave unexpected contents untouched.
+for dir in /run/skey-uinput-*; do
+    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+    [ ! -S "$dir/kb_socket" ] || rm -f "$dir/kb_socket"
+    rmdir "$dir" 2>/dev/null || :
+done
+if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload 2>/dev/null || :; fi
+if [ "$action" = configure ] && command -v modprobe >/dev/null 2>&1; then
+    modprobe uinput 2>/dev/null || :
+fi
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules 2>/dev/null || :
+    udevadm trigger --action=change --subsystem-match=misc --sysname-match=uinput 2>/dev/null || :
+    udevadm settle --timeout=5 2>/dev/null || :
+fi
+# Wait for udev before removing the old ACL: an already queued RUN from
+# the retired rule must not re-grant it after our cleanup. Keep the account
+# to avoid uid reuse, and never replace the active seat's ACL as a whole.
+if getent passwd skey_uinput >/dev/null 2>&1 && \
+   command -v setfacl >/dev/null 2>&1 && [ -c /dev/uinput ]; then
+    setfacl -x u:skey_uinput /dev/uinput 2>/dev/null || :
+fi

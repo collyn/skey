@@ -37,6 +37,7 @@ Depends: ${shlibs:Depends},
          libqt6svg6,
          acl,
          udev,
+         kmod,
          libei1,
          libportal1
 Description: Vietnamese SKey input method addon for Fcitx5
@@ -46,6 +47,6 @@ Description: Vietnamese SKey input method addon for Fcitx5
  .
  Includes:
   - skey IME addon for fcitx5
-  - uinput server for fallback typing mode
+  - in-process uinput backspace injection
   - Qt6-based settings GUI
   - skey-setup utility for automatic configuration

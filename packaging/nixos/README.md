@@ -5,7 +5,7 @@
 | `../../flake.nix` | Flake ở repo root, re-export thư mục này (flakes chỉ được phát hiện ở root) |
 | `flake.nix` | Package `fcitx5-skey` + NixOS module |
 | `default.nix` | Package derivation (dùng được không cần flake) |
-| `module.nix` | `services.fcitx5-skey` — uinput server, polkit rule |
+| `module.nix` | `services.fcitx5-skey` — module uinput và quyền uaccess |
 
 ## Cách dùng (flake)
 
@@ -29,12 +29,11 @@
             type = "fcitx5";
             # Tham chiếu qua module (không phải pkgs trực tiếp) để
             # services.fcitx5-skey.devVersion (kênh Dev) áp dụng cho cả
-            # engine addon lẫn uinput server.
+            # addon và cấu hình quyền thiết bị.
             fcitx5.addons = [ config.services.fcitx5-skey.package ];
           };
           services.fcitx5-skey = {
             enable = true;
-            users = [ "yourusername" ];
           };
         }
       ];
@@ -50,25 +49,14 @@ và `XDG_DATA_DIRS` trỏ vào package — đây là cách fcitx5 tìm thấy `s
 Module `services.fcitx5-skey` xử lý những việc mà trên Fedora/Debian do
 `%post` của RPM/DEB làm:
 
-- `hardware.uinput.enable = true` — load module + tạo group `uinput` với
-  udev rule `MODE="0660" GROUP="uinput"` cho `/dev/uinput`
-- Tạo system user `skey_uinput` và thêm vào group `uinput` — đây là cách
-  NixOS cấp quyền mở `/dev/uinput` cho server (udev rule trong package gọi
-  `/usr/bin/setfacl`, không dùng được trên NixOS — xem Ghi chú kỹ thuật)
-- `systemd.packages` — nạp unit template `fcitx5-skey-uinput-server@.service`
-  từ package và enable một instance cho mỗi user trong `users`; đồng thời
-  override `ExecStartPre`/`ExecStartPost` của unit bằng store path của
-  `setfacl` (template gốc gọi `/usr/bin/setfacl` và
-  `/usr/bin/systemd-sysusers` — không tồn tại trên NixOS). **Override phải
-  dùng `overrideStrategy = "asDropin"`**: file unit đầy đủ mang tên
-  `fcitx5-skey-uinput-server@<user>.service` sẽ **che khuất template**
-  (systemd ưu tiên unit file có tên chính xác, không merge với template) →
-  instance thiếu `ExecStart`/`User`/`RuntimeDirectory` và không chạy;
-  drop-in (`.service.d/`) thì áp **chồng lên** template instantiation.
-- Polkit rule (qua `security.polkit.extraConfig` — trên NixOS
-  `/etc/polkit-1/rules.d` là file được generate, không sửa trực tiếp) để
-  user restart instance của mình không cần mật khẩu
-- Đưa `fcitx5-skey-settings`, `skey-setup`, `skey-restart-fcitx5` vào PATH
+- `hardware.uinput.enable = true` — nạp module uinput.
+- `services.udev.packages` — cài `70-skey-uinput.rules` trước `73-seat-late.rules`;
+  logind cấp ACL cho user của local seat đang active. Không thêm user vào group `input`.
+- Đưa settings GUI và các helper vào PATH. Uinput chạy trong fcitx5, không cần service.
+
+Option `services.fcitx5-skey.users` cũ vẫn được chấp nhận và phát cảnh báo deprecation;
+không còn cần khai báo danh sách user. Khi switch từ cấu hình cũ, NixOS dừng các unit
+đã bị bỏ khỏi hệ thống. Sau rollback, rebuild generation cũ rồi restart fcitx5.
 
 Các biến môi trường (`GTK_IM_MODULE`, `QT_IM_MODULE`, …) do module
 `i18n.inputMethod` của NixOS quản lý — package không còn ship
@@ -88,12 +76,9 @@ bật SKey trong `fcitx5-configtool`.
 sudo nix --extra-experimental-features 'nix-command flakes' flake update
 sudo nixos-rebuild switch --flake /etc/nixos
 
-# Kiểm tra uinput server.  `systemctl status` dùng pager (less) nên có thể
-# "kẹt" ở màn hình kết quả — bấm q để thoát, hoặc dùng --no-pager:
-systemctl --no-pager status fcitx5-skey-uinput-server@$USER
-# Nếu unit cũ đang ở trạng thái failed thì reset rồi start lại:
-#   sudo systemctl reset-failed fcitx5-skey-uinput-server@$USER
-#   systemctl --no-pager start fcitx5-skey-uinput-server@$USER
+# Kiểm tra quyền của user trên local seat đang active:
+getfacl /dev/uinput
+# Log fcitx5 phải báo: Uinput: ready
 ```
 
 Lưu ý: `flake update` chỉ lấy được các thay đổi đã **commit + push** lên
@@ -158,20 +143,9 @@ pkgs.callPackage (builtins.fetchTarball "https://github.com/collyn/skey/archive/
   `buildRustPackage` (vì bước cargo trong CMake cần network, bị cấm trong
   sandbox nix); hash crate lấy từ `Cargo.lock` của skey-engine nên không
   cần `cargoHash`.
-- **Path distro-specific** (`/lib/systemd/system`, `/etc/polkit-1/rules.d`)
-  được override qua cache vars `SKEY_SYSTEMD_UNIT_DIR`,
-  `SKEY_POLKIT_RULES_DIR`, `SKEY_UDEV_RULES_DIR`, `SKEY_SYSUSERS_DIR`
-  (định nghĩa trong `data/CMakeLists.txt`) để trỏ vào `$out` — mặc định
-  giữ nguyên như cũ cho Fedora/Debian/Arch.
-- **Udev rule của package KHÔNG ship qua `services.udev.packages`**:
-  nixpkgs có guard quét udev rules còn reference `/usr/bin` và fail build
-  (`exit 1`) — rule `99-skey-uinput.rules` gọi `/usr/bin/setfacl` nên sẽ
-  dính guard. Thay vào đó module thêm `skey_uinput` vào group `uinput`
-  (do `hardware.uinput.enable` tạo, 0660 trên `/dev/uinput`) — tương đương
-  về quyền hạn và hoàn toàn declarative. `ExecStartPre`/`ExecStartPost`
-  của unit được override bằng `${pkgs.acl}/bin/setfacl` (store path) để
-  giữ ACL belt-and-braces cho device node và ACL per-user trên
-  `/run/skey-uinput-<user>`.
+- **Path distro-specific**: `SKEY_UDEV_RULES_DIR` và `SKEY_MODULES_LOAD_DIR`
+  trỏ vào `$out`. Rule chỉ dùng `TAG+="uaccess"`, không gọi đường dẫn `/usr/bin`;
+  dùng trực tiếp qua `services.udev.packages`.
 - **Icon**: cả addon (tray) lẫn settings GUI đều resolve icon qua
   `FCITX_SKEY_ICON_DIR` / `FCITX_SKEY_ICON_PATH` compile-time trỏ vào
   `$out/share/icons/...` nên icon mặc định **và các preset theme** hoạt

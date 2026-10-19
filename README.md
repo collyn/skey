@@ -25,7 +25,7 @@ SKey dùng [skey-engine](https://github.com/collyn/skey-engine) (Rust) để x�
 | --- | --- |
 | **Auto** (mặc định) | Chọn theo khả năng ứng dụng và ngữ cảnh ô nhập; có xử lý riêng cho trình duyệt, terminal và ứng dụng văn phòng. |
 | **Surrounding Text** | Thay thế văn bản qua API surrounding text của Fcitx5. |
-| **Uinput** | Gửi Backspace qua `/dev/uinput`, cần service đi kèm. |
+| **Uinput** | Gửi Backspace qua `/dev/uinput` ngay trong fcitx5, dùng quyền user của phiên desktop. |
 | **Native** | Gửi Backspace qua XTest trên X11 hoặc libei/portal trên Wayland. Backend Wayland cần thư viện và compositor hỗ trợ, cùng quyền từ portal. |
 | **Preedit** | Soạn văn bản trong vùng preedit trước khi commit vào ứng dụng. |
 
@@ -66,15 +66,16 @@ Dùng flake và module `services.fcitx5-skey` theo [hướng dẫn NixOS](packag
 
 ## Sử dụng
 
-- `skey-setup` cấu hình Fcitx5, biến môi trường và service Uinput; đăng xuất/đăng nhập lại nếu script yêu cầu.
+- `skey-setup` cấu hình Fcitx5, biến môi trường; đăng xuất/đăng nhập lại nếu script yêu cầu.
 - **Ctrl+Space** bật/tắt bộ gõ theo cấu hình Fcitx5. Phím **backtick** (`` ` ``) mở menu chế độ cho ứng dụng hiện tại; có thể đổi trong cài đặt.
 - Mở `fcitx5-skey-settings` để chỉnh cấu hình. Auto Restore mặc định bật; tắt nếu muốn giữ các từ viết tắt không hợp lệ trong tiếng Việt.
 - Trên **KDE Plasma Wayland**, chọn **Fcitx 5** trong System Settings → Virtual Keyboard.
 
-Nếu không gõ được sau khi cài hoặc cập nhật, chạy lại `skey-setup`. Với chế độ Uinput, kiểm tra service:
+Nếu không gõ được sau khi cài hoặc cập nhật, chạy lại `skey-setup`. Với chế độ Uinput, kiểm tra quyền thiết bị:
 
 ```bash
-systemctl status "fcitx5-skey-uinput-server@$USER.service"
+getfacl /dev/uinput
+# Thử lại bước cấp quyền/migration nếu cần: sudo skey-uinput-access configure
 ```
 
 Bật **Ghi log debug** trong cài đặt để theo dõi bằng `tail -f /tmp/skey.log`.
@@ -101,13 +102,15 @@ sudo cmake --install build
 skey-setup
 ```
 
+Cài package hoặc cài source trực tiếp vào `/usr`/`/usr/local` tự dừng và dọn service, rule Uinput cũ. Bản sao cấu hình cũ nằm tại `/var/lib/fcitx5-skey/legacy-uinput/`. Cài qua `DESTDIR` chỉ đóng gói file; chạy `sudo skey-uinput-access configure` trên máy đích sau khi triển khai.
+
 CMake tự tải phiên bản skey-engine được ghim trong dự án; bước build cần mạng để lấy engine và các crate. Để dùng engine cục bộ, thêm `-DSKEY_ENGINE_SOURCE_DIR=/path/to/skey-engine` khi cấu hình CMake.
 
 Đóng gói `.deb`: `./build.sh`. Hướng dẫn kiểm thử và kiểm tra bằng Clang: [scripts/TESTING.md](scripts/TESTING.md).
 
 ## Mã nguồn & giấy phép
 
-- `src/`: addon Fcitx5, xử lý văn bản, backend xuất và Uinput server.
+- `src/`: addon Fcitx5, xử lý văn bản, backend xuất và Uinput injector.
 - `src/settings/`: giao diện Qt6.
 - `data/`, `scripts/`: tài nguyên, service và công cụ thiết lập/kiểm thử.
 - `debian/`, `packaging/`, `.github/workflows/`: đóng gói và CI.

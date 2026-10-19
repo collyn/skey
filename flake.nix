@@ -24,7 +24,6 @@
 #           };
 #           services.fcitx5-skey = {
 #             enable = true;
-#             users = [ "yourusername" ];
 #           };
 #         }
 #       ];

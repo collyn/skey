@@ -1,0 +1,2 @@
+# Must run before 73-seat-late.rules applies the active local seat's ACL.
+SUBSYSTEM=="misc", KERNEL=="uinput", TAG+="uaccess"

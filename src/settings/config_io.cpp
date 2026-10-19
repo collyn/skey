@@ -560,13 +560,6 @@ bool restartFcitx5() {
                   ? QProcess::startDetached("fcitx5", {"-r", "-d"})
                   : QProcess::startDetached(script, {});
 
-    // Restart uinput server to pick up updated binary.
-    QString user = qgetenv("USER");
-    if (!user.isEmpty()) {
-        QProcess::startDetached("systemctl", {"try-restart",
-            QString("fcitx5-skey-uinput-server@%1.service").arg(user)});
-    }
-
     return ok;
 }
 
