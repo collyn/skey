@@ -303,18 +303,14 @@ if [ "$UNINSTALL" = "1" ]; then
         echo "✓ Removed skey-setup patches from: $CONFIG"
     fi
 
-    # Remove skey's env vars from the live systemd session + D-Bus
-    # activation environment so newly launched apps stop inheriting them.
+    # Remove skey's env vars from the systemd user environment. D-Bus's
+    # activation API cannot unset variables; assigning empty values there
+    # breaks Qt5's native Wayland input context. A new login clears it.
     if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-        if command -v dbus-update-activation-environment >/dev/null 2>&1; then
-            dbus-update-activation-environment --systemd -- \
-                GTK_IM_MODULE= QT_IM_MODULE= XMODIFIERS= SDL_IM_MODULE= GLFW_IM_MODULE= \
-                2>/dev/null || true
-        fi
         systemctl --user unset-environment \
             GTK_IM_MODULE QT_IM_MODULE XMODIFIERS SDL_IM_MODULE GLFW_IM_MODULE \
             2>/dev/null || true
-        echo "✓ Removed skey env vars from the live session"
+        echo "✓ Removed skey env vars from the systemd user environment"
     fi
 
     # Restart fcitx5 so the default IM reverts (only when it was running)
@@ -579,21 +575,18 @@ if [ "$SESSION_TYPE" = "wayland" ]; then
     # Qt apps connect through a second fcitx5 frontend and the two
     # input contexts fight over surrounding text.
     #
-    # The systemd user manager's BASE environment keeps whatever
-    # pam_systemd imported at login (the DM sources /etc/profile before
-    # the PAM session opens, so distro defaults land there and survive
-    # unset-environment, which only clears the override layer).  Set
-    # EMPTY overrides so the merged view stays clean — skey-setup's state
-    # detection only flags non-empty values.
+    # Remove these from the manager too: Plasma apps may be started by
+    # systemd instead of inheriting this shell. QT_IM_MODULE must be
+    # absent, not empty — Qt5 treats the empty value as an explicit module
+    # request and falls back to compose instead of native Wayland input.
+    # D-Bus cannot unset its activation environment, so do not publish
+    # empty assignments there; stale D-Bus values need a new login.
     KDE_CONTENT="${KDE_CONTENT}
 unset GTK_IM_MODULE
 unset QT_IM_MODULE
 unset SDL_IM_MODULE
-if command -v dbus-update-activation-environment >/dev/null 2>&1; then
-    dbus-update-activation-environment --systemd -- GTK_IM_MODULE= QT_IM_MODULE= SDL_IM_MODULE= 2>/dev/null || true
-fi
 if command -v systemctl >/dev/null 2>&1; then
-    systemctl --user set-environment GTK_IM_MODULE= QT_IM_MODULE= SDL_IM_MODULE= 2>/dev/null || true
+    systemctl --user unset-environment GTK_IM_MODULE QT_IM_MODULE SDL_IM_MODULE 2>/dev/null || true
 fi"
 fi
 
@@ -667,15 +660,13 @@ fi
 # GTK_IM_MODULE / QT_IM_MODULE / SDL_IM_MODULE (see the ENV_VARS
 # comment).  The files can be correct while the running session is still
 # polluted by an older login or a previous skey-setup version.
-# Only a NON-EMPTY value counts as polluted: `VAR=` (empty) is the
-# residue of the unset in the apply block below and is exactly the
-# desired end state — matching it made the consent prompt appear on
-# every run for nothing.
+# Empty values are also wrong: Qt5 distinguishes QT_IM_MODULE= from an
+# absent variable and loses its native Wayland input context.
 if [ "$USER_DE" = "KDE Plasma" ] && [ "$SESSION_TYPE" = "wayland" ] \
    && command -v systemctl >/dev/null 2>&1 \
    && systemctl --user show-environment >/dev/null 2>&1; then
     if systemctl --user show-environment 2>/dev/null \
-        | grep -qE '^(GTK_IM_MODULE|QT_IM_MODULE|SDL_IM_MODULE)=.'; then
+        | grep -qE '^(GTK_IM_MODULE|QT_IM_MODULE|SDL_IM_MODULE)='; then
         ENV_NEEDS_FIX=1
     fi
 fi
@@ -819,8 +810,8 @@ elif [ "$WRITE_ENV" != "1" ] && [ "$ENV_NEEDS_FIX" = "1" ]; then
     else
         echo ""
         echo "  No files need changing — only the live session. To fix it now:"
-        echo "    systemctl --user set-environment \\"
-        echo "        GTK_IM_MODULE= QT_IM_MODULE= SDL_IM_MODULE="
+        echo "    systemctl --user unset-environment \\"
+        echo "        GTK_IM_MODULE QT_IM_MODULE SDL_IM_MODULE"
     fi
     echo ""
     echo "  Or re-run skey-setup and accept the prompt to configure them."
@@ -1076,6 +1067,9 @@ if [ "$WRITE_ENV" = "1" ]; then
     for var in $ENV_VARS; do
         export "${var%%=*}=${var#*=}"
     done
+    if [ "$USER_DE" = "KDE Plasma" ] && [ "$SESSION_TYPE" = "wayland" ]; then
+        unset GTK_IM_MODULE QT_IM_MODULE SDL_IM_MODULE
+    fi
     echo "✓ Env vars sourced for current session"
 
     # systemd user session — the most reliable method for systemd-based
@@ -1095,19 +1089,10 @@ if [ "$WRITE_ENV" = "1" ]; then
         # frontend and the two input contexts fight over focus
         # (Telegram lost tone marks / got downgraded to Uinput).
         if [ "$USER_DE" = "KDE Plasma" ] && [ "$SESSION_TYPE" = "wayland" ]; then
-            # The systemd user manager's BASE environment keeps whatever
-            # pam_systemd imported at login (SDDM sources /etc/profile
-            # before the PAM session opens, so an old profile.d script or
-            # distro defaults land there).  unset-environment only clears
-            # the override layer and would re-expose those base values —
-            # the merged view must show EMPTY, so set an empty override
-            # instead.  The state-detection check above only flags
-            # non-empty values.
-            dbus-update-activation-environment --systemd -- \
-                GTK_IM_MODULE= QT_IM_MODULE= SDL_IM_MODULE= \
-                2>/dev/null || true
-            systemctl --user set-environment \
-                GTK_IM_MODULE= QT_IM_MODULE= SDL_IM_MODULE= \
+            # Do not replace removal with empty assignments: Qt5 needs
+            # QT_IM_MODULE to be absent for native Wayland input.
+            systemctl --user unset-environment \
+                GTK_IM_MODULE QT_IM_MODULE SDL_IM_MODULE \
                 2>/dev/null || true
         fi
         echo "✓ systemd user environment set"
