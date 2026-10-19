@@ -7,9 +7,9 @@
 #include <QFileInfo>
 #include <QImage>
 #include <QProcess>
+#include <QPointer>
 #include <QStandardPaths>
 #include <QString>
-#include <QThread>
 
 #include "../icon_resolver.h"
 #include "../app_delay_key.h"
@@ -548,19 +548,34 @@ bool reloadFcitx5() {
     return QProcess::startDetached("fcitx5-remote", {"-r"});
 }
 
-bool restartFcitx5() {
-    // Restart fcitx5 through the packaged helper script: it waits for the
-    // new instance to finish loading (waylandim addon registers ~1s after
-    // the main D-Bus name) and then toggles KWin's VirtualKeyboard so
-    // zwp_input_method_v2 reconnects without apps losing their text-input
-    // registration (see scripts/skey-restart-fcitx5).  Fallback: bare
-    // restart — apps may need a focus toggle to reconnect.
+void restartFcitx5(QObject *context,
+                  std::function<void(bool, const QString &)> finished) {
     QString script = QStandardPaths::findExecutable("skey-restart-fcitx5");
-    bool ok = script.isEmpty()
-                  ? QProcess::startDetached("fcitx5", {"-r", "-d"})
-                  : QProcess::startDetached(script, {});
+    if (script.isEmpty()) {
+        finished(false, QStringLiteral("skey-restart-fcitx5: executable not found"));
+        return;
+    }
 
-    return ok;
+    // No QObject parent: closing Settings must not kill the helper halfway
+    // through disconnecting/reconnecting KWin. It cleans itself up on exit;
+    // if the GUI exits first, the OS lets the child finish independently.
+    auto *process = new QProcess;
+    QPointer<QObject> guard(context);
+    process->setStandardOutputFile(QProcess::nullDevice());
+    QObject::connect(process, &QProcess::errorOccurred, process,
+                     [process, guard, finished](QProcess::ProcessError error) {
+        if (error != QProcess::FailedToStart) return;
+        if (guard) finished(false, process->errorString());
+        process->deleteLater();
+    });
+    QObject::connect(process, &QProcess::finished, process,
+                     [process, guard, finished](int code, QProcess::ExitStatus status) {
+        const bool ok = status == QProcess::NormalExit && code == 0;
+        const QString error = QString::fromUtf8(process->readAllStandardError()).trimmed();
+        if (guard) finished(ok, error);
+        process->deleteLater();
+    });
+    process->start(script, {});
 }
 
 // ── Icon resolution / import ─────────────────────────────────────────────

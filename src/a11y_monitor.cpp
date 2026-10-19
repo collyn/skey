@@ -679,6 +679,27 @@ static std::string queryAccessibleId(DBusConnection *bus, const char *sender,
     return found;
 }
 
+static std::string queryDocumentUri(DBusConnection *bus, const char *sender,
+                                    const char *path) {
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *msg = dbus_message_new_method_call(
+        sender, path, "org.a11y.atspi.Document", "GetAttributeValue");
+    if (!msg) return {};
+    const char *attribute = "URI";
+    dbus_message_append_args(msg, DBUS_TYPE_STRING, &attribute, DBUS_TYPE_INVALID);
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(bus, msg, 30, &err);
+    dbus_message_unref(msg);
+    std::string uri;
+    const char *value = nullptr;
+    if (reply && !dbus_error_is_set(&err) &&
+        dbus_message_get_args(reply, &err, DBUS_TYPE_STRING, &value, DBUS_TYPE_INVALID))
+        uri = value;
+    if (reply) dbus_message_unref(reply);
+    dbus_error_free(&err);
+    return uri;
+}
+
 // Resolve only within the focused Sheets document, once per document. The
 // name box updates on click; the reused editor's Name updates only after keys.
 static std::string findSheetsNameBox(DBusConnection *bus, const char *sender,
@@ -1050,6 +1071,7 @@ void A11yMonitor::threadFunc() {
     // Monitor-thread only. Match both sender and path: paths are not globally
     // unique, and selections in background tabs must never reset a word.
     std::string cellContainerBus, cellContainerPath;
+    std::string vivaldiAddressBarBus, vivaldiAddressBarPath;
     SheetsCellTracker sheetsCells;
     std::unordered_map<std::string, std::string> sheetsNameBoxes;
     TextEventSubscription textEvents;
@@ -1167,9 +1189,13 @@ void A11yMonitor::threadFunc() {
                             dbus_message_iter_get_basic(&iter, &d1);
                             if (d1 == 1)
                                 isFocusEvent = true;
-                            else
+                            else {
                                 textCache_.blur(dbus_message_get_sender(msg),
                                                 dbus_message_get_path(msg));
+                                if (vivaldiAddressBarBus == dbus_message_get_sender(msg) &&
+                                    vivaldiAddressBarPath == dbus_message_get_path(msg))
+                                    vivaldiAddressBarFocused_.store(false, std::memory_order_release);
+                            }
                         }
                     }
                 }
@@ -1205,6 +1231,9 @@ void A11yMonitor::threadFunc() {
                                           DBUS_TYPE_INVALID)) {
                     if (busName && oldOwner && oldOwner[0])
                         pokeCache.removeBus(busName);
+                    if (busName && oldOwner && oldOwner[0] &&
+                        vivaldiAddressBarBus == busName)
+                        vivaldiAddressBarFocused_.store(false, std::memory_order_release);
                     if (newOwner && newOwner[0]) {
                         auto now = Clock::now();
                         pokeAt = now + std::chrono::milliseconds(600);
@@ -1219,6 +1248,9 @@ void A11yMonitor::threadFunc() {
                 const char *path = dbus_message_get_path(msg);
                 if (sender && path) {
                     // Invalidate before the potentially slow ancestor walk.
+                    vivaldiAddressBarFocused_.store(false, std::memory_order_release);
+                    vivaldiAddressBarBus.clear();
+                    vivaldiAddressBarPath.clear();
                     textCache_.focus({}, {}, monotonicUsec());
                     int role = queryRole(bus, sender, path);
                     bool fbChatSig = false, fbCommentSig = false;
@@ -1230,9 +1262,15 @@ void A11yMonitor::threadFunc() {
                     // combo box (11) or the inner ENTRY (79, single-line) —
                     // states alone cannot separate it from real inputs.
                     // The accessible-id is the only reliable discriminator.
-                    const bool sheetsEditor = hasDocWeb &&
-                        (role == 11 || role == 79) &&
-                        queryAccessibleId(bus, sender, path) == "waffle-rich-text-editor";
+                    const std::string entryId = hasDocWeb && (role == 11 || role == 79)
+                        ? queryAccessibleId(bus, sender, path) : std::string();
+                    const bool sheetsEditor = entryId == "waffle-rich-text-editor";
+                    // Vivaldi renders its browser UI as a web document and
+                    // reports the address field as plain text, without Url.
+                    // Require the internal origin too: a page can reuse the id.
+                    const bool vivaldiAddressBar = role == 79 && entryId == "urlFieldInput" &&
+                        queryDocumentUri(bus, sender, documentPath.c_str()).rfind(
+                            "chrome-extension://mpognobbkildjkofajifpdfhcoklimli/", 0) == 0;
                     std::string nameBox;
                     if (sheetsEditor) {
                         const std::string key = std::string(sender) + documentPath;
@@ -1331,7 +1369,7 @@ void A11yMonitor::threadFunc() {
                                       : -1;
                     focusElementPid_.store(elemPid,
                                            std::memory_order_relaxed);
-                    bool isUI = !hasDocWeb;
+                    bool isUI = !hasDocWeb || vivaldiAddressBar;
                     // Track whether the focused element is a real text
                     // entry (role TEXT / ENTRY / DOCUMENT_TEXT).  A
                     // Chromium tab whose focus is NOT a text entry
@@ -1363,8 +1401,13 @@ void A11yMonitor::threadFunc() {
                                           std::memory_order_relaxed);
                     focusSingleLine_.store(singleLine,
                                            std::memory_order_relaxed);
-                    focusInWebDoc_.store(hasDocWeb,
+                    focusInWebDoc_.store(!isUI,
                                          std::memory_order_relaxed);
+                    if (vivaldiAddressBar) {
+                        vivaldiAddressBarBus = sender;
+                        vivaldiAddressBarPath = path;
+                    }
+                    vivaldiAddressBarFocused_.store(vivaldiAddressBar, std::memory_order_release);
                     focusSnapshotUsec_.store(
                         static_cast<uint64_t>(
                             std::chrono::steady_clock::now()
@@ -1374,16 +1417,16 @@ void A11yMonitor::threadFunc() {
                         std::memory_order_relaxed);
                     A11Y_LOG("Focus: webDoc=%d role=%d(%s) editable=%d "
                              "multiline=%d singleLine=%d states=[%s] "
-                             "pid=%d elemPid=%d path=%s",
+                             "pid=%d elemPid=%d path=%s vivaldiAddrBar=%d",
                              hasDocWeb, role, roleName(role), editable,
                              multiline, singleLine, states.c_str(), procId,
-                             elemPid, path);
+                             elemPid, path, vivaldiAddressBar);
                     // Only browser UI consumes text snapshots. Do not read
                     // passwords or web documents while the engine's focus
                     // verdict is still catching up with this event.
                     static constexpr int ROLE_ENTRY = 79;
                     static constexpr int ROLE_TEXT = 61;
-                    if (!hasDocWeb && (role == ROLE_ENTRY || role == ROLE_TEXT)) {
+                    if (isUI && (role == ROLE_ENTRY || role == ROLE_TEXT)) {
                         textCache_.focus(sender, path, monotonicUsec());
                     }
                 }
@@ -1431,5 +1474,6 @@ void A11yMonitor::threadFunc() {
     textEvents.update(bus, {}, {});
     dbus_connection_unref(bus);
     running_.store(false);
+    vivaldiAddressBarFocused_.store(false, std::memory_order_release);
     A11Y_LOG("A11yMonitor stopped");
 }

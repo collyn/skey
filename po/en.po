@@ -552,6 +552,9 @@ msgstr "Restart Fcitx5"
 msgid "✓ Fcitx5 đã được khởi động lại"
 msgstr "✓ Fcitx5 has been restarted"
 
+msgid "Không thể khởi động lại Fcitx5: %1"
+msgstr "Could not restart Fcitx5: %1"
+
 #: src/settings/info_tab.cpp:291 src/settings/info_tab.cpp:363
 #: src/settings/info_tab.cpp:385 src/settings/info_tab.cpp:406
 #: src/settings/info_tab.cpp:427 src/settings/info_tab.cpp:457

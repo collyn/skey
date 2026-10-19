@@ -870,6 +870,7 @@ SKeyEngine::SKeyEngine(Instance *instance, bool initializeDesktop)
   if (!initializeDesktop) return;
   uinput_.start();
   reloadConfig();
+  native_.restoreSession();
   setupTrayMenu();
 
   // Start AT-SPI2 monitor for Chromium address bar detection.
@@ -1772,7 +1773,7 @@ bool SKeyState::forwardUserBackspace() const {
 
 // True when the cursor is in a Chromium-family browser's address/search bar
 // (as opposed to web content). Two detection paths: the native Url capability
-// (Wayland) and the AT-SPI2 accessibility monitor (X11).
+// (Wayland) and the AT-SPI2 accessibility monitor (X11 / Vivaldi HTML UI).
 bool SKeyState::inChromiumAddressBar() const {
   // All detection paths, including Url capability and the X11 grace latch,
   // require a browser. Chromium runtime markers also match Electron apps.
@@ -1788,6 +1789,10 @@ bool SKeyState::inChromiumAddressBar() const {
   // browser; Firefox's URL bar goes through the normal paths.
   if (ic_->capabilityFlags().test(CapabilityFlag::Url)) {
     return true;
+  }
+  if (skey::isVivaldiBrowser(appProgram())) {
+    auto *mon = engine_->a11yMonitor();
+    if (mon && mon->vivaldiAddressBarFocused()) return true;
   }
   // Method 2: X11 — use AT-SPI2 accessibility monitor.
   // Only on X11 where Chrome does NOT send CapabilityFlag::Url natively.
@@ -1909,16 +1914,13 @@ bool SKeyState::isAutofillCertain() const {
   unsigned int selStart = std::min(anchor, cursor);
   unsigned int selEnd = std::max(anchor, cursor);
 
-  // Autofill selection: extends from (or contains) the cursor position
-  // to the end of the line — the browser selected the suggestion text.
-  if (selStart >= cursor || (selStart < cursor && selEnd > cursor)) {
-    // Distinguish from multiline AI ghost text: selection must not
-    // contain a newline character.
-    const auto &text = surrounding.text();
-    size_t p = text.find('\n', static_cast<size_t>(selStart));
-    return p == std::string::npos || p >= static_cast<size_t>(selEnd);
-  }
-  return false;
+  // The selected suggestion follows typed text and reaches the end of the
+  // field. Vivaldi can put cursor at the END and anchor at the start: the
+  // selection direction does not change what the first Backspace deletes.
+  const auto &text = surrounding.text();
+  if (selStart == 0 || selEnd != utf8::length(text)) return false;
+  const auto startByte = static_cast<size_t>(utf8::ncharByteLength(text.begin(), selStart));
+  return text.find_first_of("\r\n", startByte) == std::string::npos;
 }
 
 SKeyOutputMode SKeyState::effectiveMode() const {
@@ -2498,7 +2500,7 @@ int SKeyState::a11yAppPid() const {
     // names so an old a11y snapshot from another application is not reused.
     static constexpr const char *chromiumComms[] = {
         "chrome", "chromium", "chromium-browser", "msedge", "brave",
-        "vivaldi", "opera"};
+        "vivaldi", "vivaldi-bin", "opera"};
     for (const char *name : chromiumComms) {
       if (comm == name) return pid;
     }
@@ -2513,7 +2515,7 @@ int SKeyState::a11yAppPid() const {
   // pid pipeline for Chrome even after the monitor-side fix, 2026-09-07).
   if (!commMatches && isChromiumBrowser(prog) &&
       (comm == "chrome" || comm == "msedge" || comm == "chromium" ||
-       comm == "brave" || comm == "vivaldi" || comm == "opera" ||
+       comm == "brave" || comm == "vivaldi" || comm == "vivaldi-bin" || comm == "opera" ||
        comm == "CrRendererMain" || comm == "CrGpuMain" ||
        comm == "CrUtilityMain")) {
     commMatches = true;
@@ -6250,13 +6252,17 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
       // to safely determine if FullReplace is safe (no text before).
       // FullReplace commits the entire composed word after autoRestore,
       // fixing invalid Vietnamese words (e.g. "vibẻ"→"viber").
+      const auto &surrounding = ic_->surroundingText();
+      const bool autofill = isAutofillCertain();
+      const unsigned caret = autofill
+          ? std::min(surrounding.cursor(), surrounding.anchor()) : surrounding.cursor();
+      SKEY_DEBUG() << "AddrBar: Wayland selection cursor=" << surrounding.cursor()
+                   << " anchor=" << surrounding.anchor() << " autofill=" << autofill;
       if (!addrBarHadFirstWord_ && oldComposedLen > 0 &&
           !fullComposed.empty()) {
         bool hasTextBefore = false;
-        const auto &surrounding = ic_->surroundingText();
         if (surrounding.isValid()) {
-          hasTextBefore =
-              surrounding.cursor() > static_cast<unsigned int>(oldComposedLen);
+          hasTextBefore = caret > static_cast<unsigned int>(oldComposedLen);
         }
         if (!hasTextBefore) {
           totalBs = oldComposedLen + 1;
@@ -6284,7 +6290,11 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
                        << " commit='" << commitText << "'"
                        << (addrBarKeepState_ ? " [keep-state]" : "");
         }
-      } else if (isAutofillCertain()) {
+      }
+      // A suffix replacement may also be the first tracked word after a
+      // URL prefix. Its first Backspace removes the suggestion, not a typed
+      // character. Full replacement already includes this dismissal.
+      if (totalBs == bs && autofill) {
         ++totalBs;
         SKEY_DEBUG() << "AddrBar: autofill detected, +1 BS (total=" << totalBs
                      << ")";

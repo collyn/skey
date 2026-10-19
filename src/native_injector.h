@@ -10,6 +10,9 @@ public:
     NativeInjector();
     ~NativeInjector();
     void start();
+    // Restore an already-authorized Plasma portal session after daemon restart.
+    // This initializes connectivity only; output routing remains unchanged.
+    void restoreSession();
     bool ready() const;
     std::string status() const;
     bool backspaces(int count, bool escape, unsigned paceUsec);

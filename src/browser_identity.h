@@ -8,9 +8,7 @@
 #include <string_view>
 
 namespace skey {
-// Browser identity, not Chromium runtime identity. An Electron executable or
-// app id containing "chrome"/"opera" must never enable omnibox editing.
-inline bool isChromiumBrowser(const std::string &program) {
+inline std::string browserProgramName(const std::string &program) {
     std::string name = program;
     std::transform(name.begin(), name.end(), name.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -20,6 +18,19 @@ inline bool isChromiumBrowser(const std::string &program) {
     if (name.size() >= desktop.size() &&
         name.compare(name.size() - desktop.size(), desktop.size(), desktop) == 0)
         name.resize(name.size() - desktop.size());
+    return name;
+}
+
+inline bool isVivaldiBrowser(const std::string &program) {
+    const auto name = browserProgramName(program);
+    return name == "vivaldi" || name == "vivaldi-stable" ||
+           name == "vivaldi-snapshot" || name == "com.vivaldi.vivaldi";
+}
+
+// Browser identity, not Chromium runtime identity. An Electron executable or
+// app id containing "chrome"/"opera" must never enable omnibox editing.
+inline bool isChromiumBrowser(const std::string &program) {
+    const auto name = browserProgramName(program);
     static constexpr std::string_view names[] = {
         "chrome", "google-chrome", "google-chrome-stable", "google-chrome-beta",
         "google-chrome-unstable", "chromium", "chromium-browser",

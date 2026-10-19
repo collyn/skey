@@ -35,6 +35,12 @@ public:
         return browserUIFocused_.load(std::memory_order_relaxed);
     }
 
+    /// Vivaldi's HTML address field has no native Url hint. Identified by
+    /// its DOM id in Vivaldi's own UI document; cleared on focus loss/change.
+    bool vivaldiAddressBarFocused() const {
+        return vivaldiAddressBarFocused_.load(std::memory_order_acquire);
+    }
+
     /// Returns true if the currently focused element is inside a web
     /// document (inverse of isBrowserUIFocused).
     bool isWebContentFocused() const {
@@ -212,6 +218,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> stopRequested_{false};
     std::atomic<bool> browserUIFocused_{false};
+    std::atomic<bool> vivaldiAddressBarFocused_{false};
     std::atomic<bool> passwordFocused_{false};
     std::atomic<bool> debug_{false};
     std::atomic<bool> autoEnableA11y_{true};
