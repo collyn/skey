@@ -54,6 +54,8 @@ find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME UinputMigration COMMAND ${Python3_EXECUTABLE}
         "${CMAKE_SOURCE_DIR}/scripts/test_uinput_migration.py")
+    add_test(NAME KdeEnvironment COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_SOURCE_DIR}/scripts/test_kde_environment.py")
 endif()
 
 # ── Test executable: Vietnamese typing tests ─────────────────────────

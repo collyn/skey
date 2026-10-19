@@ -43,6 +43,21 @@ cmake --build build -j 4 --target test_engine_performance test_vietnamese
 ctest --test-dir build -R 'EnginePerformance|VietnameseTyping' --output-on-failure
 ```
 
+`KdeEnvironment` exercises the setup environment sections and the generated
+Plasma login script with temporary config files and a fake systemd manager.
+It checks that KDE Wayland removes toolkit variables, including empty values,
+from both child processes and the manager, keeps XMODIFIERS/GLFW_IM_MODULE,
+repairs old login scripts, honors `--no-env`, and preserves other desktops'
+module settings. It never contacts the desktop session bus.
+
+Qt5 distinguishes an absent `QT_IM_MODULE` from `QT_IM_MODULE=`: the empty
+value prevents the native Wayland input context. Live verification on this
+KDE machine used LibreOffice 26.2 kf5/Qt5 with separate fresh profiles: leaving
+the variable absent allowed Vietnamese typing, while setting it empty lost
+the input method. Forcing `fcitx` also worked, but is unnecessary once the
+variable is truly removed. Restart affected applications after correcting
+their launch environment; a running process keeps its inherited variables.
+
 `EnginePerformance` includes 12 Office/Uinput word cases:
 
 | Dimension | Cases |
