@@ -1,69 +1,101 @@
 #!/usr/bin/env bash
-# Gentle fcitx5 restart — replaces the running instance and makes KWin
-# reconnect its zwp_input_method_v2 without apps losing their text-input
-# registration (STerm, Electron, ...).  Used by:
-#   - debian/postinst + spec %post (via `systemd-run --user --machine=$USER@.host`,
-#     which provides the graphical session environment from a root context)
-#   - the settings GUI "Khởi động lại Fcitx5" button (config_io.cpp)
-#   - scripts/dev-restart-fcitx5.sh (dev loop)
-#
-# Two timing requirements, both learned the hard way:
-#   1. `su -` (login shell) does NOT carry XDG_SESSION_TYPE /
-#      DBUS_SESSION_BUS_ADDRESS — the KWin toggle below silently never ran
-#      from postinst, so apps lost the IM connection.
-#   2. Toggling VirtualKeyboard before the skey addon finished registering
-#      left KWin reconnected to a half-initialized IM: text-input-v3 clients
-#      that never re-commit (STerm) stayed dead until the app was restarted,
-#      while Chromium apps recovered on their own and masked the race.
+# Shared by Settings, package updates and the development restart command.
+# On Plasma, retire the old input context before replacing fcitx5, then wait
+# for the new Wayland frontend. The addon restores its persisted portal
+# session so winit clients recreate text-input after seat capability loss.
 
-# Redirect BOTH streams: the daemon keeps stdout/stderr open across the
-# fork, and when this script runs under `systemd-run --wait --pipe`
-# (postinst), an open pipe FD makes --pipe never see EOF.
-fcitx5 -r -d >/dev/null 2>&1 || true
-
-# No Wayland / no KDE Plasma → nothing to reconnect.
-if [ "${XDG_SESSION_TYPE:-}" != "wayland" ]; then
-    exit 0
-fi
-case "${XDG_CURRENT_DESKTOP:-}" in
-    KDE|kde|KDE-Plasma|plasma) ;;
-    *) exit 0 ;;
-esac
+fail() { echo "skey-restart-fcitx5: $*" >&2; exit 1; }
 
 QBUS=$(command -v qdbus6 || command -v qdbus || true)
+plasma=0
+if [ "${XDG_SESSION_TYPE:-}" = wayland ]; then
+    case ":${XDG_CURRENT_DESKTOP,,}:" in
+        *:kde:*|*:kde-plasma:*|*:plasma:*) plasma=1 ;;
+    esac
+fi
+
+owner() {
+    "$QBUS" org.freedesktop.DBus /org/freedesktop/DBus \
+        org.freedesktop.DBus.GetNameOwner org.fcitx.Fcitx5 2>/dev/null
+}
+controller() {
+    local method="$1"
+    shift
+    "$QBUS" "$new_owner" /controller "org.fcitx.Fcitx.Controller1.$method" "$@"
+}
+vk_get() {
+    "$QBUS" org.kde.KWin /VirtualKeyboard \
+        org.freedesktop.DBus.Properties.Get org.kde.kwin.VirtualKeyboard "$1"
+}
+vk_set() {
+    "$QBUS" org.kde.KWin /VirtualKeyboard \
+        org.freedesktop.DBus.Properties.Set org.kde.kwin.VirtualKeyboard "$1" "$2"
+}
+
+old_owner=""
+previous_im=""
+restore_keyboard=0
+if [ -n "$QBUS" ]; then
+    old_owner=$(owner) || true
+    if [ -n "$old_owner" ]; then
+        previous_im=$("$QBUS" "$old_owner" /controller \
+            org.fcitx.Fcitx.Controller1.CurrentInputMethod 2>/dev/null) || true
+    fi
+fi
+
+if [ "$plasma" = 1 ]; then
+    [ -n "$QBUS" ] || fail "qdbus6/qdbus is required to reconnect Plasma input methods"
+    enabled=$(vk_get enabled) || fail "cannot read KWin virtual keyboard state"
+    if [ "$enabled" = true ]; then
+        # enabled=false stops the launcher, but does not call setActive(false)
+        # in KWin. Explicitly deactivate while the old server can acknowledge
+        # it, then disconnect its privileged Wayland socket.
+        vk_set active false || fail "cannot retire KWin input context"
+        restore_keyboard=1
+        trap 'if [ "$restore_keyboard" = 1 ]; then vk_set enabled true; fi' EXIT
+        trap 'exit 1' HUP INT TERM
+        vk_set enabled false || fail "cannot disconnect KWin input method"
+    fi
+fi
+
+# Both streams must be redirected: daemon children otherwise hold open the
+# pipe used by systemd-run --wait --pipe during package installation.
+fcitx5 -r -d >/dev/null 2>&1 || fail "fcitx5 could not start"
 [ -n "$QBUS" ] || exit 0
 
-# Wait for fcitx5 to come back (max ~10s).
+# Do not mistake the OLD D-Bus service (still exiting) for the new daemon.
+new_owner=""
 ready=0
-for _ in $(seq 1 40); do
-    if "$QBUS" org.fcitx.Fcitx5 / >/dev/null 2>&1; then
+for ((attempt=0; attempt<40; ++attempt)); do
+    new_owner=$(owner) || new_owner=""
+    if [ -n "$new_owner" ] && [ "$new_owner" != "$old_owner" ] &&
+       [ -n "$(controller AddonForIM skey-im 2>/dev/null)" ]; then
         ready=1
         break
     fi
     sleep 0.25
 done
-# Wait for the skey addon to fully register (the last addon to load,
-# ~2s after daemon start) before toggling.  A fixed 1s margin raced with
-# it: toggling KWin while fcitx5 was half-initialized left text-input-v3
-# clients that never re-commit (STerm) dead until app restart, while
-# Chromium apps recovered on their own and masked the problem.
-if [ "$ready" = 1 ]; then
-    for _ in $(seq 1 40); do
-        if [ -n "$("$QBUS" org.fcitx.Fcitx5 /controller \
-                org.fcitx.Fcitx.Controller1.AddonForIM skey-im 2>/dev/null)" ]; then
+[ "$ready" = 1 ] || fail "new Fcitx5/SKey instance did not become ready"
+
+if [ "$restore_keyboard" = 1 ]; then
+    vk_set enabled true || fail "cannot reconnect KWin input method"
+    # The launcher hands its socket to fcitx5 asynchronously (~1s later).
+    # Check the frontend, not CurrentInputMethod: Settings may have no focused
+    # text field, and absence of focus is not a failed connection.
+    ready=0
+    for ((attempt=0; attempt<40; ++attempt)); do
+        if controller DebugInfo 2>/dev/null | grep -q 'frontend:wayland'; then
+            ready=1
             break
         fi
         sleep 0.25
     done
+    [ "$ready" = 1 ] || fail "KWin Wayland input method did not reconnect"
+    restore_keyboard=0
 fi
 
-# Minimal 100ms off window: short enough that apps keep their text input
-# registration, long enough for KWin to tear down and re-spawn the
-# fcitx5-wayland-launcher against the new instance.
-"$QBUS" org.kde.KWin /VirtualKeyboard \
-    org.freedesktop.DBus.Properties.Set \
-    org.kde.kwin.VirtualKeyboard enabled false 2>/dev/null || true
-sleep 0.1
-"$QBUS" org.kde.KWin /VirtualKeyboard \
-    org.freedesktop.DBus.Properties.Set \
-    org.kde.kwin.VirtualKeyboard enabled true 2>/dev/null || true
+# A restart discards per-context IM state. Keep the previously selected IM
+# when a context is available; do not turn Vietnamese on if it was off.
+if [ -n "$previous_im" ]; then
+    controller SetCurrentIM "$previous_im" || fail "cannot restore input method"
+fi

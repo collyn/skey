@@ -265,21 +265,23 @@ void InfoTab::onChannelChanged(int /*index*/) {
 }
 
 void InfoTab::onRestartFcitx5() {
+  const bool updateWasEnabled = updateBtn_->isEnabled();
+  updateBtn_->setEnabled(false);
   restartBtn_->setEnabled(false);
   restartBtn_->setText(T("Đang khởi động lại..."));
   statusLabel_->setText(T("Đang khởi động lại Fcitx5..."));
   statusLabel_->setStyleSheet("font-size: 12px; color: #666;");
   statusLabel_->show();
 
-  // Force UI update before blocking
-  QApplication::processEvents();
-
-  restartFcitx5();
-
-  restartBtn_->setEnabled(true);
-  restartBtn_->setText(T("Khởi động lại Fcitx5"));
-  statusLabel_->setText(T("✓ Fcitx5 đã được khởi động lại"));
-  statusLabel_->setStyleSheet("font-size: 12px; color: green;");
+  restartFcitx5(this, [this, updateWasEnabled](bool success, const QString &error) {
+    updateBtn_->setEnabled(updateWasEnabled);
+    restartBtn_->setEnabled(true);
+    restartBtn_->setText(T("Khởi động lại Fcitx5"));
+    statusLabel_->setText(success ? T("✓ Fcitx5 đã được khởi động lại")
+                                 : T("Không thể khởi động lại Fcitx5: %1").arg(error));
+    statusLabel_->setStyleSheet(success ? "font-size: 12px; color: green;"
+                                       : "font-size: 12px; color: red;");
+  });
 }
 
 // ── Updater: check result slots ─────────────────────────────────────────
@@ -434,6 +436,7 @@ void InfoTab::onDownloadFailed(const QString &errorMessage) {
 // ── Updater: install slots ──────────────────────────────────────────────
 
 void InfoTab::onInstallStarted() {
+  restartBtn_->setEnabled(false);
   if (updater_->distro() == Distro::NixOS) {
     if (updateChannel() == UpdateChannel::Dev) {
       statusLabel_->setText(T(
@@ -464,28 +467,36 @@ void InfoTab::onInstallFinished(bool success, const QString &message) {
     // so it cannot reliably restart the user's Fcitx5.  Restart explicitly
     // from this GUI after installation.  This also starts the new Libei
     // portal session and lets its permission prompt appear immediately.
-    restartFcitx5();
-    statusLabel_->setText(T("✓ %1").arg(message));
-    statusLabel_->setStyleSheet("font-size: 12px; color: green;");
     versionLabel_->setText(
         T("SKey - Phiên bản: %1").arg(pendingVersion_));
+    statusLabel_->setText(T("Đang khởi động lại Fcitx5..."));
+    updateBtn_->setEnabled(false);
+    restartFcitx5(this, [this, message](bool restarted, const QString &error) {
+      restartBtn_->setEnabled(true);
+      updateBtn_->setEnabled(true);
+      if (!restarted) {
+        statusLabel_->setText(T("Không thể khởi động lại Fcitx5: %1").arg(error));
+        statusLabel_->setStyleSheet("font-size: 12px; color: red;");
+        return;
+      }
+      statusLabel_->setText(T("✓ %1").arg(message));
+      statusLabel_->setStyleSheet("font-size: 12px; color: green;");
 
-    // Close and reopen the settings GUI so the user is running
-    // the freshly-installed version.  Brief delay lets the user
-    // see the success message before the window closes.
-    // On NixOS, applicationFilePath() is the OLD store path (alive until
-    // GC); findExecutable resolves through PATH → /run/current-system/sw
-    // → the new generation after the rebuild.
-    QString exe = QStandardPaths::findExecutable("fcitx5-skey-settings");
-    if (exe.isEmpty())
-      exe = QApplication::applicationFilePath();
-    QTimer::singleShot(1500, this, [this, exe]() {
-      QWidget *win = window();
-      QProcess::startDetached(exe, {});
-      if (win)
-        win->close();
+      // Reopen the newly installed GUI after the helper has finished.
+      // On NixOS applicationFilePath() is the OLD store path, so resolve
+      // through PATH to find the executable in the new generation.
+      QString exe = QStandardPaths::findExecutable("fcitx5-skey-settings");
+      if (exe.isEmpty())
+        exe = QApplication::applicationFilePath();
+      QTimer::singleShot(1500, this, [this, exe]() {
+        QWidget *win = window();
+        QProcess::startDetached(exe, {});
+        if (win)
+          win->close();
+      });
     });
   } else {
+    restartBtn_->setEnabled(true);
     statusLabel_->setText(T("✗ %1").arg(message));
     statusLabel_->setStyleSheet("font-size: 12px; color: red;");
   }

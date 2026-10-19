@@ -2,11 +2,13 @@
 #define SKEY_SETTINGS_CONFIG_IO_H
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
 
 class QString;
+class QObject;
 
 /// Resolved from $XDG_CONFIG_HOME/fcitx5/conf/ (fallback ~/.config/fcitx5/conf/)
 std::string configDir();
@@ -118,10 +120,11 @@ SKeyConfig defaultConfig();
 /// Returns true if the command was launched successfully.
 bool reloadFcitx5();
 
-/// Hard-restart fcitx5 (-r -d) and reconnect Wayland compositor.
-/// Use after package update when the .so binary has changed.
-/// Returns true if the restart was attempted.
-bool restartFcitx5();
+/// Restart through the packaged helper; report completion after compositor
+/// reconnection. The helper survives closing Settings; the callback is only
+/// called while context exists. Use after updating the addon binary.
+void restartFcitx5(QObject *context,
+                  std::function<void(bool, const QString &)> finished);
 
 // ── Icon resolution / import ─────────────────────────────────────────────
 /// "$XDG_DATA_HOME/fcitx5" (fallback "~/.local/share/fcitx5")

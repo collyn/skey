@@ -3,6 +3,7 @@
 #include <mutex>
 #include <thread>
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <filesystem>
@@ -282,6 +283,31 @@ void NativeInjector::start() {
     impl_->worker = std::thread([this] { impl_->run(); });
 #else
     impl_->status("built without libei/libportal development libraries");
+#endif
+}
+void NativeInjector::restoreSession() {
+#if defined(SKEY_HAVE_LIBEI) && defined(SKEY_LIBPORTAL_PERSIST)
+    const char *session = std::getenv("XDG_SESSION_TYPE");
+    const char *desktop = std::getenv("XDG_CURRENT_DESKTOP");
+    if (!session || std::string(session) != "wayland" || !desktop) return;
+    std::string desktops = ":" + std::string(desktop) + ":";
+    std::transform(desktops.begin(), desktops.end(), desktops.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    if (desktops.find(":kde:") == std::string::npos &&
+        desktops.find(":kde-plasma:") == std::string::npos &&
+        desktops.find(":plasma:") == std::string::npos) return;
+
+    std::ifstream in(Impl::tokenPath());
+    std::string token;
+    if (!std::getline(in, token) || token.empty()) return;
+
+    // KDE's portal owns a fake-input device with the touch seat capability,
+    // even for keyboard-only sessions. Closing the old daemon removes it.
+    // winit then destroys text-input-v3 on capability removal and recreates
+    // it only on capability addition. Restore our persisted portal session
+    // so Uinput commits reach text-input again instead of KWin's lossy
+    // keysym fallback. Do not select Native or enqueue any input here.
+    start();
 #endif
 }
 bool NativeInjector::ready() const { return impl_->ready; }
