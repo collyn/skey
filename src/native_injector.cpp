@@ -12,7 +12,8 @@
 #include <X11/extensions/XTest.h>
 #ifdef SKEY_HAVE_LIBEI
 #include <libei.h>
-#include <libportal/portal.h>
+// Public libportal umbrella; its component headers provide the declarations.
+#include <libportal/portal.h> // IWYU pragma: keep
 #include <glib-unix.h>
 #include <linux/input-event-codes.h>
 #include <sys/eventfd.h>

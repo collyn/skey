@@ -18,7 +18,6 @@
 #   };
 #   services.fcitx5-skey = {
 #     enable = true;
-#     users = [ "yourname" ];
 #   };
 {
   description = "SKey — Vietnamese input method for Fcitx5";

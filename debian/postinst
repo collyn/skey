@@ -10,42 +10,12 @@ case "$1" in
             gtk-update-icon-cache /usr/share/icons/breeze-dark 2>/dev/null || true
         fi
 
-        # systemd daemon-reload for new/updated uinput service unit
-        if command -v systemctl >/dev/null 2>&1; then
-            systemctl daemon-reload 2>/dev/null || true
-        fi
-
-        # Create the skey_uinput system user (sysusers.d, non-systemd
-        # fallback) and re-apply udev rules so the /dev/uinput ACL grants
-        # it rw access.  The server runs as this user instead of root.
-        if command -v systemd-sysusers >/dev/null 2>&1; then
-            systemd-sysusers /usr/lib/sysusers.d/skey-uinput.conf 2>/dev/null || true
-        elif ! getent passwd skey_uinput >/dev/null 2>&1 && command -v useradd >/dev/null 2>&1; then
-            useradd --system --no-create-home --user-group --shell /usr/sbin/nologin skey_uinput 2>/dev/null || true
-        fi
-        if command -v udevadm >/dev/null 2>&1; then
-            udevadm control --reload-rules 2>/dev/null || true
-            udevadm trigger --subsystem-match=misc 2>/dev/null || true
-        fi
-        # No group membership needed: the server socket sits in a 0700 RuntimeDirectory
-        # with a per-user named ACL granted by ExecStartPost (traverse only);
-        # authorization happens at accept time
-        # (SO_PEERCRED + /proc/pid/exe) — so users work immediately after
-        # an upgrade without a re-login.
+        /usr/bin/skey-uinput-access configure
 
         if [ -z "$2" ]; then
             # ── First install ──
             # User configuration is performed manually with skey-setup.
             if [ -n "$SUDO_USER" ]; then
-                # Enable the uinput server as root BEFORE skey-setup runs.
-                # If skey-setup sees the unit not yet enabled, it takes its
-                # enable branch as the user, and `systemctl enable` uses the
-                # manage-unit-files polkit action (unscopable per unit) —
-                # the graphical polkit agent pops a root-password dialog
-                # that looks like the terminal hanging.
-                if command -v systemctl >/dev/null 2>&1; then
-                    systemctl enable --now "fcitx5-skey-uinput-server@${SUDO_USER}.service" 2>/dev/null || true
-                fi
                 # im-config deliberately NOT run here: it must run as the
                 # USER (it writes ~/.xinputrc, not a system file) —
                 # skey-setup does it when the user runs it manually.
@@ -57,16 +27,6 @@ case "$1" in
             fi
         else
             # ── Upgrade ──
-            # Restart every running uinput server instance so it picks up
-            # the new binary.  Deliberately outside the $SUDO_USER guard
-            # below: updates arriving via pkexec (the settings GUI updater)
-            # or a GUI package manager leave SUDO_USER unset, and the
-            # restart used to be skipped entirely in those cases.  The glob
-            # only matches instances systemd has already loaded, so it is a
-            # no-op when nobody is using Uinput mode.
-            if command -v systemctl >/dev/null 2>&1; then
-                systemctl try-restart "fcitx5-skey-uinput-server@*.service" 2>/dev/null || true
-            fi
             # Restart fcitx5 to load the new skey.so and gently reconnect
             # KWin's zwp_input_method_v2.  The helper script must run
             # INSIDE the user's graphical session — `su -` loses

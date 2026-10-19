@@ -130,9 +130,6 @@ stdenv.mkDerivation (finalAttrs: {
     qt6.qtbase
     qt6.qtwayland # runtime platform plugin for the settings GUI on Wayland
     qt6.qtsvg # QIcon SVG loading at runtime
-    # No `acl` here: setfacl is only referenced as text inside the unit
-    # and udev rule files, never invoked at build time.  The NixOS module
-    # uses pkgs.acl directly for its ExecStartPre/ExecStartPost overrides.
   ];
 
   cmakeFlags = [
@@ -145,12 +142,9 @@ stdenv.mkDerivation (finalAttrs: {
       then "${skeyEngine}/lib/libskey_engine.a"
       else skeyEngineLib
     }"
-    # Distro-specific files: NixOS has no /lib or /etc at build time.
-    # systemd.packages in the NixOS module picks the unit up from here.
-    "-DSKEY_SYSTEMD_UNIT_DIR=${placeholder "out"}/lib/systemd/system"
-    "-DSKEY_POLKIT_RULES_DIR=${placeholder "out"}/etc/polkit-1/rules.d"
+    # Declarative udev package and boot-time kernel module configuration.
     "-DSKEY_UDEV_RULES_DIR=${placeholder "out"}/lib/udev/rules.d"
-    "-DSKEY_SYSUSERS_DIR=${placeholder "out"}/lib/sysusers.d"
+    "-DSKEY_MODULES_LOAD_DIR=${placeholder "out"}/lib/modules-load.d"
   ] ++ lib.optionals (devVersion != null) [
     # Dev channel: make the GUI/updater report the dev prerelease version
     # (the "-dev.N" suffix is what the updater parses to compare counters)

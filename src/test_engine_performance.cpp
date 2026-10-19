@@ -86,6 +86,101 @@ protected:
 
 namespace fcitx {
 struct EnginePerformanceTest {
+    static void uinputPendingTransport(Instance &instance, bool settling) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager());
+        input.setFocusGroup(&group);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "skey-test";
+        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.uinputRequest_ = std::make_shared<skey::UinputInjector::Request>();
+        state.pendingUinputCommit_ = "õ";
+        state.uinputDeleting_ = true;
+        if (settling) {
+            state.scheduleUinputSettle(0, 0, 0);
+        } else {
+            state.uinputSafetyRetried_ = true; // exercise the final timeout
+            state.armUinputSafetyTimer();
+            state.uinputSafetyTimer_->setTime(now(CLOCK_MONOTONIC));
+        }
+        auto complete = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+            now(CLOCK_MONOTONIC) + 20000, 1, [&](EventSourceTime *, uint64_t) {
+                check(input.commits.empty() && state.pendingUinputCommit_ == "õ" && state.uinputDeleting_,
+                      "a timeout must not commit while the worker is still emitting Backspaces");
+                state.uinputRequest_->state.store(skey::UinputInjector::State::Complete);
+                return true;
+            });
+        auto stop = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+            now(CLOCK_MONOTONIC) + 40000, 1,
+            [&](EventSourceTime *, uint64_t) { instance.eventLoop().exit(); return true; });
+        instance.eventLoop().exec();
+        check(input.commits == std::vector<std::string>{"õ"} && !state.uinputDeleting_,
+              "a deferred timer resumes exactly once after the worker completes");
+    }
+
+    static void uinputFailures(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager());
+        input.setFocusGroup(&group);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "skey-test";
+        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.uinputTestReady_ = false;
+        KeyEvent first(&input, Key(FcitxKey_d));
+        state.keyEvent(first);
+        check(!first.accepted() && state.viet_.getRawInput().empty() && input.commits.empty(),
+              "unready Uinput must pass the first key through without changing composition");
+        state.uinputTestReady_ = true;
+        int calls = 0;
+        state.uinputTestSend_ = [&](int, uint32_t, uint32_t) { ++calls; return false; };
+        state.viet_.setRawInput("ban"); state.committedLen_ = 3;
+        KeyEvent tone(&input, Key(FcitxKey_j));
+        state.keyEvent(tone);
+        check(calls == 1 && !tone.accepted() && !tone.filtered() &&
+              !state.uinputDeleting_ && !state.uinputSafetyTimer_ &&
+              state.pendingUinputCommit_.empty() && input.commits.empty(),
+              "rejected suffix deletion passes the key through without a replacement commit");
+        state.surroundingCommit("go", "gõ");
+        check(calls == 2 && !state.uinputDeleting_ && !state.uinputSafetyTimer_ && input.commits.empty(),
+              "rejected surrounding fallback must not commit over undeleted text");
+        state.uinputRequest_ = std::make_shared<skey::UinputInjector::Request>();
+        state.uinputRequest_->state.store(skey::UinputInjector::State::Failed);
+        state.uinputBsOutstanding_ = 2;
+        state.expectedUinputBackspaces_ = 1;
+        state.pendingUinputCommit_ = "õ";
+        state.uinputDeleting_ = true;
+        state.scheduleUinputSettle(0, 0, 0);
+        state.finishUinputSettle(0, 0);
+        check(input.commits.empty() && !state.uinputDeleting_ && !state.uinputCommitTimer_ &&
+              state.pendingUinputCommit_.empty() && state.uinputBsOutstanding_ == 0,
+              "partial failure cancels the commit and unsent outstanding count");
+        KeyEvent late(&input, Key(FcitxKey_BackSpace));
+        state.keyEvent(late);
+        check(late.accepted(), "late partial-write loopback retains the existing grace");
+        check(!state.sendBackspaceUinput(2), "failed batch must drain before the next replacement");
+        KeyEvent draining(&input, Key(FcitxKey_j));
+        state.keyEvent(draining);
+        check(!draining.accepted() && state.viet_.getRawInput().empty() && calls == 2,
+              "new physical keys pass through while cancelled Backspaces drain");
+        state.uinputLateBsDeadlineUsec_ = now(CLOCK_MONOTONIC) - 1;
+        KeyEvent user(&input, Key(FcitxKey_BackSpace));
+        state.keyEvent(user);
+        check(!user.accepted(), "unsent cancelled keys must not swallow future user Backspace");
+    }
+
+    static void captureUinput(SKeyState &state, int fd) {
+        auto owned = std::shared_ptr<int>(new int(fd), [](int *p) { close(*p); delete p; });
+        state.uinputTestSend_ = [fd, owned](int count, uint32_t flags, uint32_t pace) {
+            const uint32_t request[] = {static_cast<uint32_t>(count), flags, 0, pace};
+            return send(fd, request, sizeof(request), MSG_NOSIGNAL) == sizeof(request);
+        };
+    }
     static void omniboxSurrounding(Instance &instance, bool native, bool wayland) {
         class Editor : public TestInput {
         public:
@@ -124,12 +219,12 @@ struct EnginePerformanceTest {
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "isolate omnibox transport without desktop injection");
-        state.uinputClientFd_ = sockets[0];
+        captureUinput(state, sockets[0]);
         state.viet_.setRawInput(native ? "chaf" : "cha");
         state.committedLen_ = 3;
         if (native) {
             // An unstarted native injector rejects deterministically. It
-            // must neither fall back to the connected Uinput socket nor
+            // must neither fall back to the Uinput request capture nor
             // schedule a timeout that commits over unchanged text.
             state.scheduleAddrBarReplacement(1, "à", 3, 0, 0, "chà", false, "cha");
             uint32_t request[4];
@@ -751,7 +846,7 @@ struct EnginePerformanceTest {
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "isolate repeated tone transport");
-        state.uinputClientFd_ = sockets[0];
+        captureUinput(state, sockets[0]);
         for (char tone : {'s', 'j'}) {
             const std::string suffix = tone == 's' ? "áo" : "ạo";
             KeyEvent key(&input, Key(static_cast<KeySym>(tone)));
@@ -781,8 +876,7 @@ struct EnginePerformanceTest {
         check(input.commits == std::vector<std::string>{"áo", "ạo"},
               "repeated tones emit both replacement suffixes exactly once");
         state.resetForCellChange();
-        close(sockets[0]);
-        state.uinputClientFd_ = -1;
+        state.uinputTestSend_ = {};
         close(sockets[1]);
     }
 
@@ -806,7 +900,7 @@ struct EnginePerformanceTest {
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "isolate Chrome X11 surrounding fallback transport");
-        state.uinputClientFd_ = sockets[0];
+        captureUinput(state, sockets[0]);
         for (auto sym : {FcitxKey_t, FcitxKey_w}) {
             KeyEvent key(&input, Key(sym));
             state.keyEvent(key);
@@ -853,8 +947,7 @@ struct EnginePerformanceTest {
                   "replacement suffix commits once after deletion, preserving t");
         }
         state.resetForCellChange();
-        close(sockets[0]);
-        state.uinputClientFd_ = -1;
+        state.uinputTestSend_ = {};
         close(sockets[1]);
     }
 
@@ -959,7 +1052,7 @@ struct EnginePerformanceTest {
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "create isolated Chrome deletion transport");
-        state.uinputClientFd_ = sockets[0];
+        captureUinput(state, sockets[0]);
         KeyEvent t(&input, Key(FcitxKey_t));
         state.keyEvent(t);
         check(!t.accepted(), "initial Chrome Uinput letter is forwarded");
@@ -1066,8 +1159,7 @@ struct EnginePerformanceTest {
                 check(!state.uinputDeleteAck_.active(), "silent input must not pay 80ms on every replacement");
             }
         }
-        close(sockets[0]);
-        state.uinputClientFd_ = -1;
+        state.uinputTestSend_ = {};
         close(sockets[1]);
     }
 
@@ -1100,7 +1192,7 @@ struct EnginePerformanceTest {
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "create scope-test transport");
-        state.uinputClientFd_ = sockets[0];
+        captureUinput(state, sockets[0]);
         state.sendBackspaceUinput(2, 0, "tư");
         check(state.uinputDeleteAck_.active() == expected,
               "ack timing is limited to automatic browser page replacements");
@@ -1115,8 +1207,7 @@ struct EnginePerformanceTest {
                   "manual override enabled mid-transaction cancels acknowledgement waiting");
             state.resetForCellChange();
         }
-        close(sockets[0]);
-        state.uinputClientFd_ = -1;
+        state.uinputTestSend_ = {};
         close(sockets[1]);
     }
 
@@ -1141,7 +1232,7 @@ struct EnginePerformanceTest {
         engine.appDelayOverrides_[appKey].preCommitMs = overrideMs;
         // Match the reported replacement's post-BS state. A surrounding
         // cursor of 1 must not be taken as proof that the renderer is ready
-        // to accept the replacement. No real Uinput server is involved.
+        // to accept the replacement. No real Uinput device is involved.
         input.surroundingText().setText("t", 1, 1);
         input.updateSurroundingText();
         state.viet_.setRawInput("tự");
@@ -1263,7 +1354,7 @@ struct EnginePerformanceTest {
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "isolate address-bar replacement transport");
-        state.uinputClientFd_ = sockets[0];
+        captureUinput(state, sockets[0]);
         state.addrBarHadFirstWord_ = state.addrBarHadSpace_ = true;
         state.viet_.setRawInput("nhaats");
         state.scheduleAddrBarReplacement(2, "ất", 4, FcitxKey_s, 1000,
@@ -1313,8 +1404,7 @@ struct EnginePerformanceTest {
             }
         }
         state.resetForCellChange();
-        close(sockets[0]);
-        state.uinputClientFd_ = -1;
+        state.uinputTestSend_ = {};
         close(sockets[1]);
     }
 
@@ -1551,7 +1641,7 @@ struct EnginePerformanceTest {
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "create Firefox regression transport");
-        state.uinputClientFd_ = sockets[0];
+        captureUinput(state, sockets[0]);
         for (char ch : std::string("gox")) {
             KeyEvent event(&input, Key(static_cast<KeySym>(ch)));
             state.keyEvent(event);
@@ -1567,8 +1657,7 @@ struct EnginePerformanceTest {
         check(recv(sockets[1], request, sizeof(request), MSG_DONTWAIT) < 0 &&
                   errno == EAGAIN,
               "matching Firefox surrounding text must not send Uinput Backspace");
-        close(sockets[0]);
-        state.uinputClientFd_ = -1;
+        state.uinputTestSend_ = {};
         close(sockets[1]);
     }
 
@@ -1593,7 +1682,7 @@ struct EnginePerformanceTest {
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "create Firefox fallback transport");
-        state.uinputClientFd_ = sockets[0];
+        captureUinput(state, sockets[0]);
         state.surroundingCommit("go", "gõ");
         uint32_t request[4] = {};
         check(recv(sockets[1], request, sizeof(request), 0) == sizeof(request) && request[0] == 2,
@@ -1601,8 +1690,7 @@ struct EnginePerformanceTest {
         check(input.deletions == 0 && input.commits.empty() && state.uinputDeleting_,
               "fallback must wait for Backspace before committing");
         state.resetForCellChange();
-        close(sockets[0]);
-        state.uinputClientFd_ = -1;
+        state.uinputTestSend_ = {};
         close(sockets[1]);
     }
 
@@ -1620,12 +1708,12 @@ struct EnginePerformanceTest {
         state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::Uinput;
-        // Capture actual server requests without connecting to the desktop
-        // uinput service or injecting any keys into the user's applications.
+        // Capture engine requests without opening a real uinput device or
+        // injecting any keys into the user's applications.
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "create isolated uinput transport");
-        state.uinputClientFd_ = sockets[0]; // owned/closed by SKeyState
+        captureUinput(state, sockets[0]);
         auto press = [&](char ch) {
             KeyEvent event(&input, Key(static_cast<KeySym>(ch)));
             state.keyEvent(event);
@@ -1639,13 +1727,22 @@ struct EnginePerformanceTest {
             for (size_t i = 2; i < keys.size(); ++i) press(keys[i]);
         };
         auto drain = [&] {
-            while (state.uinputDeleting_) {
+            int steps = 0;
+            while (state.uinputDeleting_ || state.settledReplayTimer_) {
+                check(++steps <= 20, "Office replay must terminate");
+                if (state.settledReplayTimer_) {
+                    // Model the dispatch barrier as well as the settle timer.
+                    input.flushCommits();
+                    state.settledReplayTimer_.reset();
+                    state.replayBufferedUinputKeys();
+                    continue;
+                }
                 check(++replacements <= 4, "replacement replay must terminate");
                 uint32_t request[4] = {};
                 const auto received = recv(sockets[1], request, sizeof(request), 0);
                 if (received != sizeof(request))
                     std::cerr << "uinput recv=" << received << " errno=" << errno
-                              << " fd=" << state.uinputClientFd_ << " expected="
+                              << " expected="
                               << state.expectedUinputBackspaces_ << "\n";
                 check(received == sizeof(request),
                       "replacement must send one complete uinput v3 request");
@@ -2126,6 +2223,14 @@ int main(int argc, char **argv) {
     // active-window origin or DPI. Live X11 geometry is tested separately.
     unsetenv("DISPLAY");
     unsetenv("WAYLAND_DISPLAY");
+    for (bool settling : {false, true}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::uinputPendingTransport(instance, settling);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::uinputFailures(instance);
+    }
     {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::replacementMenus(instance);

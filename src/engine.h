@@ -26,7 +26,11 @@
 #include "surrounding_cursor.h"
 #include "uinput_delete_ack.h"
 #include "native_injector.h"
+#include "uinput_injector.h"
 #include <deque>
+#ifdef SKEY_TESTING
+#include <functional>
+#endif
 #include <fcitx/surroundingtext.h>
 
 namespace fcitx {
@@ -148,7 +152,10 @@ private:
     /// so Google Sheets is unaffected.
     void clearEngineBareCapsSticky() const;
     SKeyOutputMode detectAutoMode() const;
-    bool connectUinputServer();
+    bool abortFailedUinput();
+    bool deferUinputTimer(EventSourceTime *source);
+    void cancelUinputRequest();
+    void watchUinputRequest();
     bool sendBackspaceUinput(int count, uint32_t flags = 0,
                             std::string_view oldWord = {});
 
@@ -314,7 +321,15 @@ private:
     uint64_t deferredBsSentAt_ = 0;
     uint64_t deferredCommitDeadline_ = 0;
     std::string pendingFlushSuffix_;
-    int uinputClientFd_ = -1;
+    skey::UinputInjector::Owner uinputOwner_;
+    skey::UinputInjector::Ticket uinputRequest_;
+    std::unique_ptr<EventSourceTime> uinputRequestTimer_;
+    std::string uinputStatus_;
+#ifdef SKEY_TESTING
+    // Request capture only; tests never open the desktop's uinput device.
+    std::function<bool(int, uint32_t, uint32_t)> uinputTestSend_;
+    bool uinputTestReady_ = true;
+#endif
     // Uinput replacement state
     bool uinputDeleting_ = false;
     std::unique_ptr<EventSourceTime> uinputCommitTimer_;
@@ -530,6 +545,9 @@ private:
 
     Instance *instance_;
     SKeyConfig config_;
+    // Must outlive factory_: state destruction cancels its own requests.
+    skey::UinputInjector uinput_;
+    uint64_t nextUinputOwner_ = 0;
     // Must outlive factory_: unregistering the factory destroys its states.
     std::unordered_map<InputContext *, SKeyState *> liveStates_;
     FactoryFor<SKeyState> factory_;

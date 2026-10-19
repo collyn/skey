@@ -60,7 +60,7 @@ Office commit-append fix must fail this regression. The X11 model uses ordered
 delivery and checks that the existing raw-append route still works.
 
 Both routing modes run in one process without a desktop, LibreOffice, or a
-real Uinput server. No keys are injected into other applications. The tests
+real Uinput device. No keys are injected into other applications. The tests
 require permission to send on a local Unix socket pair; sandboxes blocking
 that operation fail with `EPERM` rather than skip the tests.
 
@@ -98,14 +98,14 @@ Surrounding Text address-bar override and inline autocomplete selected.
 Its injected Backspace transport honors `replaceUinputWithNative` without
 changing the output mode. The application model checks a full first-word
 replacement plus a buffered `o` produces `chào`, not `chachào`. An unstarted
-Native injector must reject without touching an available Uinput socket,
+Native injector must reject without touching an available Uinput request capture,
 arming a force-commit timeout or inserting the replacement over unchanged
 text. Native readiness/cancellation uses the same transport policy. Chrome
 page editors retain their existing transport selection. X11 cases use caret
 geometry without the Url capability and drain the ordered replay timer before
 checking the queued `o`. Existing X11 suffix/autocomplete cases also run in
 the dedicated X11 test. The successful
-transaction uses an isolated Uinput socket; live portal/Chrome integration
+transaction uses an isolated Uinput request capture; live portal/Chrome integration
 is not exercised by this test.
 
 Preedit visibility cases run with X11/Wayland focus groups, both with and
@@ -321,3 +321,42 @@ Contenteditable validation passed 18/18 typing cases on each browser, including
 `twj`, `twf`, `chafosj` and multi-word Telex at xdotool delay settings 100/60/40ms.
 The combined final browser run passed 144/144 checks: 48 textarea checks plus
 18 contenteditable checks per browser, and 12 Chrome first-focus measurements.
+
+## In-process Uinput migration
+
+`UinputInjector` uses a fake device: key/SYN ordering, Escape, pacing, serialized
+bounded queue, owner-scoped cancellation, short writes, EINTR/EAGAIN, permanent
+write failure, delayed ACL availability, retry and interruptible warmup/shutdown.
+Engine fixtures capture requests at the transport boundary; their socketpairs
+are test-only and never connect to a desktop service. The Office word fixture
+also drains the existing X11 replay barrier before checking visible text.
+Pending-worker regressions verify that safety/settle timers cannot commit over
+Backspaces still being emitted, and that rejected/draining requests let new
+physical keys through. Migration tests mock commands and `/proc` in temporary
+roots, including merged-usr, offline install, local overrides and stop failures.
+
+Packages and direct source installs into `/usr` or `/usr/local` run
+`skey-uinput-access configure` automatically. DESTDIR staging does not touch the
+host; run the helper as root on the target system after deploying staged files.
+NixOS uses its declarative module. Migration archives SKey's obsolete unit,
+drop-ins, rules, sysusers definition and source binary under
+`/var/lib/fcitx5-skey/legacy-uinput/`; it removes dangling wants/requires links
+and the old named-user device ACL. It retains the account and unrelated rules.
+A failed service stop or a surviving legacy executable aborts migration with
+an error before fcitx5 restart; stop that process and rerun the helper.
+Check `getfacl /dev/uinput` for the active local user and `Uinput: ready` in the
+fcitx5 log. The 1s device-discovery warmup is preserved on a worker and starts at
+addon load. While unavailable, keys pass through without a replacement commit.
+
+Release acceptance still requires real X11 and Wayland checks: select SKey and
+type immediately, repeat IM/focus switches, then test terminal, Chrome omnibox
+and page, Firefox, Electron, LibreOffice and Sheets/Docs with Telex/VNI slow and
+burst input. Unit tests do not establish compositor readiness or renderer
+behavior. Verify fresh install, upgrade from the old service, reinstall and
+remove on each distro; confirm the obsolete service is stopped/disabled and
+only active local-seat users can open uinput.
+
+Rollback: reinstall the previous package/build (which restores its rules and
+unit), run its setup to enable the old per-user service, and restart fcitx5.
+User typing configuration is unchanged. Retired sysuser accounts are retained
+so their uid cannot be recycled while files or processes still refer to it.

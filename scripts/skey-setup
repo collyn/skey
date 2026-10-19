@@ -9,7 +9,7 @@
 #   -y, --yes       write environment variables without prompting
 #   --no-env        skip all environment-variable setup (files and session)
 #   -u, --uninstall remove skey configuration (env vars, fcitx5 profile
-#                   entry, uinput server) — only skey-guarded content is
+#                   entry) — only skey-guarded content is
 #                   touched, the rest of each file is preserved
 
 set -e
@@ -32,7 +32,7 @@ while [ $# -gt 0 ]; do
             echo "                  changed — a running fcitx5 is left alone, which"
             echo "                  also avoids the Wayland reconnect delay)."
             echo "  -u, --uninstall Remove skey configuration: environment variables,"
-            echo "                  the fcitx5 profile entry, and the uinput server."
+            echo "                  the fcitx5 profile entry."
             exit 0
             ;;
         *)
@@ -315,32 +315,6 @@ if [ "$UNINSTALL" = "1" ]; then
             GTK_IM_MODULE QT_IM_MODULE XMODIFIERS SDL_IM_MODULE GLFW_IM_MODULE \
             2>/dev/null || true
         echo "✓ Removed skey env vars from the live session"
-    fi
-
-    # Stop and disable the uinput server instance (best effort — the
-    # disable needs root; package managers do this themselves on removal).
-    REAL_USER="${SUDO_USER:-}"
-    if [ -z "$REAL_USER" ] && [ -n "${PKEXEC_UID:-}" ]; then
-        REAL_USER=$(id -un "$PKEXEC_UID" 2>/dev/null || true)
-    fi
-    REAL_USER="${REAL_USER:-$(logname 2>/dev/null || true)}"
-    REAL_USER="${REAL_USER:-$USER}"
-
-    if command -v systemctl >/dev/null 2>&1; then
-        UINPUT_SERVICE="fcitx5-skey-uinput-server@${REAL_USER}.service"
-        if systemctl is-enabled "$UINPUT_SERVICE" >/dev/null 2>&1 || \
-           systemctl is-active "$UINPUT_SERVICE" >/dev/null 2>&1; then
-            if [ "$(id -u)" -eq 0 ]; then
-                systemctl disable --now "$UINPUT_SERVICE" 2>/dev/null || true
-                echo "✓ Uinput server stopped + disabled"
-            elif command -v sudo >/dev/null 2>&1 && \
-                 sudo -n systemctl disable --now "$UINPUT_SERVICE" 2>/dev/null; then
-                echo "✓ Uinput server stopped + disabled (via sudo)"
-            else
-                echo "⚠ Uinput server still enabled: $UINPUT_SERVICE"
-                echo "  Run: sudo systemctl disable --now $UINPUT_SERVICE"
-            fi
-        fi
     fi
 
     # Restart fcitx5 so the default IM reverts (only when it was running)
@@ -1305,80 +1279,13 @@ if [ "$DID_RESTART" = "1" ]; then
     fi
 fi
 
-# ── Uinput server (systemd service) ──
-# The uinput server injects BackSpace/Unicode keystrokes via /dev/uinput.
-# It must be running for Uinput and Address Bar output modes.
-# The service unit is installed to /lib/systemd/system (system scope), NOT
-# the user manager. We use system-scope enable + sudo/polkit fallback.
-if command -v systemctl >/dev/null 2>&1; then
-    # Resolve the REAL desktop user even when skey-setup runs under sudo,
-    # pkexec, or a package postinst.  The instance name must match the user
-    # fcitx5 runs as — its client connects to /run/skey-uinput-<user> and a
-    # @root instance serves nobody.
-    REAL_USER="${SUDO_USER:-}"
-    if [ -z "$REAL_USER" ] && [ -n "${PKEXEC_UID:-}" ]; then
-        REAL_USER=$(id -un "$PKEXEC_UID" 2>/dev/null || true)
-    fi
-    REAL_USER="${REAL_USER:-$(logname 2>/dev/null || true)}"
-    REAL_USER="${REAL_USER:-$USER}"
-
-    UINPUT_SERVICE="fcitx5-skey-uinput-server@${REAL_USER}.service"
-    # Reload unit definitions BEFORE the restart below: an update (package
-    # or plain `cmake --install`) replaces the unit file on disk without
-    # telling systemd, and restarting against the stale in-memory unit runs
-    # the OLD definition — e.g. without the ExecStartPre that creates the
-    # skey_uinput sysuser, so the updated service never comes up.  Root runs
-    # this for free; unprivileged runs are covered by the polkit rule
-    # (org.freedesktop.systemd1.reload-daemon, local+active sessions).
-    # Best-effort: if it fails, the restart below still runs against
-    # whatever systemd currently knows.
-    systemctl daemon-reload 2>/dev/null || true
-    if systemctl is-enabled "$UINPUT_SERVICE" >/dev/null 2>&1; then
-        # Already enabled: an unprivileged restart is authorised by the
-        # polkit rule in data/60-fcitx5-skey-uinput.rules (manage-units,
-        # scoped to this exact instance).  Report the real outcome — the
-        # old `|| true` printed a success tick even when polkit denied
-        # the request, which hid a broken rule for weeks.
-        if systemctl restart "$UINPUT_SERVICE" 2>/dev/null; then
-            echo "✓ Uinput server restarted: $UINPUT_SERVICE"
-        elif systemctl is-active "$UINPUT_SERVICE" >/dev/null 2>&1; then
-            # Restart was denied (e.g. skey-setup runs inside a postinst
-            # systemd-run/su context where polkit has no seat session) but
-            # the service is up — typically the packaging layer already
-            # restarted it as root.  Nothing is broken; don't alarm.
-            echo "✓ Uinput server already running: $UINPUT_SERVICE"
-        else
-            echo "⚠ Could not restart $UINPUT_SERVICE"
-            echo "  Run: sudo systemctl restart $UINPUT_SERVICE"
-            echo "  Diagnose the polkit rule with: journalctl -b -t polkitd"
-        fi
-    elif [ "$(id -u)" -eq 0 ]; then
-        # Running as root (e.g., from package postinst).  Also disable a
-        # stale @root instance left by a previous sudo run — fcitx5 never
-        # runs as root, so it serves nobody.
-        if [ "$REAL_USER" != "root" ]; then
-            systemctl disable --now "fcitx5-skey-uinput-server@root.service" 2>/dev/null || true
-        fi
-        systemctl enable --now "$UINPUT_SERVICE" 2>/dev/null || true
-        echo "✓ Uinput server enabled + started: $UINPUT_SERVICE"
-    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-        sudo systemctl enable --now "$UINPUT_SERVICE" 2>/dev/null || true
-        echo "✓ Uinput server enabled + started: $UINPUT_SERVICE (via sudo)"
-    else
-        # Not enabled yet.  Enabling needs root: it uses the
-        # manage-unit-files polkit action, which systemd cannot scope to a
-        # single unit, so 60-fcitx5-skey-uinput.rules deliberately does not
-        # cover it.  Try anyway — a graphical polkit agent will prompt for
-        # a password.  (`systemctl --user` used to sit here as a fallback
-        # but was never reachable: the unit lives in system scope and the
-        # user manager cannot see it.)
-        if systemctl enable --now "$UINPUT_SERVICE" 2>/dev/null; then
-            echo "✓ Uinput server enabled + started: $UINPUT_SERVICE"
-        else
-            echo "⚠ Uinput server not enabled: $UINPUT_SERVICE"
-            echo "  Run once: sudo systemctl enable --now $UINPUT_SERVICE"
-        fi
-    fi
+# Uinput belongs to fcitx5. Packages load the module and grant uaccess.
+if [ -w /dev/uinput ]; then
+    echo "✓ /dev/uinput is accessible; Uinput starts inside fcitx5"
+else
+    echo "⚠ /dev/uinput is not accessible in this session"
+    echo "  Check the active local seat ACL: getfacl /dev/uinput"
+    echo "  Retry device setup/migration: sudo skey-uinput-access configure"
 fi
 
 # ── Icon: ensure visible in the current icon theme ──
@@ -1490,8 +1397,7 @@ echo ""
 echo "  Settings GUI: fcitx5-skey-settings"
 echo "  Logs:         tail -f /tmp/skey.log"
 echo ""
-echo "  Uinput server: systemctl status fcitx5-skey-uinput-server@${REAL_USER:-$USER}.service"
-echo "  (may need sudo/polkit on non-Debian systems — see above)"
+echo "  Uinput access: getfacl /dev/uinput (active local desktop user)"
 echo ""
 if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
     echo "⚠  Wayland note: If some apps still don't work after this,"

@@ -1,16 +1,6 @@
-# Install destinations for distro-specific files.  Overridable at configure
-# time so NixOS (whose sandbox forbids writing to /lib and /etc) can point
-# them inside the install prefix.  Defaults match Debian/Ubuntu/Fedora.
-set(SKEY_SYSTEMD_UNIT_DIR "/lib/systemd/system" CACHE PATH
-    "Systemd system unit install directory")
-set(SKEY_POLKIT_RULES_DIR "/etc/polkit-1/rules.d" CACHE PATH
-    "Polkit rules install directory")
-set(SKEY_UDEV_RULES_DIR "/lib/udev/rules.d" CACHE PATH
-    "udev rules install directory")
-set(SKEY_SYSUSERS_DIR "/usr/lib/sysusers.d" CACHE PATH
-    "sysusers.d snippet install directory")
-set(SKEY_UINPUT_USER "skey_uinput" CACHE STRING
-    "System user the uinput server runs as (sysusers.d, udev ACL rule, service unit)")
+# uaccess must be tagged before systemd's 73-seat-late.rules.
+set(SKEY_UDEV_RULES_DIR "/lib/udev/rules.d" CACHE PATH "udev rules install directory")
+set(SKEY_MODULES_LOAD_DIR "/usr/lib/modules-load.d" CACHE PATH "modules-load.d install directory")
 
 # SVG icons
 # apps/ — app launcher and IM list popup
@@ -105,33 +95,24 @@ foreach(PRESET fcitx-skey-v-blue fcitx-skey-v-dark fcitx-skey-v-light fcitx-skey
     endforeach()
 endforeach()
 
-
-
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/fcitx5-skey-uinput-server@.service.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/fcitx5-skey-uinput-server@.service"
-    @ONLY
-)
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/fcitx5-skey-uinput-server@.service"
-    DESTINATION "${SKEY_SYSTEMD_UNIT_DIR}")
-
-# Polkit rule: lets each user restart their own uinput server instance
-# (systemd manage-units for fcitx5-skey-uinput-server@<user>.service only).
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/60-fcitx5-skey-uinput.rules"
-    DESTINATION "${SKEY_POLKIT_RULES_DIR}")
-
-# udev rule: ACL on /dev/uinput for the dedicated unprivileged server user.
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/99-skey-uinput.rules"
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/70-skey-uinput.rules"
     DESTINATION "${SKEY_UDEV_RULES_DIR}")
-
-# sysusers.d: creates the dedicated system user the server runs as.
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/skey-uinput-sysusers.conf.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/skey-uinput-sysusers.conf"
-    @ONLY
-)
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/skey-uinput-sysusers.conf"
-    DESTINATION "${SKEY_SYSUSERS_DIR}" RENAME "skey-uinput.conf")
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/skey-uinput.conf"
+    DESTINATION "${SKEY_MODULES_LOAD_DIR}")
+install(PROGRAMS "${CMAKE_SOURCE_DIR}/scripts/skey-uinput-access"
+    DESTINATION "${CMAKE_INSTALL_BINDIR}")
+# Direct source installs have no package postinst. Never run host migration
+# during DESTDIR staging or Nix/store/custom-prefix builds.
+install(CODE [[
+    if("$ENV{DESTDIR}" STREQUAL "" AND
+       (CMAKE_INSTALL_PREFIX STREQUAL "/usr" OR CMAKE_INSTALL_PREFIX STREQUAL "/usr/local"))
+        execute_process(COMMAND "${CMAKE_INSTALL_PREFIX}/bin/skey-uinput-access" configure
+            RESULT_VARIABLE skey_migration_result)
+        if(NOT skey_migration_result EQUAL 0)
+            message(FATAL_ERROR "SKey uinput migration failed; resolve the error and rerun installation")
+        endif()
+    endif()
+]])
 
 # ── Settings GUI .desktop file ──
 configure_file(
