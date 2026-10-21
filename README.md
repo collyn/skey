@@ -19,17 +19,17 @@ SKey dùng [skey-engine](https://github.com/collyn/skey-engine) (Rust) để x�
 - **Tự động khôi phục** từ không hợp lệ trong tiếng Việt, từ điển và gõ tắt (macro).
 - **14 bảng mã**, gồm Unicode, Unicode NFD, TCVN3, VNI Windows và VIQR.
 - **Cấu hình theo ứng dụng:** chọn chế độ xuất, tắt tiếng Việt, chỉnh delay; có cấu hình riêng cho thanh địa chỉ Chromium.
-- **Giao diện cài đặt:** quản lý kiểu gõ, từ điển, macro, biểu tượng và cập nhật Stable/Dev.
+- **Giao diện cài đặt:** quản lý kiểu gõ, chế độ xuất, từ điển, macro, biểu tượng và cập nhật Stable/Dev.
 
 | Chế độ xuất | Cách hoạt động |
 | --- | --- |
 | **Auto** (mặc định) | Chọn theo khả năng ứng dụng và ngữ cảnh ô nhập; có xử lý riêng cho trình duyệt, terminal và ứng dụng văn phòng. |
 | **Surrounding Text** | Thay thế văn bản qua API surrounding text của Fcitx5. |
 | **Uinput** | Gửi Backspace qua `/dev/uinput` ngay trong fcitx5, dùng quyền user của phiên desktop. |
-| **Native** | Gửi Backspace qua XTest trên X11 hoặc libei/portal trên Wayland. Backend Wayland cần thư viện và compositor hỗ trợ, cùng quyền từ portal. |
+| **Native** | Gửi Backspace qua XTest trên X11 hoặc libei/portal trên Wayland. Đây là chế độ tùy chọn và mặc định tắt; backend Wayland cần thư viện và compositor hỗ trợ, cùng quyền từ portal. |
 | **Preedit** | Soạn văn bản trong vùng preedit trước khi commit vào ứng dụng. |
 
-Có thể bật **Thay thế Uinput bằng Native** để dùng Native cho các trường hợp Auto chọn Uinput.
+Native mặc định tắt để tránh hộp thoại xin quyền input trên Wayland. Trong `fcitx5-skey-settings`, bật **Bật chế độ Native** trước; sau đó có thể bật **Dùng Native thay Uinput** để dùng Native trong các trường hợp Auto chọn Uinput. Khi Native tắt, mode Native không xuất hiện trong menu mode và SKey không khởi tạo portal libei.
 
 ## Cài đặt
 
@@ -68,7 +68,7 @@ Dùng flake và module `services.fcitx5-skey` theo [hướng dẫn NixOS](packag
 
 - `skey-setup` cấu hình Fcitx5, biến môi trường; đăng xuất/đăng nhập lại nếu script yêu cầu.
 - **Ctrl+Space** bật/tắt bộ gõ theo cấu hình Fcitx5. Phím **backtick** (`` ` ``) mở menu chế độ cho ứng dụng hiện tại; có thể đổi trong cài đặt.
-- Mở `fcitx5-skey-settings` để chỉnh cấu hình. Auto Restore mặc định bật; tắt nếu muốn giữ các từ viết tắt không hợp lệ trong tiếng Việt.
+- Mở `fcitx5-skey-settings` để chỉnh cấu hình. Auto Restore mặc định bật; tắt nếu muốn giữ các từ viết tắt không hợp lệ trong tiếng Việt. Native mặc định tắt; chỉ bật khi cần dùng XTest/libei.
 - Trên **KDE Plasma Wayland**, chọn **Fcitx 5** trong System Settings → Virtual Keyboard.
 
 Nếu không gõ được sau khi cài hoặc cập nhật, chạy lại `skey-setup`. Với chế độ Uinput, kiểm tra quyền thiết bị:

@@ -91,6 +91,7 @@ SKeyConfig readSkeyConfig() {
         if (key == "InputMethod")      cfg.inputMethod  = val;
         else if (key == "OutputMode")   cfg.outputMode   = val == "Libei" ? "Native" : val;
         else if (key == "PreferLibeiAuto") cfg.replaceUinputWithNative = parseBool(val);
+        else if (key == "EnableNative") cfg.enableNative = parseBool(val);
         else if (key == "Charset")      cfg.charset       = val;
         else if (key == "ShortW")       cfg.shortW        = parseBool(val);
         else if (key == "BracketUO")    cfg.bracketUO     = parseBool(val);
@@ -136,6 +137,7 @@ bool writeSkeyConfig(const SKeyConfig &cfg) {
     out << "# Output Mode"                  << "\n";
     out << "OutputMode="    << maybeQuote(cfg.outputMode)   << "\n";
     out << "PreferLibeiAuto=" << boolStr(cfg.replaceUinputWithNative) << "\n";
+    out << "EnableNative=" << boolStr(cfg.enableNative) << "\n";
     out << "# Character set (Unicode / TCVN3 (ABC) / VNI Windows / Windows CP1258 / VIQR)" << "\n";
     out << "Charset="       << maybeQuote(cfg.charset)      << "\n";
     out << "# Telex: type w as ư"           << "\n";

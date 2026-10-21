@@ -5,6 +5,7 @@
 
 class QComboBox;
 class QCheckBox;
+class QGridLayout;
 class QPushButton;
 class HotkeyEdit;
 
@@ -31,6 +32,7 @@ signals:
 private:
     void setupUI();
     void syncNativeReplacementChoice();
+    void syncNativeModeChoice();
 
     QComboBox *inputMethodCombo_;
     QComboBox *outputModeCombo_;
@@ -47,7 +49,9 @@ private:
     QCheckBox *debugCheck_;
     QCheckBox *autoDelayCheck_;
     QCheckBox *replaceUinputWithNativeCheck_;
+    QCheckBox *enableNativeCheck_;
     QCheckBox *a11yCheck_;
+    QGridLayout *checkLayout_ = nullptr;
 };
 
 #endif // SKEY_SETTINGS_GENERAL_TAB_H

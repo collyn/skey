@@ -6,9 +6,9 @@
 #, fuzzy
 msgid ""
 msgstr ""
-"Project-Id-Version: fcitx5-skey 0.8.3\n"
+"Project-Id-Version: fcitx5-skey 0.8.12\n"
 "Report-Msgid-Bugs-To: https://github.com/collyn/skey/issues\n"
-"POT-Creation-Date: 2026-09-15 18:05+0700\n"
+"POT-Creation-Date: 2026-10-21 17:05+0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -32,7 +32,7 @@ msgstr ""
 msgid "Lưu"
 msgstr ""
 
-#: src/settings/app_delay_dialog.cpp:76 src/settings/app_modes_tab.cpp:528
+#: src/settings/app_delay_dialog.cpp:76 src/settings/app_modes_tab.cpp:534
 msgid "Hủy"
 msgstr ""
 
@@ -44,7 +44,7 @@ msgstr ""
 msgid "X11"
 msgstr ""
 
-#: src/settings/app_delay_dialog.cpp:95 src/settings/app_modes_tab.cpp:60
+#: src/settings/app_delay_dialog.cpp:95 src/settings/app_modes_tab.cpp:61
 msgid "Tùy chỉnh"
 msgstr ""
 
@@ -99,73 +99,73 @@ msgstr ""
 msgid "Nhịp 0ms có thể mất chữ trên Wayland."
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:45
+#: src/settings/app_modes_tab.cpp:46
 msgid "Tìm ứng dụng…"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:48
+#: src/settings/app_modes_tab.cpp:49
 msgid ""
 "Cấu hình chế độ xuất riêng cho từng ứng dụng.\n"
 "Tên ứng dụng là tên file thực thi (vd: firefox, tabby, code).\n"
 "Gõ để lọc danh sách."
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:58
+#: src/settings/app_modes_tab.cpp:59
 msgid "Tên ứng dụng"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:59
+#: src/settings/app_modes_tab.cpp:60
 msgid "Chế độ xuất"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:61 src/settings/app_modes_tab.cpp:362
+#: src/settings/app_modes_tab.cpp:62 src/settings/app_modes_tab.cpp:367
 #: src/settings/dict_tab.cpp:190 src/settings/macro_tab.cpp:68
 msgid "Xóa"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:75
+#: src/settings/app_modes_tab.cpp:76
 msgid "Thêm ứng dụng"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:86
+#: src/settings/app_modes_tab.cpp:87
 msgid "Thanh địa chỉ Chromium:"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:88
+#: src/settings/app_modes_tab.cpp:89
 msgid ""
 "Chế độ gõ cho thanh địa chỉ Chrome/Edge/Brave.\n"
 "Không ảnh hưởng đến nội dung trang web."
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:97
+#: src/settings/app_modes_tab.cpp:99
 msgid "Không gõ tiếng Việt"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:312
+#: src/settings/app_modes_tab.cpp:314
 msgid "(IBus app)"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:355
+#: src/settings/app_modes_tab.cpp:360
 msgid "Chỉnh tay độ trễ chèn chữ (X11/Wayland) cho ứng dụng này."
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:508
+#: src/settings/app_modes_tab.cpp:513
 msgid "Thêm ứng dụng mới"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:516
+#: src/settings/app_modes_tab.cpp:521
 msgid "vd: firefox, tabby, code"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:517
+#: src/settings/app_modes_tab.cpp:522
 msgid "Tên ứng dụng:"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:524 src/settings/general_tab.cpp:43
+#: src/settings/app_modes_tab.cpp:530 src/settings/general_tab.cpp:45
 msgid "Chế độ xuất:"
 msgstr ""
 
-#: src/settings/app_modes_tab.cpp:527 src/settings/dict_tab.cpp:49
+#: src/settings/app_modes_tab.cpp:533 src/settings/dict_tab.cpp:49
 #: src/settings/dict_tab.cpp:114 src/settings/dict_tab.cpp:124
 #: src/settings/dict_tab.cpp:248 src/settings/dict_tab.cpp:269
 #: src/settings/dict_tab.cpp:283 src/settings/macro_tab.cpp:96
@@ -232,9 +232,9 @@ msgstr ""
 msgid "Hình ảnh (*.png *.svg)"
 msgstr ""
 
-#: src/settings/appearance_tab.cpp:347 src/settings/info_tab.cpp:561
-#: src/settings/info_tab.cpp:616 src/settings/info_tab.cpp:650
-#: src/settings/info_tab.cpp:660 src/settings/settings_window.cpp:195
+#: src/settings/appearance_tab.cpp:347 src/settings/info_tab.cpp:572
+#: src/settings/info_tab.cpp:627 src/settings/info_tab.cpp:661
+#: src/settings/info_tab.cpp:671 src/settings/settings_window.cpp:197
 msgid "Lỗi"
 msgstr ""
 
@@ -320,89 +320,94 @@ msgstr ""
 msgid "%1 từ (✦ = từ cá nhân)"
 msgstr ""
 
-#: src/settings/general_tab.cpp:36
+#: src/settings/general_tab.cpp:37
 msgid "Kiểu gõ:"
 msgstr ""
 
-#: src/settings/general_tab.cpp:60
+#: src/settings/general_tab.cpp:43 src/settings/general_tab.cpp:259
+#: src/settings/mode_choices.h:17
+msgid "Native (XTest/Libei)"
+msgstr ""
+
+#: src/settings/general_tab.cpp:62
 msgid "Bảng mã:"
 msgstr ""
 
-#: src/settings/general_tab.cpp:63
+#: src/settings/general_tab.cpp:65
 msgid "Tiếng Việt"
 msgstr ""
 
-#: src/settings/general_tab.cpp:64
+#: src/settings/general_tab.cpp:66
 msgid "English"
 msgstr ""
 
-#: src/settings/general_tab.cpp:65
+#: src/settings/general_tab.cpp:67
 msgid "Ngôn ngữ:"
 msgstr ""
 
-#: src/settings/general_tab.cpp:69
+#: src/settings/general_tab.cpp:71
 msgid "Nhấn tổ hợp phím để thay đổi, Backspace để gỡ bỏ"
 msgstr ""
 
-#: src/settings/general_tab.cpp:70
+#: src/settings/general_tab.cpp:72
 msgid "Phím chuyển bộ gõ:"
 msgstr ""
 
-#: src/settings/general_tab.cpp:74
+#: src/settings/general_tab.cpp:76
 msgid "Phím tắt để mở menu chế độ (mặc định: `), Backspace để gỡ bỏ"
 msgstr ""
 
-#: src/settings/general_tab.cpp:75
+#: src/settings/general_tab.cpp:77
 msgid "Phím menu chế độ:"
 msgstr ""
 
-#: src/settings/general_tab.cpp:91
+#: src/settings/general_tab.cpp:94
 msgid "Gõ w thành ư"
 msgstr ""
 
-#: src/settings/general_tab.cpp:93
+#: src/settings/general_tab.cpp:96
 msgid "Chỉ Telex: gõ phím w đơn lẻ sẽ ra chữ ư."
 msgstr ""
 
-#: src/settings/general_tab.cpp:97
+#: src/settings/general_tab.cpp:100
 msgid "Gõ ][ thành ư ơ"
 msgstr ""
 
-#: src/settings/general_tab.cpp:99
+#: src/settings/general_tab.cpp:102
 msgid "Chỉ Telex: gõ [ ra ơ và ] ra ư (giống UniKey)."
 msgstr ""
 
-#: src/settings/general_tab.cpp:103
+#: src/settings/general_tab.cpp:106
 msgid "Đánh dấu tự do"
 msgstr ""
 
-#: src/settings/general_tab.cpp:107
+#: src/settings/general_tab.cpp:110
 msgid "Tự động khôi phục"
 msgstr ""
 
-#: src/settings/general_tab.cpp:110
+#: src/settings/general_tab.cpp:113
 msgid "Dùng từ điển"
 msgstr ""
 
-#: src/settings/general_tab.cpp:112
+#: src/settings/general_tab.cpp:115
 msgid ""
 "Tự động khôi phục kiểm tra từ thật trong từ điển tiếng Việt thay vì luật âm "
 "tiết (khôi phục cả những âm tiết hợp lệ nhưng không phải từ, ví dụ \"lước\")."
 msgstr ""
 
-#: src/settings/general_tab.cpp:118
+#: src/settings/general_tab.cpp:121
 msgid "Hiện preedit"
 msgstr ""
 
-#: src/settings/general_tab.cpp:121
+#: src/settings/general_tab.cpp:124
 msgid "Ghi log debug"
 msgstr ""
 
-#: src/settings/general_tab.cpp:125
-msgid "Tự động tối ưu delay theo app"
+#: src/settings/general_tab.cpp:127
+msgid "Tối ưu delay theo ứng dụng"
 msgstr ""
 
-#: src/settings/general_tab.cpp:127
+#: src/settings/general_tab.cpp:129
 msgid ""
 "Học thời gian phản hồi thật của từng ứng dụng khi gõ (chế độ Uinput) rồi tự "
 "chọn độ trễ chèn chữ phù hợp cho lần gõ kế tiếp. Có hiệu lực từ lần chuyển "
@@ -411,11 +416,29 @@ msgid ""
 "quên dữ liệu đã học."
 msgstr ""
 
-#: src/settings/general_tab.cpp:141
-msgid "Bật A11y (trợ năng)"
+#: src/settings/general_tab.cpp:137
+msgid "Dùng Native thay Uinput"
 msgstr ""
 
-#: src/settings/general_tab.cpp:149
+#: src/settings/general_tab.cpp:139
+msgid "Khi bật, Native thay thế Uinput trong Auto và trong menu chọn mode."
+msgstr ""
+
+#: src/settings/general_tab.cpp:142
+msgid "Bật chế độ Native"
+msgstr ""
+
+#: src/settings/general_tab.cpp:144
+msgid ""
+"Cho phép dùng Native. Trên Wayland, Native có thể mở hộp thoại xin quyền từ "
+"portal."
+msgstr ""
+
+#: src/settings/general_tab.cpp:159
+msgid "Bật A11y"
+msgstr ""
+
+#: src/settings/general_tab.cpp:167
 msgid ""
 "SKey cần cây trợ năng (A11y) của trình duyệt để theo dõi con trỏ — cần cho "
 "Google Sheets (đổi ô), thanh địa chỉ và các ô nhập trên web. Khi bật, mỗi "
@@ -496,55 +519,59 @@ msgstr ""
 msgid "Đang kết nối tới GitHub..."
 msgstr ""
 
-#: src/settings/info_tab.cpp:269
+#: src/settings/info_tab.cpp:271
 msgid "Đang khởi động lại..."
 msgstr ""
 
-#: src/settings/info_tab.cpp:270
+#: src/settings/info_tab.cpp:272 src/settings/info_tab.cpp:472
 msgid "Đang khởi động lại Fcitx5..."
 msgstr ""
 
-#: src/settings/info_tab.cpp:280
+#: src/settings/info_tab.cpp:279
 msgid "Khởi động lại Fcitx5"
 msgstr ""
 
-#: src/settings/info_tab.cpp:281
+#: src/settings/info_tab.cpp:280
 msgid "✓ Fcitx5 đã được khởi động lại"
 msgstr ""
 
-#: src/settings/info_tab.cpp:291 src/settings/info_tab.cpp:363
-#: src/settings/info_tab.cpp:385 src/settings/info_tab.cpp:406
-#: src/settings/info_tab.cpp:427 src/settings/info_tab.cpp:457
-#: src/settings/info_tab.cpp:497
+#: src/settings/info_tab.cpp:281 src/settings/info_tab.cpp:478
+msgid "Không thể khởi động lại Fcitx5: %1"
+msgstr ""
+
+#: src/settings/info_tab.cpp:293 src/settings/info_tab.cpp:365
+#: src/settings/info_tab.cpp:387 src/settings/info_tab.cpp:408
+#: src/settings/info_tab.cpp:429 src/settings/info_tab.cpp:460
+#: src/settings/info_tab.cpp:508
 msgid "Kiểm tra cập nhật"
 msgstr ""
 
-#: src/settings/info_tab.cpp:308
+#: src/settings/info_tab.cpp:310
 msgid ""
 "Chuyển về bản Stable v%1\n"
 "(Phiên bản hiện tại: %2 - Dev)\n"
 msgstr ""
 
-#: src/settings/info_tab.cpp:311
+#: src/settings/info_tab.cpp:313
 msgid ""
 "Có phiên bản mới: v%1\n"
 "(Phiên bản hiện tại: %2)\n"
 msgstr ""
 
-#: src/settings/info_tab.cpp:316
+#: src/settings/info_tab.cpp:318
 msgid ""
 "\n"
 "Lưu ý: bản Stable này cũ hơn bản Dev đang dùng."
 msgstr ""
 
-#: src/settings/info_tab.cpp:320
+#: src/settings/info_tab.cpp:322
 msgid ""
 "\n"
 "Ghi chú:\n"
 "%1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:327
+#: src/settings/info_tab.cpp:329
 msgid ""
 "\n"
 "\n"
@@ -552,98 +579,98 @@ msgid ""
 "file từ GitHub)."
 msgstr ""
 
-#: src/settings/info_tab.cpp:331
+#: src/settings/info_tab.cpp:333
 msgid ""
 "\n"
 "Bản Dev sẽ pin flake input vào tag v%1 và ghi services.fcitx5-"
 "skey.devVersion vào configuration.nix."
 msgstr ""
 
-#: src/settings/info_tab.cpp:336
+#: src/settings/info_tab.cpp:338
 msgid ""
 "\n"
 "\n"
 "Không tìm thấy file cài đặt phù hợp. Vui lòng tải thủ công từ GitHub."
 msgstr ""
 
-#: src/settings/info_tab.cpp:338 src/settings/info_tab.cpp:346
+#: src/settings/info_tab.cpp:340 src/settings/info_tab.cpp:348
 msgid "Có bản cập nhật"
 msgstr ""
 
-#: src/settings/info_tab.cpp:345
+#: src/settings/info_tab.cpp:347
 msgid "Chuyển về bản Stable"
 msgstr ""
 
-#: src/settings/info_tab.cpp:349
+#: src/settings/info_tab.cpp:351
 msgid "Cập nhật ngay"
 msgstr ""
 
-#: src/settings/info_tab.cpp:351
+#: src/settings/info_tab.cpp:353
 msgid "Bỏ qua"
 msgstr ""
 
-#: src/settings/info_tab.cpp:357
+#: src/settings/info_tab.cpp:359
 msgid "Đang cập nhật..."
 msgstr ""
 
-#: src/settings/info_tab.cpp:373
+#: src/settings/info_tab.cpp:375
 msgid "Đang tải bản cập nhật..."
 msgstr ""
 
-#: src/settings/info_tab.cpp:392
+#: src/settings/info_tab.cpp:394
 msgid "✓ Bạn đang dùng bản Dev mới hơn hoặc bằng bản Stable hiện tại."
 msgstr ""
 
-#: src/settings/info_tab.cpp:399
+#: src/settings/info_tab.cpp:401
 msgid "✓ Bạn đang dùng phiên bản mới nhất."
 msgstr ""
 
-#: src/settings/info_tab.cpp:408
+#: src/settings/info_tab.cpp:410
 msgid "✗ Lỗi kiểm tra: %1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:417
+#: src/settings/info_tab.cpp:419
 msgid "Đang tải... %1%"
 msgstr ""
 
-#: src/settings/info_tab.cpp:422
+#: src/settings/info_tab.cpp:424
 msgid "Tải xong. Đang cài đặt..."
 msgstr ""
 
-#: src/settings/info_tab.cpp:429
+#: src/settings/info_tab.cpp:431
 msgid "✗ Lỗi tải: %1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:440
+#: src/settings/info_tab.cpp:443
 msgid ""
 "Đang pin bản Dev và build lại hệ thống bằng nixos-rebuild... (cần quyền root)"
 msgstr ""
 
-#: src/settings/info_tab.cpp:444
+#: src/settings/info_tab.cpp:447
 msgid "Đang build lại hệ thống bằng nixos-rebuild... (cần quyền root)"
 msgstr ""
 
-#: src/settings/info_tab.cpp:450
+#: src/settings/info_tab.cpp:453
 msgid "Đang cài đặt... (cần quyền root)"
-msgstr ""
-
-#: src/settings/info_tab.cpp:468
-msgid "✓ %1"
 msgstr ""
 
 #: src/settings/info_tab.cpp:471
 msgid "SKey - Phiên bản: %1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:489
+#: src/settings/info_tab.cpp:482
+msgid "✓ %1"
+msgstr ""
+
+#: src/settings/info_tab.cpp:500
 msgid "✗ %1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:501
+#: src/settings/info_tab.cpp:512
 msgid "Không thể cập nhật tự động — xem hướng dẫn."
 msgstr ""
 
-#: src/settings/info_tab.cpp:509
+#: src/settings/info_tab.cpp:520
 msgid ""
 "Không thể tự động cập nhật SKey trên NixOS.\n"
 "\n"
@@ -660,7 +687,7 @@ msgid ""
 "  cd /etc/nixos\n"
 msgstr ""
 
-#: src/settings/info_tab.cpp:522
+#: src/settings/info_tab.cpp:533
 msgid ""
 "  # thêm vào configuration.nix:\n"
 "  # services.fcitx5-skey.devVersion = \"%1\";\n"
@@ -670,7 +697,7 @@ msgid ""
 "\n"
 msgstr ""
 
-#: src/settings/info_tab.cpp:531
+#: src/settings/info_tab.cpp:542
 msgid ""
 "  sudo nix flake update skey\n"
 "  sudo nixos-rebuild switch --flake /etc/nixos\n"
@@ -678,90 +705,90 @@ msgid ""
 "\n"
 msgstr ""
 
-#: src/settings/info_tab.cpp:536
+#: src/settings/info_tab.cpp:547
 msgid ""
 "Xem chi tiết: https://github.com/collyn/skey/blob/main/packaging/nixos/"
 "README.md"
 msgstr ""
 
-#: src/settings/info_tab.cpp:540
+#: src/settings/info_tab.cpp:551
 msgid "Cần cập nhật thủ công"
 msgstr ""
 
-#: src/settings/info_tab.cpp:551
+#: src/settings/info_tab.cpp:562
 msgid "Lưu bản sao lưu cấu hình"
 msgstr ""
 
-#: src/settings/info_tab.cpp:553 src/settings/info_tab.cpp:644
+#: src/settings/info_tab.cpp:564 src/settings/info_tab.cpp:655
 msgid "Tarball (*.tar.gz)"
 msgstr ""
 
-#: src/settings/info_tab.cpp:562 src/settings/info_tab.cpp:651
+#: src/settings/info_tab.cpp:573 src/settings/info_tab.cpp:662
 msgid "Không thể tạo thư mục tạm."
 msgstr ""
 
-#: src/settings/info_tab.cpp:617
+#: src/settings/info_tab.cpp:628
 msgid ""
 "Không thể tạo tệp sao lưu:\n"
 "%1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:622
+#: src/settings/info_tab.cpp:633
 msgid ""
 "Cấu hình đã được lưu vào:\n"
 "%1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:625
+#: src/settings/info_tab.cpp:636
 msgid "Đã sao lưu (thiếu tệp)"
 msgstr ""
 
-#: src/settings/info_tab.cpp:626
+#: src/settings/info_tab.cpp:637
 msgid ""
 "\n"
 "\n"
 "Không tìm thấy (bỏ qua): %1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:629
+#: src/settings/info_tab.cpp:640
 msgid "Đã sao lưu"
 msgstr ""
 
-#: src/settings/info_tab.cpp:635
+#: src/settings/info_tab.cpp:646
 msgid "Khôi phục cấu hình"
 msgstr ""
 
-#: src/settings/info_tab.cpp:636
+#: src/settings/info_tab.cpp:647
 msgid ""
 "Khôi phục sẽ ghi đè toàn bộ cấu hình hiện tại.\n"
 "Bạn có chắc muốn tiếp tục?"
 msgstr ""
 
-#: src/settings/info_tab.cpp:643
+#: src/settings/info_tab.cpp:654
 msgid "Chọn tệp sao lưu để khôi phục"
 msgstr ""
 
-#: src/settings/info_tab.cpp:661
+#: src/settings/info_tab.cpp:672
 msgid ""
 "Không thể giải nén tệp sao lưu:\n"
 "%1"
 msgstr ""
 
-#: src/settings/info_tab.cpp:725
+#: src/settings/info_tab.cpp:736
 msgid "Cảnh báo"
 msgstr ""
 
-#: src/settings/info_tab.cpp:726
+#: src/settings/info_tab.cpp:737
 msgid ""
 "Một số tệp không thể khôi phục.\n"
 "Kiểm tra lại tệp sao lưu."
 msgstr ""
 
-#: src/settings/info_tab.cpp:733
+#: src/settings/info_tab.cpp:744
 msgid "Đã khôi phục"
 msgstr ""
 
-#: src/settings/info_tab.cpp:734
+#: src/settings/info_tab.cpp:745
 msgid "Cấu hình đã được khôi phục và áp dụng."
 msgstr ""
 
@@ -885,122 +912,112 @@ msgstr ""
 msgid "Skey - Tùy chỉnh"
 msgstr ""
 
-#: src/settings/settings_window.cpp:55
+#: src/settings/settings_window.cpp:57
 msgid "Chung"
 msgstr ""
 
-#: src/settings/settings_window.cpp:56
+#: src/settings/settings_window.cpp:58
 msgid "Apps"
 msgstr ""
 
-#: src/settings/settings_window.cpp:57
+#: src/settings/settings_window.cpp:59
 msgid "Gõ tắt"
 msgstr ""
 
-#: src/settings/settings_window.cpp:58
+#: src/settings/settings_window.cpp:60
 msgid "Từ điển"
 msgstr ""
 
-#: src/settings/settings_window.cpp:59
+#: src/settings/settings_window.cpp:61
 msgid "Icons"
 msgstr ""
 
-#: src/settings/settings_window.cpp:60
+#: src/settings/settings_window.cpp:62
 msgid "Info"
 msgstr ""
 
-#: src/settings/settings_window.cpp:70
+#: src/settings/settings_window.cpp:72
 msgid ""
 "Nhấn Áp dụng để thay đổi có hiệu lực (kênh cập nhật ở tab Info có hiệu lực "
 "ngay)"
 msgstr ""
 
-#: src/settings/settings_window.cpp:80
+#: src/settings/settings_window.cpp:82
 msgid "Áp dụng"
 msgstr ""
 
-#: src/settings/settings_window.cpp:84
+#: src/settings/settings_window.cpp:86
 msgid "Mặc định"
 msgstr ""
 
-#: src/settings/settings_window.cpp:87
+#: src/settings/settings_window.cpp:89
 msgid "Đóng"
 msgstr ""
 
-#: src/settings/settings_window.cpp:192
+#: src/settings/settings_window.cpp:194
 msgid "Đã áp dụng"
 msgstr ""
 
-#: src/settings/settings_window.cpp:193
+#: src/settings/settings_window.cpp:195
 msgid "Cấu hình đã được lưu và áp dụng."
 msgstr ""
 
-#: src/settings/settings_window.cpp:196
+#: src/settings/settings_window.cpp:198
 msgid "Không thể ghi file cấu hình."
 msgstr ""
 
-#: src/settings/settings_window.cpp:202
+#: src/settings/settings_window.cpp:204
 msgid "Khôi phục mặc định"
 msgstr ""
 
-#: src/settings/settings_window.cpp:203
+#: src/settings/settings_window.cpp:205
 msgid "Đặt lại tất cả cấu hình về mặc định?"
 msgstr ""
 
-#: src/settings/updater.cpp:221
+#: src/settings/updater.cpp:237
 msgid "Lỗi phân tích JSON: %1"
 msgstr ""
 
-#: src/settings/updater.cpp:232
+#: src/settings/updater.cpp:248
 msgid "Phản hồi không hợp lệ từ máy chủ."
 msgstr ""
 
-#: src/settings/updater.cpp:333
+#: src/settings/updater.cpp:349
 msgid "Không tìm thấy file cài đặt phù hợp cho %1."
 msgstr ""
 
-#: src/settings/updater.cpp:341
+#: src/settings/updater.cpp:357
 msgid "NixOS không dùng file cài đặt; dùng nixos-rebuild."
 msgstr ""
 
-#: src/settings/updater.cpp:386
+#: src/settings/updater.cpp:402
 msgid "Không thể ghi file: %1"
 msgstr ""
 
-#: src/settings/updater.cpp:452
-msgid "Cập nhật thành công! Fcitx5 đã được khởi động lại."
+#: src/settings/updater.cpp:466
+msgid "Cập nhật thành công!"
 msgstr ""
 
-#: src/settings/updater.cpp:457
+#: src/settings/updater.cpp:470
 msgid "Cài đặt thất bại (mã %1): %2"
 msgstr ""
 
-#: src/settings/updater.cpp:460 src/settings/updater.cpp:583
+#: src/settings/updater.cpp:473 src/settings/updater.cpp:596
 msgid "Người dùng đã hủy hoặc lỗi quyền."
 msgstr ""
 
-#: src/settings/updater.cpp:573
+#: src/settings/updater.cpp:586
 msgid "Cập nhật thành công! Hệ thống đã được build lại bằng nixos-rebuild."
 msgstr ""
 
-#: src/settings/updater.cpp:580
+#: src/settings/updater.cpp:593
 msgid "Cập nhật thất bại (mã %1): %2"
 msgstr ""
 
-msgid "Thay thế Uinput bằng Native"
-msgstr ""
-
-msgid "Khi bật, Native thay thế Uinput trong Auto và trong menu chọn mode."
-msgstr ""
-
+#: src/settings/mode_choices.h:15
 msgid "Native"
 msgstr ""
 
-msgid "Native (XTest/Libei)"
-msgstr ""
-
-msgid "Loại trừ ứng dụng"
-msgstr ""
-
-msgid "Output Mode: Native"
+#: src/settings/mode_choices.h:15
+msgid "Uinput"
 msgstr ""

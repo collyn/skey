@@ -56,6 +56,8 @@ FCITX_CONFIGURATION(
     // Keep the on-disk key for compatibility with existing installations.
     Option<bool> replaceUinputWithNative{this, "PreferLibeiAuto",
                                  _("Thay thế Uinput bằng Native"), false};
+    Option<bool> enableNative{this, "EnableNative",
+                               _("Bật chế độ Native (XTest/Libei)"), false};
     Option<bool> freeMarking{this, "FreeMarking", _("Đánh dấu tự do"), false};
     Option<bool> autoRestore{this, "AutoRestore",
                              _("Tự động khôi phục"), true};
