@@ -82,6 +82,7 @@ void GeneralTab::setupUI() {
   auto *checkFrame = new QFrame(this);
   checkFrame->setFrameStyle(QFrame::StyledPanel);
   auto *checkLayout = new QGridLayout(checkFrame);
+  checkLayout_ = checkLayout;
   checkLayout->setHorizontalSpacing(24);
   checkLayout->setVerticalSpacing(4);
   checkLayout->setContentsMargins(12, 12, 12, 12);
@@ -123,7 +124,7 @@ void GeneralTab::setupUI() {
   debugCheck_ = new QCheckBox(T("Ghi log debug"), checkFrame);
 
   autoDelayCheck_ =
-      new QCheckBox(T("Tự động tối ưu delay theo app"), checkFrame);
+      new QCheckBox(T("Tối ưu delay theo ứng dụng"), checkFrame);
   autoDelayCheck_->setToolTip(T(
       "Học thời gian phản hồi thật của từng ứng dụng khi gõ (chế độ Uinput) "
       "rồi tự chọn độ trễ chèn chữ phù hợp cho lần gõ kế tiếp. Có hiệu lực "
@@ -133,13 +134,20 @@ void GeneralTab::setupUI() {
   checkLayout->addWidget(autoDelayCheck_, 2, 1);
 
   replaceUinputWithNativeCheck_ =
-      new QCheckBox(T("Thay thế Uinput bằng Native"), checkFrame);
+      new QCheckBox(T("Dùng Native thay Uinput"), checkFrame);
   replaceUinputWithNativeCheck_->setToolTip(T(
       "Khi bật, Native thay thế Uinput trong Auto và trong menu chọn mode."));
-  checkLayout->addWidget(replaceUinputWithNativeCheck_, 3, 1);
-  checkLayout->addWidget(debugCheck_, 4, 1);
+  checkLayout->addWidget(replaceUinputWithNativeCheck_, 4, 1);
+  enableNativeCheck_ =
+      new QCheckBox(T("Bật chế độ Native"), checkFrame);
+  enableNativeCheck_->setToolTip(T(
+      "Cho phép dùng Native. Trên Wayland, Native có thể mở hộp thoại xin quyền từ portal."));
+  checkLayout->addWidget(enableNativeCheck_, 3, 1);
+  checkLayout->addWidget(debugCheck_, 5, 1);
   connect(replaceUinputWithNativeCheck_, &QCheckBox::toggled, this,
           [this](bool) { syncNativeReplacementChoice(); });
+  connect(enableNativeCheck_, &QCheckBox::toggled, this,
+          [this](bool) { syncNativeModeChoice(); });
 
   // A11y checkbox + info icon: SKey needs the browsers' a11y trees; the
   // checkbox toggles whether SKey auto-enables the system-wide
@@ -148,7 +156,7 @@ void GeneralTab::setupUI() {
   auto *a11yBoxLayout = new QHBoxLayout(a11yBox);
   a11yBoxLayout->setContentsMargins(0, 0, 0, 0);
   a11yBoxLayout->setSpacing(4);
-  a11yCheck_ = new QCheckBox(T("Bật A11y (trợ năng)"), a11yBox);
+  a11yCheck_ = new QCheckBox(T("Bật A11y"), a11yBox);
   a11yBoxLayout->addWidget(a11yCheck_);
   auto *a11yInfoButton = new QToolButton(a11yBox);
   a11yInfoButton->setIcon(a11yInfoButton->style()->standardIcon(
@@ -200,6 +208,7 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
 
   setCombo(inputMethodCombo_, cfg.inputMethod);
   replaceUinputWithNativeCheck_->setChecked(cfg.replaceUinputWithNative);
+  enableNativeCheck_->setChecked(cfg.enableNative);
   syncNativeReplacementChoice();
   setCombo(outputModeCombo_, cfg.replaceUinputWithNative && cfg.outputMode == "Uinput" ? "Native" : cfg.outputMode);
   setCombo(charsetCombo_, cfg.charset);
@@ -219,7 +228,36 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
 
 void GeneralTab::syncNativeReplacementChoice() {
   syncTransportChoices(outputModeCombo_, replaceUinputWithNativeCheck_->isChecked());
+  syncNativeModeChoice();
   emit nativeReplacementChanged(replaceUinputWithNativeCheck_->isChecked());
+}
+
+void GeneralTab::syncNativeModeChoice() {
+  const bool enabled = enableNativeCheck_->isChecked();
+  replaceUinputWithNativeCheck_->setVisible(enabled);
+  checkLayout_->removeWidget(replaceUinputWithNativeCheck_);
+  if (enabled)
+    checkLayout_->addWidget(replaceUinputWithNativeCheck_, 4, 1);
+  checkLayout_->removeWidget(debugCheck_);
+  checkLayout_->addWidget(debugCheck_, enabled ? 5 : 4, 1);
+  if (!enabled && replaceUinputWithNativeCheck_->isChecked()) {
+    const QSignalBlocker replaceBlocker(replaceUinputWithNativeCheck_);
+    replaceUinputWithNativeCheck_->setChecked(false);
+  }
+  const QString selected = outputModeCombo_->currentData().toString();
+  const QSignalBlocker blocker(outputModeCombo_);
+  int native = outputModeCombo_->findData(QStringLiteral("Native"));
+  if (!enabled && native >= 0) {
+    if (selected == QLatin1String("Native")) {
+      const int autoIndex = outputModeCombo_->findData(QStringLiteral("Auto"));
+      if (autoIndex >= 0) outputModeCombo_->setCurrentIndex(autoIndex);
+    }
+    outputModeCombo_->removeItem(native);
+  } else if (enabled && native < 0) {
+    const int preedit = outputModeCombo_->findData(QStringLiteral("Preedit"));
+    outputModeCombo_->insertItem(preedit >= 0 ? preedit : outputModeCombo_->count(),
+                                 T("Native (XTest/Libei)"), "Native");
+  }
 }
 
 SKeyConfig GeneralTab::collectConfig() const {
@@ -238,6 +276,7 @@ SKeyConfig GeneralTab::collectConfig() const {
   cfg.debug = debugCheck_->isChecked();
   cfg.autoDelay = autoDelayCheck_->isChecked();
   cfg.replaceUinputWithNative = replaceUinputWithNativeCheck_->isChecked();
+  cfg.enableNative = enableNativeCheck_->isChecked();
   cfg.autoEnableA11y = a11yCheck_->isChecked();
   cfg.modeMenuKey = modeMenuKeyEdit_->fcitx5Value();
   return cfg;

@@ -870,7 +870,8 @@ SKeyEngine::SKeyEngine(Instance *instance, bool initializeDesktop)
   if (!initializeDesktop) return;
   uinput_.start();
   reloadConfig();
-  native_.restoreSession();
+  if (config_.enableNative.value())
+    native_.restoreSession();
   setupTrayMenu();
 
   // Start AT-SPI2 monitor for Chromium address bar detection.
@@ -933,6 +934,7 @@ void SKeyEngine::setupTrayMenu() {
   omNative_.registerAction("skey-om-libei", &uiManager);
   omMenu_.addAction(&omNative_);
   omNative_.connect<SimpleAction::Activated>([this](InputContext *) {
+    if (!config_.enableNative.value()) return;
     setOutputMode(SKeyOutputMode::Native);
     native_.start();
   });
@@ -1130,19 +1132,23 @@ void SKeyEngine::updateMenuActions() {
     imAction_.setShortText(_("Input Method: Telex"));
   }
 
-  const bool replace = config_.replaceUinputWithNative.value();
+  const bool nativeEnabled = config_.enableNative.value();
+  const bool replace = nativeEnabled && config_.replaceUinputWithNative.value();
+  // The existing Uinput replacement option is itself an explicit opt-in to
+  // Native; keep it compatible while the dedicated switch covers direct mode.
   for (auto *action : omMenu_.actions()) omMenu_.removeAction(action);
   omMenu_.addAction(&omAuto_);
   omMenu_.addAction(replace ? &omNative_ : &omUinput_);
   omMenu_.addAction(&omSurrounding_);
   omMenu_.addAction(&omPreedit_);
-  if (!replace) omMenu_.addAction(&omNative_);
+  if (!replace && nativeEnabled) omMenu_.addAction(&omNative_);
+  if (replace && !nativeEnabled) omMenu_.removeAction(&omNative_);
   omNative_.setShortText(replace ? _("Native") : _("Native (XTest/Libei)"));
   auto om = config_.outputMode.value();
   if (replace && om == SKeyOutputMode::Uinput) om = SKeyOutputMode::Native;
   omAuto_.setChecked(om == SKeyOutputMode::Auto);
   omSurrounding_.setChecked(om == SKeyOutputMode::SurroundingText);
-  omNative_.setChecked(om == SKeyOutputMode::Native);
+  omNative_.setChecked(nativeEnabled && om == SKeyOutputMode::Native);
   omPreedit_.setChecked(om == SKeyOutputMode::Preedit);
   omUinput_.setChecked(om == SKeyOutputMode::Uinput);
 
@@ -1952,7 +1958,8 @@ SKeyOutputMode SKeyState::effectiveMode() const {
       modeCacheValid_ = true;
       return cachedMode_;
     case SKeyChromiumAddressBarMode::Native:
-      cachedMode_ = SKeyOutputMode::Native;
+      cachedMode_ = engine_->config().enableNative.value()
+                        ? SKeyOutputMode::Native : SKeyOutputMode::Uinput;
       modeCacheValid_ = true;
       return cachedMode_;
     case SKeyChromiumAddressBarMode::NoVietnamese:
@@ -1966,7 +1973,11 @@ SKeyOutputMode SKeyState::effectiveMode() const {
   if (resolved == SKeyOutputMode::Auto) {
     cachedMode_ = detectAutoMode();
   } else {
+    if (resolved == SKeyOutputMode::Native &&
+        !engine_->config().enableNative.value())
+      resolved = SKeyOutputMode::Uinput;
     cachedMode_ = resolved == SKeyOutputMode::Uinput && engine_->config().replaceUinputWithNative.value()
+                      && engine_->config().enableNative.value()
                       ? SKeyOutputMode::Native : resolved;
   }
   modeCacheValid_ = true;
@@ -1989,7 +2000,9 @@ bool SKeyState::useNativeBackspaceTransport() const {
   // Keep the output mode, but honor the configured replacement transport.
   return useNativeMode() ||
          (effectiveMode() == SKeyOutputMode::SurroundingText &&
-          engine_->config().replaceUinputWithNative.value() && inChromiumAddressBar());
+          engine_->config().replaceUinputWithNative.value() &&
+          engine_->config().enableNative.value() &&
+          inChromiumAddressBar());
 }
 
 bool SKeyState::useUinputMode() const {
@@ -2197,7 +2210,8 @@ void SKeyState::clearEngineBareCapsSticky() const {
 SKeyOutputMode SKeyState::detectAutoMode() const {
   const auto autoUinput = [this](SKeyOutputMode mode) {
     if (mode == SKeyOutputMode::Uinput &&
-        engine_->config().replaceUinputWithNative.value())
+        engine_->config().replaceUinputWithNative.value() &&
+        engine_->config().enableNative.value())
       return SKeyOutputMode::Native;
     return mode;
   };
@@ -7223,10 +7237,12 @@ void SKeyState::showModeMenu() {
   candList->setPageSize(6);
   candList->setLayoutHint(CandidateLayoutHint::Vertical);
 
-  const bool replaceUinput = engine_->config().replaceUinputWithNative.value();
+  const bool replaceUinput = engine_->config().enableNative.value() &&
+                             engine_->config().replaceUinputWithNative.value();
   int cursorIdx = 0;
   if (modeMenuForAddressBar_) {
     auto addressBarMode = engine_->config().chromiumAddressBarMode.value();
+    const bool nativeEnabled = engine_->config().enableNative.value();
     std::string autoLabel = "1. Auto (";
     autoLabel += outputModeName(effectiveMode());
     autoLabel += ")";
@@ -7241,7 +7257,7 @@ void SKeyState::showModeMenu() {
         SKeyChromiumAddressBarMode::SurroundingText));
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
         engine_, this, "4. Preedit", SKeyChromiumAddressBarMode::Preedit));
-    if (!replaceUinput) {
+    if (!replaceUinput && nativeEnabled) {
       candList->append(std::make_unique<AddressBarModeCandidateWord>(
           engine_, this, "5. Native", SKeyChromiumAddressBarMode::Native));
     }
@@ -7252,6 +7268,9 @@ void SKeyState::showModeMenu() {
     if (replaceUinput) {
       if (addressBarMode == SKeyChromiumAddressBarMode::Native) cursorIdx = 1;
       if (addressBarMode == SKeyChromiumAddressBarMode::NoVietnamese) cursorIdx = 4;
+    } else if (!nativeEnabled &&
+               addressBarMode == SKeyChromiumAddressBarMode::NoVietnamese) {
+      cursorIdx = 4;
     }
   } else {
     auto configured = hasAppModeOverride_
@@ -7270,7 +7289,7 @@ void SKeyState::showModeMenu() {
     candList->append(std::make_unique<ModeCandidateWord>(
         engine_, this, "4. Preedit", SKeyOutputMode::Preedit));
 
-    if (!replaceUinput)
+    if (!replaceUinput && engine_->config().enableNative.value())
       candList->append(std::make_unique<ModeCandidateWord>(
           engine_, this, std::string("5. ") + _("Native (XTest/Libei)"), SKeyOutputMode::Native));
     // When configured to Auto, cursor stays on Auto (0).

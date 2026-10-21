@@ -29,6 +29,7 @@ struct SKeyConfig {
     std::string inputMethod  = "Telex";       // "Telex", "VNI"
     std::string outputMode   = "Auto";        // "Auto", "Uinput", "Surrounding Text", "Preedit"
     bool replaceUinputWithNative = false; // Replace Uinput in Auto, explicit modes and menus
+    bool enableNative = false; // Allow Native (XTest/Libei), including its Wayland portal
     std::string charset      = "Unicode";     // "Unicode", "TCVN3 (ABC)", "VNI Windows"
     bool shortW       = false;   // Telex: bare 'w' → 'ư'
     bool bracketUO    = false;   // Telex: '[' → 'ơ', ']' → 'ư'
