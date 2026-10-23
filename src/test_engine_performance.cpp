@@ -420,6 +420,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome";
         state.cachedIsChromium_ = 1;
+        engine.config_.enableNative.setValue(true);
         for (bool replace : {false, true}) {
             engine.config_.replaceUinputWithNative.setValue(replace);
             for (bool address : {false, true}) {
@@ -462,6 +463,8 @@ struct EnginePerformanceTest {
                 }
             }
         }
+        engine.config_.enableNative.setValue(false);
+        engine.config_.replaceUinputWithNative.setValue(false);
     }
 
     // Model keys arriving at Fcitx BEFORE the application. Consuming a real

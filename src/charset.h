@@ -17,7 +17,8 @@ enum class Charset { Unicode, TCVN3, VNIWindows, WinCP1258, VIQR,
 /// This ensures commitString() always receives valid UTF-8 while the
 /// application, with the right font, renders the legacy charset correctly.
 ///
-/// Unicode is returned unchanged.
+/// Unicode and UnicodeDecomposed are returned as valid UTF-8.  Legacy
+/// charset bytes are wrapped as Latin-1 UTF-8 codepoints for commitText().
 std::string convertCharset(const std::string &utf8, Charset cs);
 
 } // namespace skey
