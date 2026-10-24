@@ -252,6 +252,9 @@ private:
     uint64_t cellSelectionSerial_ = 0;
     SheetsCellSnapshot sheetsCellSnapshot_;
     bool checkCellSelection();
+    // Blind-a11y surrounding-based field-change detection; shared by
+    // checkCellSelection() and surroundingTextChanged().
+    bool checkBlindFieldChange();
     // Shared reset body for cell-change detection (a11y path and the
     // blind caret-jump fallback).  Clears the in-flight word and all
     // pending uinput/deferred commit machinery.
@@ -260,6 +263,13 @@ private:
     // -1 = no baseline yet (fresh focus/IC).
     int lastKeyCaretX_ = -1;
     int lastKeyCaretY_ = -1;
+    // Surrounding text as of the previous key.  The blind-a11y fallback in
+    // checkCellSelection() only fires when the app reports DIFFERENT,
+    // non-empty text at cursor 0 — proof the caret moved to another field.
+    // Cleared in reset() so a fresh focus never compares against a foreign
+    // field's snapshot.
+    std::string lastKeySurrText_;
+    bool lastKeySurrValid_ = false;
     // CLOCK_MONOTONIC timestamp of the most recent activate() — the
     // first word after a focus switch gets extra settle headroom
     // (kFirstWordSettleUsec) because the renderer is still settling.
@@ -337,6 +347,25 @@ private:
     int expectedUinputBackspaces_ = 0;
     int seenUinputBackspaces_ = 0;
     int uinputPendingFinalLen_ = 0; // expected committedLen_ after BS+commit
+    // The composed word the in-flight Uinput replacement should delete —
+    // kept for the blind-mode miss repair (see finishUinputSettle).
+    std::string uinputDeletedWord_;
+    int uinputDeletedLen_ = 0;
+    // Miss-repair rounds for the current transaction.  Each round requires
+    // fresh miss evidence (a push still containing the word), so a lagging
+    // app cannot be over-deleted; the cap bounds the dropdown fight.
+    int uinputRepairCount_ = 0;
+    // False until the app's first surrounding push after a focus/cell
+    // change — the push proves the editor entered its IM context.  Until
+    // then the appends use the raw-key channel, which always delivers.
+    bool editorEntered_ = false;
+    // Post-commit verification (blind mode): after an unconfirmed deletion
+    // commit, watch for the app's push of the result — the old word intact
+    // with the committed text right after it proves the deletion failed.
+    bool uinputPostVerify_ = false;
+    std::string uinputCommittedText_;
+    int uinputPostFinalLen_ = 0;
+    uint64_t uinputPostVerifyDeadlineUsec_ = 0;
     // BS we injected via uinput but have not yet seen loop back through
     // fcitx5.  Late loopbacks (beyond the safety window) are swallowed
     // instead of being mistaken for fresh user backspaces.

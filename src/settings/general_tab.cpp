@@ -149,9 +149,9 @@ void GeneralTab::setupUI() {
   connect(enableNativeCheck_, &QCheckBox::toggled, this,
           [this](bool) { syncNativeModeChoice(); });
 
-  // A11y checkbox + info icon: SKey needs the browsers' a11y trees; the
-  // checkbox toggles whether SKey auto-enables the system-wide
-  // toolkit-accessibility key at startup (default: on).
+  // A11y checkbox + info icon: master switch for the AT-SPI monitor —
+  // off = no bus connection, cell-change detection falls back to
+  // surrounding text (default: on).
   auto *a11yBox = new QWidget(checkFrame);
   auto *a11yBoxLayout = new QHBoxLayout(a11yBox);
   a11yBoxLayout->setContentsMargins(0, 0, 0, 0);
@@ -166,10 +166,11 @@ void GeneralTab::setupUI() {
   const QString a11yHelp = T(
       "SKey cần cây trợ năng (A11y) của trình duyệt để theo dõi con trỏ — "
       "cần cho Google Sheets (đổi ô), thanh địa chỉ và các ô nhập trên web. "
-      "Khi bật, mỗi lần khởi động SKey sẽ kích hoạt khóa gsettings "
-      "\"toolkit-accessibility\" (toàn hệ thống) để Chrome/Chromium dựng cây "
-      "trợ năng — trình duyệt chỉ đọc khóa này lúc khởi động. Tắt nếu bạn tự "
-      "quản lý trợ năng của hệ thống.");
+      "Khi bật, SKey kết nối bus AT-SPI và mỗi lần khởi động sẽ kích hoạt "
+      "khóa gsettings \"toolkit-accessibility\" (toàn hệ thống) để "
+      "Chrome/Chromium dựng cây trợ năng — trình duyệt chỉ đọc khóa này lúc "
+      "khởi động. Khi tắt, SKey không dùng A11y mà chuyển sang nhận biết đổi "
+      "ô dự phòng bằng surrounding text (kém chính xác hơn ở Sheets).");
   a11yCheck_->setToolTip(a11yHelp);
   a11yInfoButton->setToolTip(a11yHelp);
   connect(a11yInfoButton, &QToolButton::clicked, this,

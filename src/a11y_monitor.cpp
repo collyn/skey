@@ -908,8 +908,21 @@ bool A11yMonitor::currentSheetsCell(std::string &identity, std::string &cell) {
         }
         dbus_error_free(&err);
     }
-    if (sheetsQueryBus_)
+    if (sheetsQueryBus_) {
+        const auto t0 = std::chrono::steady_clock::now();
         cell = queryText(sheetsQueryBus_, sender.c_str(), nameBox.c_str(), 30);
+        const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - t0)
+                            .count();
+        {
+            FILE *f = fopen("/tmp/skey_a11y.log", "a");
+            if (f) {
+                fprintf(f, "[main] Sheets name-box read: %lldms\n",
+                        static_cast<long long>(us / 1000));
+                fclose(f);
+            }
+        }
+    }
     return true;
 }
 

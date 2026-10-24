@@ -15,6 +15,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <thread>
 
 static void check(bool value, const char *message);
 
@@ -967,6 +968,431 @@ struct EnginePerformanceTest {
         state.resetForCellChange();
         state.uinputTestSend_ = {};
         close(sockets[1]);
+    }
+
+    static void blindA11yFieldReset(Instance &instance, bool uinput) {
+        // With the AT-SPI focus snapshot stale and a word in flight, a
+        // surrounding push that reports a DIFFERENT, non-empty text with
+        // cursor == anchor == 0 must reset the composition so the next key
+        // starts a new word instead of replacing text that is no longer at
+        // the caret.  The settled state of the current field — an empty
+        // field reporting "" at cursor 0, or the same text re-pushed after
+        // a click at its start — must never trip the fallback.
+        SKeyEngine engine(&instance, false);
+        engine.config_.outputMode.setValue(uinput ? SKeyOutputMode::Uinput
+                                                  : SKeyOutputMode::SurroundingText);
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();  // freshness 0 = blind
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome-stable");
+        input.setFocusGroup(&group);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome-stable";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedMode_ = uinput ? SKeyOutputMode::Uinput
+                                   : SKeyOutputMode::SurroundingText;
+        state.modeCacheValid_ = true;
+
+        auto seed = [&](const char *word) {
+            state.viet_.reset();
+            state.committedLen_ = 0;
+            for (const char *p = word; *p; ++p) {
+                // keyEvent() copies surrLastKeyUsec_ into surrPrevKeyUsec_ at
+                // entry, so the quiet window must be seeded there.
+                state.surrLastKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+                KeyEvent event(&input, Key(static_cast<KeySym>(*p)));
+                state.keyEvent(event);
+            }
+        };
+        auto push = [&](const std::string &text, unsigned cursor, unsigned anchor) {
+            input.surroundingText().setText(text, cursor, anchor);
+            input.updateSurroundingText();
+        };
+        auto key = [&](FcitxKeySym sym) {
+            state.surrLastKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+            KeyEvent event(&input, Key(sym));
+            state.keyEvent(event);
+        };
+        auto setBase = [&](const std::string &text) {
+            state.lastKeySurrText_ = text;
+            state.lastKeySurrValid_ = true;
+        };
+
+        // Typing a new word into an empty field: the field settles at ""
+        // (cursor 0) and must not look like a field change.
+        push("", 0, 0);
+        seed("cha");
+        check(state.viet_.getRawInput() == "cha",
+              "typing into an empty field does not trip the blind fallback");
+
+        // A late empty-field push after a real word (our own delete-to-empty
+        // catching up) is likewise not a field change.
+        push("chao", 4, 4);
+        seed("cha");
+        push("", 0, 0);
+        key(FcitxKey_d);
+        check(state.viet_.getRawInput() == "chad",
+              "an empty-field push after a real word is not a field change");
+
+        push("chao", 4, 4);
+        seed("cha");
+        push("nội dung ô mới", 0, 0);
+        key(FcitxKey_m);
+        check(state.viet_.getRawInput() == "m" && state.viet_.getComposed() == "m",
+              "blind fallback resets the word when a new field text is reported");
+
+        state.viet_.reset();
+        push("cha", 3, 3);
+        seed("cha");
+        key(FcitxKey_n);
+        check(state.viet_.getRawInput() == "chan",
+              "the same text keeps the word in flight");
+
+        // A push reproducing the composed word is our own commit's report
+        // (the field holds only the word), not a field change.
+        state.viet_.reset();
+        for (char ch : std::string("gox"))
+            state.viet_.processKey(ch);
+        state.lastKeySurrText_ = "";
+        state.lastKeySurrValid_ = true;
+        state.surrPrevKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+        push("gõ", 0, 0);
+        check(!state.checkBlindFieldChange() && state.viet_.getRawInput() == "gox",
+              "a push reproducing the composed word is the same field");
+
+        // FB-composer-style pushes: the app reports the whole text with
+        // cursor 0, growing at the real caret — the snapshot grows at the
+        // front and stays the same field.
+        state.viet_.reset();
+        state.committedLen_ = 0;
+        for (char ch : std::string("t"))
+            state.viet_.processKey(ch);
+        setBase("\n");
+        state.surrPrevKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+        push("t\n", 0, 0);
+        check(!state.checkBlindFieldChange() && state.viet_.getRawInput() == "t",
+              "a commit at the field start grows the text — same field");
+        state.viet_.reset();
+        for (char ch : std::string("th"))
+            state.viet_.processKey(ch);
+        push("tha\n", 0, 0);
+        check(!state.checkBlindFieldChange() && state.viet_.getRawInput() == "th",
+              "a push containing the composed word is the same field");
+
+        // The mid-word replacement transient: the deletion removed a middle
+        // character while both ends stay intact — same field.
+        setBase("tha\n");
+        push("th\n", 0, 0);
+        check(!state.checkBlindFieldChange(),
+              "a middle deletion keeps both ends — same field");
+        setBase("thât\n");
+        push("th\n", 0, 0);
+        check(!state.checkBlindFieldChange(),
+              "a longer middle deletion keeps both ends — same field");
+
+        // The unresolved-program race (empty name at activation) is the
+        // Chromium Wayland case too — the fallback must stay active.
+        {
+            TestInput unnamed(instance.inputContextManager(), "");
+            unnamed.setFocusGroup(&group);
+            auto &st = *unnamed.propertyFor(&engine.factory_);
+            st.cachedProgram_ = "";
+            st.cachedIsChromium_ = 0;
+            st.cachedIsFirefoxOrSnap_ = st.cachedIsTerminalApp_ = 0;
+            st.cachedMode_ = uinput ? SKeyOutputMode::Uinput
+                                    : SKeyOutputMode::SurroundingText;
+            st.modeCacheValid_ = true;
+            for (char ch : std::string("cha"))
+                st.viet_.processKey(ch);
+            st.lastKeySurrText_ = "chao";
+            st.lastKeySurrValid_ = true;
+            st.surrPrevKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+            unnamed.surroundingText().setText("ô mới", 0, 0);
+            unnamed.updateSurroundingText();
+            check(st.viet_.getRawInput().empty() && st.lastKeySurrText_ == "ô mới",
+                  "an unresolved program name still uses the blind fallback");
+        }
+
+        engine.a11yMonitor_->focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
+        seed("cha");
+        push("nội dung ô mới", 0, 0);
+        key(FcitxKey_b);
+        check(state.viet_.getRawInput() == "chab",
+              "a fresh AT-SPI snapshot disables the blind fallback");
+        engine.a11yMonitor_->focusSnapshotUsec_ = 0;
+
+        // Our own deletions strip characters before the caret: a same-field
+        // transient at cursor 0 (word at the field start) leaves the text
+        // after the caret — a suffix of the snapshot — and must not look
+        // like a field change.
+        state.viet_.reset();
+        push("cha", 3, 3);
+        seed("cha");
+        push("ha", 0, 0);
+        check(state.viet_.getRawInput() == "cha" &&
+                  !state.checkCellSelection(),
+              "a suffix text at cursor 0 is our own deletion, not a field change");
+
+        seed("cha");
+        state.surrPrevKeyUsec_ = now(CLOCK_MONOTONIC);
+        state.surrLastKeyUsec_ = now(CLOCK_MONOTONIC);
+        push("ô khác nữa", 0, 0);
+        {
+            KeyEvent event(&input, Key(FcitxKey_c));
+            state.keyEvent(event);
+        }
+        check(state.viet_.getRawInput() == "chac",
+              "an unsettled surrounding push does not trigger the blind fallback");
+
+        state.viet_.reset();
+        state.committedLen_ = 0;
+        state.surrLastKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+        state.uinputPendingFinalLen_ = 7;
+        push("ô khác nữa 2", 0, 0);
+        key(FcitxKey_m);
+        check(state.uinputPendingFinalLen_ == 7 && state.viet_.getRawInput() == "m",
+              "no word in flight leaves the field switch harmless");
+
+        // A click into another field produces no push of its own: the
+        // BS-forward of a stale-cache replacement lands in the new field and
+        // ITS push is the first evidence.  The push fires the reset
+        // immediately (surroundingTextChanged), cancels the deferred
+        // replacement and replays the trigger key as a fresh first letter.
+        if (!uinput) {
+            state.viet_.reset();
+            state.committedLen_ = 2;
+            for (char ch : std::string("gox"))
+                state.viet_.processKey(ch);
+            check(state.viet_.getComposed() == "gõ", "seed completed word");
+            setBase("go");
+            push("go", 2, 2);  // the tone-replace push never arrived
+            input.commits.clear();
+            key(FcitxKey_g);
+            push("ô mới", 0, 0);  // post-BS push of the newly focused field
+            auto stop = instance.eventLoop().addTimeEvent(
+                CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 60000, 1,
+                [&](EventSourceTime *, uint64_t) {
+                    instance.eventLoop().exit();
+                    return true;
+                });
+            instance.eventLoop().exec();
+            check(input.commits.empty() && state.viet_.getRawInput() == "g",
+                  "stale replacement is dropped and the trigger key restarts the word");
+        }
+
+        // Uinput replacements run entirely under the delete machinery; the
+        // new field's first push must still fire the reset mid-replacement
+        // and re-deliver the trigger key.  A pair-transform in an empty
+        // field deletes the WHOLE word, so its transient "" push must not
+        // look like a field change.
+        if (uinput) {
+            state.viet_.reset();
+            state.committedLen_ = 2;
+            for (char ch : std::string("dd"))
+                state.viet_.processKey(ch);
+            check(state.viet_.getComposed() == "đ", "seed pair word");
+            setBase("dd");
+            push("dd", 2, 2);
+            state.surrLastKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+            state.uinputDeleting_ = true;
+            state.pendingUinputCommit_ = "đ";
+            state.uinputPendingFinalLen_ = 1;
+            push("", 0, 0);
+            check(state.viet_.getRawInput() == "dd" &&
+                      state.uinputDeleting_ && state.pendingUinputCommit_ == "đ",
+                  "a pair-transform empty transient is not a field change");
+
+            state.viet_.reset();
+            state.committedLen_ = 4;
+            for (char ch : std::string("goxg"))
+                state.viet_.processKey(ch);
+            setBase("go");
+            push("go", 2, 2);
+            state.surrLastKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+            state.uinputDeleting_ = true;
+            state.pendingUinputCommit_ = "oxg";
+            state.uinputPendingFinalLen_ = 4;
+            push("", 0, 0);  // first push of the newly focused empty cell
+            check(state.viet_.getRawInput() == "g" &&
+                      state.pendingUinputCommit_.empty() &&
+                      !state.uinputDeleting_,
+                  "uinput machinery resets and re-delivers the trigger key on the new field push");
+
+            // Blind-mode miss repair: a fresh unchanged snapshot proves the
+            // first BS was consumed without deleting (autocomplete
+            // dropdown) — the transaction restarts with one BS plus anchor
+            // before committing.
+            {
+                state.viet_.reset();
+                state.committedLen_ = 2;
+                for (char ch : std::string("gox"))
+                    state.viet_.processKey(ch);
+                setBase("go");
+                push("go", 2, 2);
+                state.uinputDeletedWord_ = "go";
+                state.pendingUinputCommit_ = "õ";
+                state.uinputPendingFinalLen_ = 2;
+                state.uinputDeleting_ = true;
+                state.uinputSettling_ = true;
+                state.uinputRepairCount_ = 0;
+                state.uinputDeleteAck_.start("go", 2, 2, "go", 1, now(CLOCK_MONOTONIC));
+                std::this_thread::sleep_for(std::chrono::milliseconds(15));
+                push("go", 2, 2);  // unchanged snapshot after the echo window
+                check(state.uinputDeleteAck_.missed(),
+                      "an unchanged snapshot marks the deletion missed");
+                int sockets[2];
+                check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+                      "isolate blind repair transport");
+                captureUinput(state, sockets[0]);
+                state.finishUinputSettle(0, 0);  // ack deadline, then repair
+                auto drive = instance.eventLoop().addTimeEvent(
+                    CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 120000, 1,
+                    [&](EventSourceTime *, uint64_t) {
+                        uint32_t request[4] = {};
+                        check(recv(sockets[1], request, sizeof(request), MSG_DONTWAIT) == sizeof(request) &&
+                                  request[0] == 2,
+                              "a missed deletion restarts the transaction with one BS plus anchor");
+                        input.commits.clear();
+                        KeyEvent bs1(&input, Key(FcitxKey_BackSpace));
+                        state.keyEvent(bs1);
+                        KeyEvent bs2(&input, Key(FcitxKey_BackSpace));
+                        state.keyEvent(bs2);
+                        return false;
+                    });
+                auto stop = instance.eventLoop().addTimeEvent(
+                    CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 250000, 1,
+                    [&](EventSourceTime *, uint64_t) {
+                        check(input.commits == std::vector<std::string>{"õ"},
+                              "the repair commits after the restarted deletion");
+                        instance.eventLoop().exit();
+                        return true;
+                    });
+                instance.eventLoop().exec();
+                state.uinputTestSend_ = {};
+                close(sockets[1]);
+                state.uinputSettling_ = false;
+                state.uinputDeleting_ = false;
+                state.pendingUinputCommit_.clear();
+            }
+
+            // A late pre-BS echo can re-deliver the unchanged snapshot —
+            // once the real post-delete state arrives, the miss must be
+            // discarded and the commit proceed without a repair BS.
+            {
+                state.viet_.reset();
+                state.committedLen_ = 2;
+                for (char ch : std::string("gox"))
+                    state.viet_.processKey(ch);
+                setBase("go");
+                push("go", 2, 2);
+                state.uinputDeletedWord_ = "go";
+                state.pendingUinputCommit_ = "õ";
+                state.uinputPendingFinalLen_ = 2;
+                state.uinputDeleting_ = true;
+                state.uinputSettling_ = true;
+                state.uinputRepairCount_ = 0;
+                state.uinputDeleteAck_.start("go", 2, 2, "go", 1, now(CLOCK_MONOTONIC));
+                std::this_thread::sleep_for(std::chrono::milliseconds(15));
+                push("go", 2, 2);  // the echo arrives after the echo window
+                check(state.uinputDeleteAck_.missed(),
+                      "the echo marks a miss before any acknowledgement");
+                push("g", 1, 1);   // the real post-delete state arrives
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));  // past the ack guard
+                int sockets[2];
+                check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+                      "isolate echo-miss transport");
+                captureUinput(state, sockets[0]);
+                input.commits.clear();
+                state.finishUinputSettle(0, 0);  // synchronous — the ack guard is past
+                uint32_t request[4] = {};
+                check(recv(sockets[1], request, sizeof(request), MSG_DONTWAIT) < 0 &&
+                          errno == EAGAIN,
+                      "an echo miss commits without a repair BS");
+                check(input.commits == std::vector<std::string>{"õ"},
+                      "the echo-miss path still commits");
+                state.uinputTestSend_ = {};
+                close(sockets[1]);
+                state.uinputSettling_ = false;
+                state.uinputDeleting_ = false;
+                state.pendingUinputCommit_.clear();
+            }
+
+            // Autofill selection: the caret/anchor enclose the suggestion,
+            // and the dropdown dismissal can leave the word's tail intact
+            // ("google.com" selected → "go").  A fresh snapshot still
+            // containing the word must trigger the same repair.
+            {
+                state.viet_.reset();
+                state.committedLen_ = 2;
+                for (char ch : std::string("gox"))
+                    state.viet_.processKey(ch);
+                setBase("google.com");
+                push("google.com", 2, 10);
+                state.uinputDeletedWord_ = "go";
+                state.pendingUinputCommit_ = "õ";
+                state.uinputPendingFinalLen_ = 2;
+                state.uinputDeleting_ = true;
+                state.uinputSettling_ = true;
+                state.uinputRepairCount_ = 0;
+                state.uinputDeleteAck_.start("google.com", 2, 10, "go", 1,
+                                             now(CLOCK_MONOTONIC) - 100000);
+                std::this_thread::sleep_for(std::chrono::milliseconds(15));
+                push("go", 2, 2);  // the suggestion vanished, the tail intact
+                check(state.uinputDeleteAck_.missed(),
+                      "a fresh snapshot still containing the word marks a miss");
+                int sockets[2];
+                check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+                      "isolate selection-miss transport");
+                captureUinput(state, sockets[0]);
+                state.finishUinputSettle(0, 0);  // synchronous — the deadline is past
+                uint32_t request[4] = {};
+                check(recv(sockets[1], request, sizeof(request), MSG_DONTWAIT) == sizeof(request) &&
+                          request[0] == 2,
+                      "a selection-consumed deletion restarts with one BS plus anchor");
+                state.uinputTestSend_ = {};
+                close(sockets[1]);
+                state.uinputSettling_ = false;
+                state.uinputDeleting_ = false;
+                state.pendingUinputCommit_.clear();
+            }
+
+            // Post-commit verification: the app's push of the result ending
+            // with the intact word plus the committed text proves the
+            // deletion failed silently — restart the transaction.
+            {
+                state.viet_.reset();
+                state.committedLen_ = 2;
+                for (char ch : std::string("gox"))
+                    state.viet_.processKey(ch);
+                setBase("go");
+                state.surrPrevKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+                state.uinputDeletedWord_ = "go";
+                state.uinputDeletedLen_ = 1;
+                state.uinputPostVerify_ = true;
+                state.uinputCommittedText_ = "õ";
+                state.uinputPostFinalLen_ = 2;
+                state.uinputPostVerifyDeadlineUsec_ = now(CLOCK_MONOTONIC) + 600000;
+                int sockets[2];
+                check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+                      "isolate post-verify transport");
+                captureUinput(state, sockets[0]);
+                push("goõ", 2, 2);  // the silent-dropdown result
+                uint32_t request[4] = {};
+                check(recv(sockets[1], request, sizeof(request), MSG_DONTWAIT) == sizeof(request) &&
+                          request[0] == 3 &&
+                          state.pendingUinputCommit_ == "õ",
+                      "a silent deletion failure repairs after the committed push");
+                state.uinputTestSend_ = {};
+                close(sockets[1]);
+                state.uinputPostVerify_ = false;
+                state.uinputDeleting_ = false;
+                state.pendingUinputCommit_.clear();
+                state.expectedUinputBackspaces_ = 0;
+                state.seenUinputBackspaces_ = 0;
+            }
+        }
+
+        state.resetForCellChange();
     }
 
     static void chromiumCompositionCommit(Instance &instance, bool wayland,
@@ -2241,6 +2667,11 @@ int main(int argc, char **argv) {
     // active-window origin or DPI. Live X11 geometry is tested separately.
     unsetenv("DISPLAY");
     unsetenv("WAYLAND_DISPLAY");
+
+    for (bool uinput : {false, true}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::blindA11yFieldReset(instance, uinput);
+    }
     for (bool settling : {false, true}) {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::uinputPendingTransport(instance, settling);
@@ -2508,6 +2939,10 @@ int main(int argc, char **argv) {
     {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::boundedRepair(instance);
+    }
+    for (bool uinput : {false, true}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::blindA11yFieldReset(instance, uinput);
     }
     std::cout << "Engine performance: " << checks << " checks passed\n";
 }
