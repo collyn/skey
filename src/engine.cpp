@@ -3144,6 +3144,12 @@ bool SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
   const bool blindBrowser = (isChromiumCached() || isFirefoxOrSnap()) &&
       !isTerminalAppCached() &&
       (!monitor || !monitor->isFocusSnapshotFresh(5000000));
+  if (uinputAckUnavailable_ &&
+      now(CLOCK_MONOTONIC) >= uinputAckUnavailableDeadlineUsec_) {
+    // Retry the ack after the backoff — a single slow push must not leave
+    // every later replacement unverified.
+    uinputAckUnavailable_ = false;
+  }
   if (!uinputAckUnavailable_ && flags == 0 && count > 1 &&
       ((observeDeletion && *engine_->config().autoDelay &&
         appDelayOverrideResolved().preCommitMs < 0) || blindBrowser)) {
@@ -3679,6 +3685,8 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
       // Don't charge the acknowledgement timeout on every key when this
       // input doesn't publish usable updates. Retry on the next activation.
       uinputAckUnavailable_ = true;
+      uinputAckUnavailableDeadlineUsec_ =
+          now(CLOCK_MONOTONIC) + 15000000;
     }
     SKEY_DEBUG() << "Uinput: deletion "
                  << (uinputDeleteAck_.acknowledged() ? "acknowledged" : "unconfirmed at deadline")

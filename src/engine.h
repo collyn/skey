@@ -79,6 +79,10 @@ private:
     bool uinputSettling_ = false;
     skey::UinputDeleteAck uinputDeleteAck_;
     bool uinputAckUnavailable_ = false;
+    // The app's pushes were too slow for the ack once — stop arming it for
+    // a while, then retry (GNOME's compositor is slower than KDE's; a
+    // permanent flag would leave every later replacement unverified).
+    uint64_t uinputAckUnavailableDeadlineUsec_ = 0;
     uint64_t uinputSettleStartedAt_ = 0;
     bool replayingSettledKeys_ = false;
     struct SettledKey { Key key; bool release; int time; };
