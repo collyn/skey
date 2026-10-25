@@ -329,6 +329,21 @@ static constexpr int kSheetsCaretJumpY = 16;
 // handles it.
 static constexpr uint64_t kSurrVerifyQuietUsec = 250000;
 
+// GNOME's mutter relay makes the surrounding pushes bursty and one edit
+// behind — the environment gets its own handling, the others stay on the
+// fast verified path.
+static bool gnomeDesktop() {
+  static int cached = -1;
+  if (cached < 0) {
+    const char *desktop = getenv("XDG_CURRENT_DESKTOP");
+    cached = (desktop &&
+              std::string(desktop).find("GNOME") != std::string::npos)
+                 ? 1
+                 : 0;
+  }
+  return cached == 1;
+}
+
 static bool isUtf8ContinuationByte(char ch) {
   return (static_cast<unsigned char>(ch) & 0xC0) == 0x80;
 }
@@ -1666,11 +1681,28 @@ bool SKeyState::commitText(const std::string &utf8, bool uinputReplacement) {
   if (utf8.empty())
     return false;
   const uint64_t commitStartedAt = now(CLOCK_MONOTONIC);
+  // The cell-change boundary check below resets the model — snapshot the
+  // trigger key first so a discarded first letter can be re-delivered into
+  // the new field (the caret-rect evidence often arrives mid-key, after
+  // the letter's commit already went out).
+  const std::string triggerKey =
+      viet_.getRawInput().empty() ? std::string()
+                                  : std::string(1, viet_.getRawInput().back());
   // A replacement timer may fire after a click but before the next key.
   // Never insert the previous cell's pending text into the newly selected
   // cell. Use the same synchronous boundary check as keyEvent().
   if (checkCellSelection()) {
     SKEY_DEBUG() << "CellSelection: discard stale commit";
+    // The discarded commit was the first letter the user just typed into
+    // the new field — re-deliver it there instead of losing it ("chào" →
+    // "hào").
+    if (isWayland() && (isChromiumCached() || isFirefoxOrSnap()) &&
+        !triggerKey.empty() && triggerKey == utf8) {
+      SKEY_DEBUG() << "CellSelection: re-deliver trigger key '" << triggerKey
+                   << "'";
+      commitText(triggerKey);
+      committedLen_ = 1;
+    }
     return false;
   }
   finishSurroundingMeasurement();
@@ -3150,18 +3182,40 @@ bool SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
     // every later replacement unverified.
     uinputAckUnavailable_ = false;
   }
-  if (!uinputAckUnavailable_ && flags == 0 && count > 1 &&
-      ((observeDeletion && *engine_->config().autoDelay &&
-        appDelayOverrideResolved().preCommitMs < 0) || blindBrowser)) {
-    const auto &surr = ic_->surroundingText();
-    if (surr.isValid()) {
-      // The blind path's ack wait is the per-key latency floor: the app's
-      // confirmation normally lands within ~10ms, so a 30ms deadline keeps
-      // the silent case snappy while still catching the deletion evidence.
-      uinputDeleteAck_.start(surr.text(), surr.cursor(), surr.anchor(),
-                             oldWord, count - 1, bsSentAt_,
-                             blindBrowser ? 30000
-                                          : skey::UinputDeleteAck::timeoutUsec);
+  // GNOME: the pair-transform / first-tone replace (the word's first
+  // transform) is the race-prone one — arm the ack for it only (one wait
+  // per word).  The later tone replaces of the same word commit fast; the
+  // post-commit verification remains the safety net.
+  if (gnomeDesktop()) {
+    if (committedLen_ <= 2 && flags == 0 && count > 1 &&
+        !uinputAckUnavailable_) {
+      const auto &surr = ic_->surroundingText();
+      if (surr.isValid()) {
+        // GNOME's relay can take beyond 80ms on a loaded laptop — give the
+        // once-per-word wait a wider bound so the confirmation usually
+        // lands instead of falling to the repair.
+        uinputDeleteAck_.start(surr.text(), surr.cursor(), surr.anchor(),
+                               oldWord, count - 1, bsSentAt_, 150000);
+      }
+    }
+  } else {
+    // On the fast compositors the ack confirms within ~10ms, so the
+    // browser family arms it for every replacement regardless of the
+    // learned-delay override — the pair-transform race (dd→đ) is real
+    // there too, just rare.
+    const bool waylandFamily = isWayland() &&
+        (isChromiumCached() || isFirefoxOrSnap()) && !isTerminalAppCached();
+    if (!uinputAckUnavailable_ && flags == 0 && count > 1 &&
+        ((observeDeletion && *engine_->config().autoDelay &&
+          appDelayOverrideResolved().preCommitMs < 0) || blindBrowser ||
+         waylandFamily)) {
+      const auto &surr = ic_->surroundingText();
+      if (surr.isValid()) {
+        uinputDeleteAck_.start(surr.text(), surr.cursor(), surr.anchor(),
+                               oldWord, count - 1, bsSentAt_,
+                               blindBrowser ? 30000
+                                            : skey::UinputDeleteAck::timeoutUsec);
+      }
     }
   }
   if (useNativeBackspaceTransport()) {
@@ -3682,11 +3736,17 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
     }
     const auto waited = now(CLOCK_MONOTONIC) - uinputSettleStartedAt_;
     if (!uinputDeleteAck_.acknowledged()) {
-      // Don't charge the acknowledgement timeout on every key when this
-      // input doesn't publish usable updates. Retry on the next activation.
-      uinputAckUnavailable_ = true;
-      uinputAckUnavailableDeadlineUsec_ =
-          now(CLOCK_MONOTONIC) + 15000000;
+      // The browser family on Wayland keeps the ack armed every word — a
+      // slow relay must not disarm it for the next 15 seconds (that
+      // produced the alternating correct/wrong retype rounds).  The
+      // backoff stays for the inputs that publish nothing at all.
+      const bool familyKeepArmed = isWayland() &&
+          (isChromiumCached() || isFirefoxOrSnap()) && !isTerminalAppCached();
+      if (!familyKeepArmed) {
+        uinputAckUnavailable_ = true;
+        uinputAckUnavailableDeadlineUsec_ =
+            now(CLOCK_MONOTONIC) + 15000000;
+      }
     }
     SKEY_DEBUG() << "Uinput: deletion "
                  << (uinputDeleteAck_.acknowledged() ? "acknowledged" : "unconfirmed at deadline")
@@ -3749,7 +3809,7 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
   // evidence — the old word intact with the committed text right after it
   // proves the deletion failed (see surroundingTextChanged).
   const bool postVerifyBlind = blindBrowser && !uinputDeletedWord_.empty() &&
-      uinputDeletedLen_ > 0;
+      uinputDeletedLen_ > 0 && !uinputPostVerifyDone_;
   if (!text.empty()) {
     if (isFirefoxOrSnap()) uinputKeyForwarded_ = true;
     const auto &surrounding = ic_->surroundingText();
@@ -3759,6 +3819,7 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
                  << " anchor=" << surrounding.anchor();
     if (!commitText(text, true)) return;
     if (postVerifyBlind) {
+      uinputPostVerifyDone_ = true;
       uinputPostVerify_ = true;
       uinputCommittedText_ = text;
       uinputPostFinalLen_ = uinputPendingFinalLen_;
@@ -4422,6 +4483,7 @@ void SKeyState::resetForCellChange() {
   uinputDeletedLen_ = 0;
   uinputRepairCount_ = 0;
   uinputPostVerify_ = false;
+  uinputPostVerifyDone_ = false;
   uinputCommittedText_.clear();
   uinputPostFinalLen_ = 0;
   uinputPostVerifyDeadlineUsec_ = 0;
@@ -5023,6 +5085,13 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
             viet_.getRawInput().empty()
                 ? 0
                 : static_cast<int>(utf8::length(viet_.getComposed()));
+        if (viet_.getRawInput().empty()) {
+          // The word is fully deleted — the retype starts as a fresh
+          // word, so its first letter uses the raw-key channel again
+          // (the commit channel raced on the retype rounds).
+          editorEntered_ = false;
+          uinputPostVerifyDone_ = false;
+        }
         SKEY_DEBUG() << "SurrBS: uinput compose -> '" << viet_.getComposed()
                      << "' len=" << committedLen_;
         return; // pass through raw BS (do NOT filter)
@@ -5049,6 +5118,13 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       committedLen_ = viet_.getRawInput().empty()
                           ? 0
                           : static_cast<int>(utf8::length(viet_.getComposed()));
+      if (viet_.getRawInput().empty()) {
+        // The word is fully deleted — the retype starts as a fresh word,
+        // so its first letter uses the raw-key channel again (the commit
+        // channel raced on the retype rounds).
+        editorEntered_ = false;
+        uinputPostVerifyDone_ = false;
+      }
       SKEY_DEBUG() << "SurrBS compose -> '" << viet_.getComposed()
                    << "' len=" << committedLen_;
       if (forwardUserBackspace()) {
@@ -5149,6 +5225,11 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           committedLen_ = 0;
           clearLastWord();
           reclaimReady_ = false;
+          // The whole word is gone — the retype starts as a fresh word:
+          // its first letter uses the raw-key channel again (the commit
+          // channel raced on the retype rounds).
+          editorEntered_ = false;
+          uinputPostVerifyDone_ = false;
           return;
         }
         // X11: keep the serialized synthetic-key path with the exact range.
@@ -5983,10 +6064,14 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               // drops the commits instead, while the keyboard channel
               // always delivers.
               {
+                const auto &appendSurr = ic_->surroundingText();
+                const bool appendSelection =
+                    appendSurr.isValid() &&
+                    appendSurr.anchor() != appendSurr.cursor();
                 if (isWayland() &&
                     (isOfficeSuiteApp(appProgram()) ||
                      ((isChromiumCached() || isFirefoxOrSnap()) &&
-                      editorEntered_))) {
+                      editorEntered_ && !appendSelection))) {
                   keyEvent.filterAndAccept();
                   SKEY_DEBUG() << "Uinput: commit append '" << keyUtf8
                                << "' [office-or-blind]";
@@ -7178,9 +7263,18 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           !firefoxDocsUinput) {
         const auto &surrounding = ic_->surroundingText();
         bool cacheStale = !surroundingCacheEndsWith(surrounding, oldComposed);
-        if (!surrounding.isValid() ||
-            surrounding.cursor() < static_cast<unsigned int>(deleteLen) ||
-            cacheStale) {
+        // On Wayland the forwardKey fallback is dropped by the apps
+        // anyway (the synthetic keys never reach them), so a stale cache
+        // rides the native delete instead: the text-input protocol is
+        // ordered by the compositor and the app applies it at its REAL
+        // cursor — correct when the caret has not moved (the lag case).
+        // The caret-moved case is caught by the surrounding-based reset
+        // before the replacement.
+        const bool staleButWayland = cacheStale && isWayland();
+        if ((!surrounding.isValid() ||
+             surrounding.cursor() < static_cast<unsigned int>(deleteLen) ||
+             cacheStale) &&
+            !staleButWayland) {
           // SurroundingText capability was advertised but the runtime
           // data is invalid, missing, or stale (does not end with the text
           // we are replacing).  Fall back to forwardKey/Uinput for this

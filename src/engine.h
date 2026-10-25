@@ -367,6 +367,9 @@ private:
     // commit, watch for the app's push of the result — the old word intact
     // with the committed text right after it proves the deletion failed.
     bool uinputPostVerify_ = false;
+    // One-shot gate for the post-commit repair (no-verify variant): a
+    // transaction gets at most one repair round.
+    bool uinputPostVerifyDone_ = false;
     std::string uinputCommittedText_;
     int uinputPostFinalLen_ = 0;
     uint64_t uinputPostVerifyDeadlineUsec_ = 0;
