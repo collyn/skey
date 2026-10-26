@@ -1,0 +1,48 @@
+name: NixOS Sync Engine Hashes
+
+# When SKEY_ENGINE_VERSION in CMakeLists.txt changes, the two skey-engine
+# fetch hashes in packaging/nixos/default.nix go stale.  This workflow runs
+# the package's updateScript and commits the refreshed hashes back to the
+# branch, so a version bump never needs a manual hash update (issue #43).
+#
+# No loop: the sync commit only touches packaging/nixos/default.nix, which
+# is not in the paths filter below.
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'CMakeLists.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+
+      - name: Run engine hash updateScript
+        run: |
+          nix build .#fcitx5-skey.updateScript
+          ./result/bin/fcitx5-skey-update-engine-hashes "$GITHUB_WORKSPACE/packaging/nixos/default.nix"
+
+      - name: Commit refreshed hashes
+        run: |
+          if git diff --quiet -- packaging/nixos/default.nix; then
+            echo "hashes already in sync, nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add packaging/nixos/default.nix
+          git commit -m "nixos: sync skey-engine hashes"
+          git push
