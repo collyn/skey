@@ -3254,7 +3254,10 @@ bool SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
     return false; // let late events drain before accepting another transaction
   }
   // flags bit 0 dismisses autocomplete with Escape before Backspace.
-  uint32_t paceUsec = 1000;
+  // Mutter's omnibox must process autocomplete dismissal before the next
+  // deletion. Keep the existing 1ms pace on the other desktop paths.
+  uint32_t paceUsec =
+      appProgram() == "gnome-shell" && gnomeOmniboxCaret() ? 5000 : 1000;
   if (const skey::AppDelayOverride *ov =
           engine_->appDelayOverride(appProgram(), isWayland());
       ov && ov->paceMs >= 0) {
@@ -6234,16 +6237,15 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                   commitText(keyUtf8);
                   return;
                 }
-                // Select transport (GNOME omnibox or the explicit Select
-                // address-bar mode): post-replacement raw appends can
-                // vanish in the renderer ("chào" → "chà") or land under a
-                // still-latched Shift ("chO"); the commit channel always
-                // delivers plain text.  The relay's surrounding is stale
-                // garbage, so no selection guard here.  Rapid
-                // back-to-back commits (the settle commit + this append,
-                // especially a buffered-key replay) drop the first one
-                // in the omnibox ("chào" → "cho") — pace them.
-                if (selectTransportActive() && editorEntered_) {
+                // After replacement, raw appends can disappear in the GNOME
+                // relay or inherit Shift from Select transport. Use commits
+                // and pace them so Chrome processes the replacement first,
+                // including when replaying a buffered key. The relay's stale
+                // selection snapshot cannot guard this path.
+                const bool gnomeRelayOmnibox =
+                    appProgram() == "gnome-shell" && gnomeOmniboxCaret();
+                if ((selectTransportActive() || gnomeRelayOmnibox) &&
+                    editorEntered_) {
                   keyEvent.filterAndAccept();
                   SKEY_DEBUG() << "Uinput: commit append '" << keyUtf8
                                << "' [gnome-omnibox]";
@@ -6339,7 +6341,32 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               // byte stream stays ordered and the shell sees the deletions
               // before the replacement text.  The adaptive sleep is cheap
               // on kernel 7.0's fast loopbacks.
-              if (!sendBackspaceUinput(deleteLen + 1, 0, oldComposed)) {
+              int realBackspaces = deleteLen;
+              bool dismissGnomeAutofill = false;
+              if (appProgram() == "gnome-shell" && gnomeOmniboxCaret() &&
+                  !useNativeBackspaceTransport() && isAutofillCertain()) {
+                // The relay hides Chrome's identity, so the normal addrbar
+                // route above does not run. A selected suggestion consumes
+                // the first BS without deleting the typed suffix. Require
+                // the snapshot to still contain our word immediately before
+                // the selection; unrelated snapshots must not add a deletion.
+                const auto &surr = ic_->surroundingText();
+                const auto typedEnd = static_cast<size_t>(utf8::ncharByteLength(
+                    surr.text().begin(), std::min(surr.cursor(), surr.anchor())));
+                dismissGnomeAutofill = typedEnd >= oldComposed.size() &&
+                    surr.text().compare(typedEnd - oldComposed.size(),
+                                        oldComposed.size(), oldComposed) == 0;
+                if (dismissGnomeAutofill) {
+                  ++realBackspaces;
+                  SKEY_DEBUG() << "Uinput: GNOME omnibox autofill, +1 BS (total="
+                               << realBackspaces << ")";
+                }
+              }
+              // The dismissal is not a character deletion. Do not let the
+              // generic deletion observer expect it to remove another letter.
+              const std::string_view ackWord =
+                  dismissGnomeAutofill ? std::string_view{} : oldComposed;
+              if (!sendBackspaceUinput(realBackspaces + 1, 0, ackWord)) {
                 resetForCellChange();
                 return;
               }
@@ -6348,7 +6375,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               uinputDeletedLen_ = deleteLen;
               uinputRepairCount_ = 0;
               uinputPostVerify_ = false;
-              expectedUinputBackspaces_ = deleteLen;
+              expectedUinputBackspaces_ = realBackspaces;
               seenUinputBackspaces_ = 0;
               pendingUinputCommit_ = addPart;
               uinputPendingFinalLen_ =

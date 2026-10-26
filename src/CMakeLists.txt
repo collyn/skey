@@ -92,6 +92,11 @@ target_compile_definitions(test_engine_performance PRIVATE SKEY_TESTING=1 FCITX_
 add_test(NAME EnginePerformance COMMAND test_engine_performance)
 add_test(NAME GnomeAddressBarMenu COMMAND ${CMAKE_COMMAND} -E env
     SKEY_TEST_GNOME_MENU_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+add_test(NAME GnomeOmniboxUinput COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_GNOME_UINPUT_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+add_test(NAME GnomeOmniboxEditing COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_GNOME_EDIT_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+set_tests_properties(GnomeOmniboxUinput GnomeOmniboxEditing PROPERTIES TIMEOUT 15)
 add_test(NAME X11SelectReplacement COMMAND ${CMAKE_COMMAND} -E env
     SKEY_TEST_X11_SELECT_ONLY=1 $<TARGET_FILE:test_engine_performance>)
 add_test(NAME InjectedBackspaceContract COMMAND ${CMAKE_COMMAND} -E env
