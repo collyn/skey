@@ -1854,6 +1854,56 @@ struct EnginePerformanceTest {
         close(sockets[1]);
     }
 
+    static void addressBarSelectAnchor(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome-stable");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::Preedit);
+        input.setCursorRect(Rect(194, 53, 195, 73));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome-stable";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.modeCacheValid_ = true;
+        state.viet_.setRawInput("chaf");
+        state.committedLen_ = state.uinputPendingFinalLen_ = 3;
+        state.pendingUinputCommit_ = "à";
+        state.uinputDeleting_ = state.uinputShiftSelect_ = true;
+        state.expectedUinputBackspaces_ = 1;
+        state.armAddrBarCycle();
+        KeyEvent next(&input, Key(FcitxKey_o), false, 1200);
+        state.keyEvent(next);
+        check(next.accepted() && state.settledKeys_.size() == 1,
+              "physical keys wait for the Select replacement");
+        auto pass = [&](Key key, bool release) {
+            KeyEvent event(&input, key, release);
+            state.keyEvent(event);
+            check(!event.accepted() && state.settledKeys_.size() == 1,
+                  "Select modifier and selection events must bypass the X11 replay queue");
+        };
+        pass(Key(FcitxKey_Shift_L), false);
+        pass(Key(FcitxKey_Left, KeyState::Shift), false);
+        check(state.seenUinputBackspaces_ == 1,
+              "Shift+Left must reach the selection counter before timeout");
+        pass(Key(FcitxKey_Left, KeyState::Shift), true);
+        pass(Key(FcitxKey_Shift_L), true);
+        KeyEvent anchor(&input, Key(FcitxKey_Left));
+        state.keyEvent(anchor);
+        check(anchor.accepted() && state.uinputSettling_ &&
+                  state.expectedUinputBackspaces_ == 0 && state.settledKeys_.size() == 1,
+              "Select anchor is consumed and starts commit settling without entering the replay queue");
+        state.finishUinputSettle(0, 0);
+        check(input.commits == std::vector<std::string>{"à"},
+              "Select commits the replacement once after its anchor");
+        state.settledReplayTimer_.reset();
+        state.replaySettledKeys();
+        check(input.commits == std::vector<std::string>{"à", "o"} &&
+                  state.viet_.getComposed() == "chào",
+              "the queued o follows the replacement to form chào");
+    }
+
     static void addressBarSettleAcrossFocus(Instance &instance) {
         SKeyEngine engine(&instance, false);
         FocusGroup group("x11:test", instance.inputContextManager());
@@ -2794,6 +2844,13 @@ int main(int argc, char **argv) {
     unsetenv("DISPLAY");
     unsetenv("WAYLAND_DISPLAY");
 
+    if (std::getenv("SKEY_TEST_X11_SELECT_ONLY")) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::addressBarSelectAnchor(instance);
+        std::cout << "X11 Select replacement: " << checks << " checks passed\n";
+        return 0;
+    }
+
     for (bool uinput : {false, true}) {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::blindA11yFieldReset(instance, uinput);
@@ -2908,6 +2965,10 @@ int main(int argc, char **argv) {
     {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::x11BrowserFirstSettle(instance);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::addressBarSelectAnchor(instance);
     }
     for (const auto &suffix : {"c", " ", "ư", "ự"})
         for (bool wayland : {false, true}) {

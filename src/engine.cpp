@@ -4655,12 +4655,16 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     modeCacheValid_ = false;
   }
   // A replayed key can start another delete cycle with queued keys remaining.
-  // Its loopback backspaces must still reach the anchor handler, otherwise
+  // Its loopback replacement keys must still reach the anchor handler, otherwise
   // the queue would wait for a commit whose anchor is trapped in that queue.
   const bool awaitingAnchor = uinputDeleting_ && !uinputSettling_ &&
                               expectedUinputBackspaces_ > 0 &&
                               (keyEvent.key().check(FcitxKey_BackSpace) ||
-                               keyEvent.key().check(FcitxKey_Escape));
+                               keyEvent.key().check(FcitxKey_Escape) ||
+                               (uinputShiftSelect_ &&
+                                (keyEvent.key().sym() == FcitxKey_Left ||
+                                 keyEvent.key().sym() == FcitxKey_Shift_L ||
+                                 keyEvent.key().sym() == FcitxKey_Shift_R)));
   const bool orderedDeleting = uinputDeleting_ && useOrderedX11Replay();
   if (!replayingSettledKeys_ && !awaitingAnchor && (orderedDeleting || settledReplayTimer_ || uinputSettling_ || !settledKeys_.empty() ||
                                 (deferredNativeDeleteLen_ > 0 && hasDeferredCommitPending()))) {
