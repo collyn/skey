@@ -434,7 +434,9 @@ struct EnginePerformanceTest {
                       "saved Uinput config resolves to selected transport");
                 state.showModeMenu();
                 auto list = input.inputPanel().candidateList();
-                check(list && list->size() == (replace ? 5 : 6), "replacement menu removes duplicate transport slot");
+                check(list && list->size() ==
+                          (address ? (replace ? 6 : 7) : (replace ? 5 : 6)),
+                      "replacement menu keeps the Select slot and the disable action");
                 check(list->candidate(list->size() - 1).text().toString().find("0. ") == 0,
                       "both menus expose their disable action as zero");
                 check(list->candidate(1).text().toString() == (replace ? "2. Native" : "2. Uinput"),

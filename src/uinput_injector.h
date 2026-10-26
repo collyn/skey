@@ -30,8 +30,13 @@ public:
         virtual void close() = 0;
     };
     UinputInjector();
+    // The warmup must outlast the compositor's device-registration window:
+    // mutter (GNOME 50.1, Ubuntu 26.04) silently drops keys injected into a
+    // uinput device it has not finished registering — measured 0.3s fails,
+    // 4s delivers (the old 1s default raced the window: "aà", "chaào" right
+    // after fcitx5 restarts/reloads, while minutes-old devices worked).
     explicit UinputInjector(std::unique_ptr<Device> device,
-                            std::chrono::milliseconds warmup = std::chrono::seconds(1));
+                            std::chrono::milliseconds warmup = std::chrono::seconds(4));
     ~UinputInjector();
     void start();
     bool ready() const;
@@ -39,6 +44,11 @@ public:
     // Acceptance means queued, not that the application has deleted text.
     // A nonempty queue is bounded and serialized; requests are never replaced.
     Ticket backspaces(Owner owner, int count, bool escape, unsigned paceUsec);
+    // Shift-select replacement: Shift down + Left x(count + 1) + Shift up.
+    // The engine consumes the trailing (anchor) Left on its loopback, so the
+    // app selects exactly count characters; the commit then replaces the
+    // selection.  For fields where Backspace is eaten (browser address bars).
+    Ticket shiftSelect(Owner owner, int count, unsigned paceUsec);
     void cancel(Owner owner);
 private:
     struct Impl;

@@ -344,6 +344,33 @@ static bool gnomeDesktop() {
   return cached == 1;
 }
 
+// GNOME Wayland + the omnibox's 1px-beam caret.  Width <= 2 excludes
+// terminals and web fields (8px+ carets) — the shift-select replacement
+// is only valid where a selection commit replaces text (it is view-only
+// in terminals).  The relay signature covers daemons launched without
+// the session environment.
+bool SKeyState::gnomeOmniboxCaret() const {
+  const auto &caret = ic_->cursorRect();
+  return isWayland() && (gnomeDesktop() || appProgram() == "gnome-shell") &&
+         caret.width() <= 2 && caret.height() >= 14 && caret.height() <= 28;
+}
+
+// The select-and-overtype replacement transport: active when (a) Auto
+// mode on the GNOME relay (Backspace is eaten there), or (b) the user
+// picked the explicit "Select" address-bar mode.  The explicit mode is
+// scoped by the addrbar machinery's own detection (a11y-fresh browser
+// UI) — KDE's cursor rect can be (0,0,0x0) at activation, so no caret
+// gate there; the GNOME Auto path keeps the caret+relay signature
+// because its a11y is often stale.
+bool SKeyState::selectTransportActive() const {
+  if (engine_->config().chromiumAddressBarMode.value() ==
+          SKeyChromiumAddressBarMode::Select &&
+      inChromiumAddressBar()) {
+    return true;
+  }
+  return gnomeOmniboxCaret();
+}
+
 static bool isUtf8ContinuationByte(char ch) {
   return (static_cast<unsigned char>(ch) & 0xC0) == 0x80;
 }
@@ -398,6 +425,52 @@ static constexpr size_t maxBufferedUinputKeys = 32;
 FCITX_DEFINE_LOG_CATEGORY(skey_log, "skey");
 #define SKEY_DEBUG() SKeyLogger()
 #define SKEY_INFO() SKeyLogger()
+
+// Shift+Left select-and-overtype replacement, self-contained: the
+// address bar's autocomplete eats an injected Backspace (the deletion
+// never applies — "chào" → "chaào" on GNOME 50.1, where a synthetic
+// Shift+Left DOES select).  Shift+Left selects the old suffix and the
+// commit replaces the selection — no deletion involved, no dropdown
+// interference.  The anchor Left is consumed on its loopback like the
+// BS anchor.  Returns true when it took over the replace; on an
+// injector rejection the state resets and the key passes raw (the
+// caller returns either way).
+bool SKeyState::tryShiftSelectReplace(int deleteLen,
+                                      const std::string &addPart,
+                                      const std::string &oldComposed,
+                                      const std::string &newComposed,
+                                      KeyEvent &keyEvent) {
+  if (!selectTransportActive()) {
+    return false;
+  }
+  SKEY_DEBUG() << "Uinput: shift-select replace '" << addPart << "'";
+  bsSentAt_ = now(CLOCK_MONOTONIC);
+  // 1ms pace: the synthetic Shift latches the seat-wide keyboard state
+  // (mutter's XKB is per-seat), so a fast physical key inside the Shift
+  // window gets capitalized ("chO") — keep the window as short as
+  // possible.
+  auto ticket = engine_->uinput_.shiftSelect(uinputOwner_, deleteLen, 1000);
+  if (!ticket) {
+    resetForCellChange();
+    return true;
+  }
+  uinputRequest_ = std::move(ticket);
+  watchUinputRequest();
+  uinputShiftSelect_ = true;
+  uinputDeletedWord_ = oldComposed;
+  uinputDeletedLen_ = deleteLen;
+  uinputRepairCount_ = 0;
+  uinputPostVerify_ = false;
+  expectedUinputBackspaces_ = deleteLen;
+  seenUinputBackspaces_ = 0;
+  pendingUinputCommit_ = addPart;
+  uinputPendingFinalLen_ = static_cast<int>(utf8::length(newComposed));
+  uinputDeleting_ = true;
+  armUinputSafetyTimer();
+  keyEvent.filterAndAccept();
+  committedLen_ = static_cast<int>(utf8::length(newComposed));
+  return true;
+}
 
 /// Path to fcitx5's per-user package-data directory
 /// (~/.local/share/fcitx5).  fcitx5 >= 5.1 provides StandardPaths;
@@ -2037,9 +2110,27 @@ SKeyOutputMode SKeyState::effectiveMode() const {
                         ? SKeyOutputMode::Native : SKeyOutputMode::Uinput;
       modeCacheValid_ = true;
       return cachedMode_;
+    case SKeyChromiumAddressBarMode::Select:
+      // The Select replacement transport rides the Uinput machinery; the
+      // shift-select replace engages via selectTransportActive().
+      cachedMode_ = SKeyOutputMode::Uinput;
+      modeCacheValid_ = true;
+      return cachedMode_;
     case SKeyChromiumAddressBarMode::NoVietnamese:
       break;
     }
+  }
+
+  // GNOME relay omnibox (Auto): stay on the Uinput family.  The relay's
+  // caps fluctuate (0x12/0x52 — the SurroundingText bit comes and goes
+  // with the shell's IM context state) and its surrounding pushes are
+  // stale garbage — a Surr resolution here types wrong.  The explicit
+  // address-bar modes already returned above; the Select transport
+  // engages via selectTransportActive().
+  if (selectTransportActive() && !hasAppModeOverride_) {
+    cachedMode_ = SKeyOutputMode::Uinput;
+    modeCacheValid_ = true;
+    return cachedMode_;
   }
 
   auto resolved = hasAppModeOverride_ ? appModeOverride_
@@ -3354,7 +3445,11 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
   // etc.) so they don't reach the app prematurely.
   // In the address bar, Chrome's spurious focus cycles can cause X11 to
   // re-deliver the trigger key — drop it to avoid double-processing.
-  bool isTrackedKey = keyEvent.key().check(FcitxKey_BackSpace);
+  // check() compares the modifier states too — the injected Lefts arrive
+  // with Shift held, so a bare FcitxKey_Left never matches.  Compare the
+  // sym directly (the BS path has no held modifier and keeps check()).
+  bool isTrackedKey = uinputShiftSelect_ ? keyEvent.key().sym() == FcitxKey_Left
+                                         : keyEvent.key().check(FcitxKey_BackSpace);
   if (!isTrackedKey || expectedUinputBackspaces_ == 0) {
     auto sym = keyEvent.key().sym();
 
@@ -3364,6 +3459,12 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     // extra BS would incorrectly do.
     if (sym == FcitxKey_Escape) {
       SKEY_DEBUG() << "Uinput: pass Escape to app (autocomplete dismiss)";
+      return true; // pass through (no filterAndAccept)
+    }
+    // Shift-select replacement: the injected Shift down/up must reach the
+    // app so the Left keys arrive as a selection, not bare cursor moves.
+    if (uinputShiftSelect_ &&
+        (sym == FcitxKey_Shift_L || sym == FcitxKey_Shift_R)) {
       return true; // pass through (no filterAndAccept)
     }
     // Re-delivery guard (all Chromium-family, not just the address bar):
@@ -3390,9 +3491,9 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     return true;
   }
 
-  // Count BS events.
-  // N real BS pass through to the app (character deletion).
-  // The (N+1)-th BS is the sync anchor — it's consumed here.
+  // Count BS (or Left, in shift-select mode) events.
+  // N real keys pass through to the app (character deletion / selection).
+  // The (N+1)-th key is the sync anchor — it's consumed here.
   if (seenUinputBackspaces_ < expectedUinputBackspaces_) {
     ++seenUinputBackspaces_;
     if (uinputBsOutstanding_ > 0)
@@ -3400,18 +3501,19 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     if (committedLen_ > 0) {
       committedLen_--;
     }
-    SKEY_DEBUG() << "Uinput: pass BS " << seenUinputBackspaces_ << "/"
+    SKEY_DEBUG() << "Uinput: pass " << (uinputShiftSelect_ ? "Left" : "BS")
+                 << " " << seenUinputBackspaces_ << "/"
                  << expectedUinputBackspaces_;
     if (isFirefoxOrSnap()) {
       uinputKeyForwarded_ = true;
     }
-    return true; // forward real BS to app
+    return true; // forward real key to app
   }
 
-  // ── Sync BS arrived ──
-  // The extra BS (+1 beyond real deletions) acts as a sync anchor.
-  // By the time it arrives back at fcitx5, X11 has serialized all N real
-  // BS to the app. Consume it and schedule the adaptive settle/commit.
+  // ── Sync key arrived ──
+  // The extra key (+1 beyond real deletions/selections) acts as a sync
+  // anchor.  By the time it arrives back at fcitx5, X11 has serialized all
+  // N real keys to the app. Consume it and schedule the settle/commit.
   // Address bar uses its own conservative timing constants.
   keyEvent.filterAndAccept();
   uinputSafetyTimer_.reset();
@@ -3671,6 +3773,13 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
                     std::min(ov.preCommitMs, skey::kMaxPreCommitMs)) *
                 1000;
   }
+  // Shift-select: the anchor Left already proves the selection exists in
+  // the app — the commit only needs a hair of headroom, not the adaptive
+  // deletion sleep.  A short window also minimizes the selection's blue
+  // flash in the omnibox.
+  if (uinputShiftSelect_) {
+    sleepUsec = 2000;
+  }
   // Persist the sleep actually applied (override or adaptive) so the
   // settings dialog can show the app's current delay.
   engine_->noteAppSleep(appProgram(), isWayland(), sleepUsec);
@@ -3801,6 +3910,7 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
   uinputSettling_ = false;
   uinputDeleteAck_.reset();
   uinputDeleting_ = false;
+  uinputShiftSelect_ = false;
   // A replacement reaching its settle commit proves the editor's IM
   // pipeline is live: from here on appends can use the commit channel.
   editorEntered_ = true;
@@ -4475,6 +4585,7 @@ void SKeyState::resetForCellChange() {
   uinputSafetyTimer_.reset();
   uinputCycleTimer_.reset();
   uinputDeleting_ = false;
+  uinputShiftSelect_ = false;
   pendingUinputCommit_.clear();
   expectedUinputBackspaces_ = 0;
   seenUinputBackspaces_ = 0;
@@ -6078,6 +6189,23 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                   commitText(keyUtf8);
                   return;
                 }
+                // Select transport (GNOME omnibox or the explicit Select
+                // address-bar mode): post-replacement raw appends can
+                // vanish in the renderer ("chào" → "chà") or land under a
+                // still-latched Shift ("chO"); the commit channel always
+                // delivers plain text.  The relay's surrounding is stale
+                // garbage, so no selection guard here.  Rapid
+                // back-to-back commits (the settle commit + this append,
+                // especially a buffered-key replay) drop the first one
+                // in the omnibox ("chào" → "cho") — pace them.
+                if (selectTransportActive() && editorEntered_) {
+                  keyEvent.filterAndAccept();
+                  SKEY_DEBUG() << "Uinput: commit append '" << keyUtf8
+                               << "' [gnome-omnibox]";
+                  postCommitPause(20);
+                  commitText(keyUtf8);
+                  return;
+                }
               }
               // Forward raw X11 key — instant, no D-Bus latency.
               // Set cycle protection + trigger-key guard: a subsequent
@@ -6120,6 +6248,14 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               SKEY_DEBUG() << "Uinput: consume '" << keyUtf8
                            << "' replace (del=" << deleteLen << " add='"
                            << addPart << "')";
+              // The Select transport takes precedence over the addrbar
+              // machinery (its gate only fires on the GNOME Auto default
+              // or the explicit Select address-bar mode; everywhere else
+              // this falls through to the schedule path below).
+              if (tryShiftSelectReplace(deleteLen, addPart, oldComposed,
+                                        newComposed, keyEvent)) {
+                return;
+              }
               // Chromium address bar on X11: use forwardKey (D-Bus)
               // for BackSpace instead of uinput so both BS and
               // commitString travel the same channel — D-Bus ordering
@@ -6162,6 +6298,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 resetForCellChange();
                 return;
               }
+              uinputShiftSelect_ = false;
               uinputDeletedWord_ = oldComposed;
               uinputDeletedLen_ = deleteLen;
               uinputRepairCount_ = 0;
@@ -7609,7 +7746,7 @@ void SKeyState::showModeMenu() {
 
   // Build candidate list for dropdown menu
   auto candList = std::make_unique<CommonCandidateList>();
-  candList->setPageSize(6);
+  candList->setPageSize(8);
   candList->setLayoutHint(CandidateLayoutHint::Vertical);
 
   const bool replaceUinput = engine_->config().enableNative.value() &&
@@ -7636,16 +7773,23 @@ void SKeyState::showModeMenu() {
       candList->append(std::make_unique<AddressBarModeCandidateWord>(
           engine_, this, "5. Native", SKeyChromiumAddressBarMode::Native));
     }
+    const int selectPos = replaceUinput ? 4 : (nativeEnabled ? 5 : 4);
+    candList->append(std::make_unique<AddressBarModeCandidateWord>(
+        engine_, this, std::to_string(selectPos + 1) + ". Select",
+        SKeyChromiumAddressBarMode::Select));
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
         engine_, this, std::string("0. ") + _("Không gõ tiếng Việt"),
         SKeyChromiumAddressBarMode::NoVietnamese));
-    cursorIdx = static_cast<int>(addressBarMode);
-    if (replaceUinput) {
-      if (addressBarMode == SKeyChromiumAddressBarMode::Native) cursorIdx = 1;
-      if (addressBarMode == SKeyChromiumAddressBarMode::NoVietnamese) cursorIdx = 4;
-    } else if (!nativeEnabled &&
-               addressBarMode == SKeyChromiumAddressBarMode::NoVietnamese) {
-      cursorIdx = 4;
+    const int noVnPos = replaceUinput ? 5 : (nativeEnabled ? 6 : 5);
+    cursorIdx = 0;
+    switch (addressBarMode) {
+    case SKeyChromiumAddressBarMode::Auto: cursorIdx = 0; break;
+    case SKeyChromiumAddressBarMode::Uinput: cursorIdx = 1; break;
+    case SKeyChromiumAddressBarMode::SurroundingText: cursorIdx = 2; break;
+    case SKeyChromiumAddressBarMode::Preedit: cursorIdx = 3; break;
+    case SKeyChromiumAddressBarMode::Native: cursorIdx = replaceUinput ? 1 : 4; break;
+    case SKeyChromiumAddressBarMode::Select: cursorIdx = selectPos; break;
+    case SKeyChromiumAddressBarMode::NoVietnamese: cursorIdx = noVnPos; break;
     }
   } else {
     auto configured = hasAppModeOverride_

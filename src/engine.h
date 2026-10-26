@@ -121,6 +121,18 @@ private:
     /// -1 otherwise.  Lets detectors read /proc/<pid>/... directly
     /// instead of scanning the whole process table.
     int a11yAppPid() const;
+    /// GNOME Wayland + the omnibox's 1px-beam caret — the shift-select
+    /// replacement target (see the consume path).
+    bool gnomeOmniboxCaret() const;
+    /// Select-and-overtype transport active: Auto-on-GNOME or the
+    /// explicit "Select" address-bar mode (omnibox-shaped caret).
+    bool selectTransportActive() const;
+    /// Shift+Left select-and-overtype replacement (self-contained).
+    /// Returns true when it took over the replace.
+    bool tryShiftSelectReplace(int deleteLen, const std::string &addPart,
+                               const std::string &oldComposed,
+                               const std::string &newComposed,
+                               KeyEvent &keyEvent);
     /// Terminal detection: static name list plus a /proc shell-descendant
     /// scan for terminals not on the list.  Cached per IC.
     bool isTerminalAppCached() const;
@@ -346,6 +358,9 @@ private:
 #endif
     // Uinput replacement state
     bool uinputDeleting_ = false;
+    /// Replacement in flight uses the Shift+Left select-and-overtype
+    /// protocol (GNOME omnibox): Left loopbacks are tracked instead of BS.
+    bool uinputShiftSelect_ = false;
     std::unique_ptr<EventSourceTime> uinputCommitTimer_;
     std::unique_ptr<EventSourceTime> uinputSafetyTimer_;
     int expectedUinputBackspaces_ = 0;
