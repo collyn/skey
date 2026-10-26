@@ -361,6 +361,26 @@ private:
     /// Replacement in flight uses the Shift+Left select-and-overtype
     /// protocol (GNOME omnibox): Left loopbacks are tracked instead of BS.
     bool uinputShiftSelect_ = false;
+    // Surr-mode native-delete post-commit verification: armed after a
+    // Wayland replacement whose native delete rode in blind — the app's
+    // own pushes can prove the delete was dropped (see
+    // surrNativeRepairIfDropped).
+    bool surrNativePostVerify_ = false;
+    std::string surrNativeDeletedWord_;
+    std::string surrNativeCommittedText_;
+    std::string surrNativeNewComposed_;
+    int surrNativeDeletedLen_ = 0;
+    int surrNativePostFinalLen_ = 0;
+    uint64_t surrNativePostVerifyDeadlineUsec_ = 0;
+    void armSurrNativePostVerify(const std::string &oldComposed,
+                                 const std::string &addedPart,
+                                 const std::string &newComposed,
+                                 int deleteLen, int newLen);
+    // Verdict: 0 = no evidence; 1 = drop proven (handled); 2 = the push is
+    // still mid-transaction (the old word intact) — the keyEvent caller
+    // must skip its desync reset on this.
+    int surrNativeRepairIfDropped(const fcitx::SurroundingText &surr,
+                                  bool enforceDeadline, bool repairAllowed);
     std::unique_ptr<EventSourceTime> uinputCommitTimer_;
     std::unique_ptr<EventSourceTime> uinputSafetyTimer_;
     int expectedUinputBackspaces_ = 0;
@@ -551,6 +571,9 @@ public:
     Instance *instance() { return instance_; }
     void setOutputMode(SKeyOutputMode mode);
     void setChromiumAddressBarMode(SKeyChromiumAddressBarMode mode);
+    /// Sticky per-program "native delete is dropped" flag (Surr mode).
+    bool isSurrDeleteBrokenApp(const std::string &prog) const;
+    void markSurrDeleteBrokenApp(const std::string &prog);
     void setInputMethod(SKeyInputMethod method);
     void saveAppMode(const std::string &app, SKeyOutputMode mode);
     void saveAppExcluded(const std::string &app, bool excluded);
@@ -660,6 +683,11 @@ private:
     std::string terminalCachedProgram_;
     int terminalCachedVerdict_ = -1; // -1 = unset
     bool chromiumHadBareCaps_ = false;
+
+    // Apps proven to drop the native delete_surrounding_text while their
+    // commits land (areca-settings/SDL) — once marked, every replacement
+    // skips the native delete entirely (sticky, engine-level by program).
+    std::set<std::string> surrDeleteBrokenApps_;
 
     // AT-SPI2 accessibility monitor for address bar detection
     std::unique_ptr<A11yMonitor> a11yMonitor_;

@@ -2470,6 +2470,130 @@ struct EnginePerformanceTest {
               "unresponsive native delete must have bounded retries and one commit");
     }
 
+    // Wayland Surr-mode app that advertises SurroundingText but DROPS the
+    // native delete_surrounding_text while commits land
+    // Variants: neverPush (no surrounding pushes at all), mergedPush (the
+    // replacement commit pushes with the next key already appended —
+    // "goô" + "x"), emptyPush (pushes text='' after a replacement commit).
+    // The first replace rides the native delete, the push proves the drop,
+    // the word is repaired via uinput (or the app marked when no repair
+    // evidence exists) and later replacements skip the native delete.
+    static void surrNativeDroppedDelete(Instance &instance, bool neverPush,
+                                        bool mergedPush = false,
+                                        bool emptyPush = false) {
+        class DropDeleteEditor : public TestInput {
+        public:
+            using TestInput::TestInput;
+            std::string text;
+            int droppedDeletes = 0;
+        protected:
+            void commitStringImpl(const std::string &value) override {
+                TestInput::commitStringImpl(value);
+                text += value;
+                if (!neverPush_) {
+                    std::string pushed = text;
+                    if (value.size() > 1 && mergedPush_) pushed += "x";
+                    if (value.size() > 1 && emptyPush_) pushed.clear();
+                    const size_t pushedLen = utf8::length(pushed);
+                    surroundingText().setText(pushed, pushedLen, pushedLen);
+                }
+            }
+            void deleteSurroundingTextImpl(int, unsigned size) override {
+                droppedDeletes += static_cast<int>(size); // dropped on purpose
+            }
+        public:
+            bool neverPush_ = false;
+            bool mergedPush_ = false;
+            bool emptyPush_ = false;
+        };
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        DropDeleteEditor input(instance.inputContextManager(), "areca-settings");
+        input.neverPush_ = neverPush;
+        input.mergedPush_ = mergedPush;
+        input.emptyPush_ = emptyPush;
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlags(0x72));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "areca-settings";
+        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::SurroundingText;
+        int sockets[2];
+        check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+              "isolate the replacement transport without desktop injection");
+        captureUinput(state, sockets[0]);
+
+        auto type = [&](fcitx::KeySym sym) {
+            KeyEvent kev(&input, Key(sym));
+            state.keyEvent(kev);
+        };
+        type(FcitxKey_g); // "g"
+        type(FcitxKey_o); // "go"
+        type(FcitxKey_o); // Telex: replace "go" -> "gô"
+        if (neverPush) {
+            check(input.droppedDeletes == 0,
+                  "an app that never pushes surrounding must not ride the blind native delete");
+        } else {
+            check(input.droppedDeletes == 1 && input.text == "goô",
+                  "the dropped native delete leaves the old word + committed suffix");
+        }
+        // The app's async push (dropDelete variants only) — arrives after
+        // the verification was armed, like a real lagging push.  The
+        // handle must be HELD: addTimeEvent returns a unique_ptr and
+        // discarding it kills the timer.
+        std::unique_ptr<EventSourceTime> pushTimer;
+        if (!neverPush) {
+            pushTimer = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+                now(CLOCK_MONOTONIC) + 2000, 1,
+                [&input](EventSourceTime *, uint64_t) { input.updateSurroundingText(); return true; });
+        }
+        // Feed the injected BS loopbacks (real deletions + sync anchor)
+        // and settle the replacement.
+        auto feed = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+            now(CLOCK_MONOTONIC) + 5000, 1, [&](EventSourceTime *, uint64_t) {
+                uint32_t request[4];
+                if (recv(sockets[1], request, sizeof(request), 0) == sizeof(request)) {
+                    for (uint32_t i = 0; i < request[0]; ++i) {
+                        KeyEvent bs(&input, Key(FcitxKey_BackSpace));
+                        state.keyEvent(bs);
+                        if (i + 1 < request[0]) {
+                            check(!bs.accepted(), "real deletion passes to the app");
+                            size_t last = input.text.size() - 1;
+                            while (last > 0 &&
+                                   (static_cast<unsigned char>(input.text[last]) & 0xc0) == 0x80)
+                                --last;
+                            input.text.erase(last);
+                        } else {
+                            check(bs.accepted(), "sync anchor is consumed");
+                        }
+                    }
+                    state.finishUinputSettle(0, 0);
+                }
+                return true;
+            });
+        auto stop = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+            now(CLOCK_MONOTONIC) + 80000, 1,
+            [&](EventSourceTime *, uint64_t) { instance.eventLoop().exit(); return true; });
+        instance.eventLoop().exec();
+        if (neverPush) {
+            check(input.text == "gô" && !state.uinputDeleting_, "word ends as composed");
+            check(input.droppedDeletes == 0 && !engine.isSurrDeleteBrokenApp("areca-settings"),
+                  "preemptive uinput transport leaves the app unmarked and uncorrupted");
+        } else if (mergedPush || emptyPush) {
+            check(engine.isSurrDeleteBrokenApp("areca-settings"),
+                  "the merged/empty push still proves the drop and marks the app");
+            check(input.droppedDeletes == 1 && input.text == "goô",
+                  "no repair into the merged/empty evidence — the word stays broken once");
+        } else {
+            check(input.text == "gô" && !state.uinputDeleting_, "word ends as composed");
+            check(engine.isSurrDeleteBrokenApp("areca-settings"),
+                  "the proven drop marks the app delete-broken");
+            check(input.commits == std::vector<std::string>{"g", "o", "ô", "ô"},
+                  "the repair re-commits the suffix over the uinput deletion");
+        }
+    }
+
     static void run(Instance &instance, bool wayland) {
         SKeyEngine engine(&instance, false);
         FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
@@ -2685,6 +2809,24 @@ int main(int argc, char **argv) {
     {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::replacementMenus(instance);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::surrNativeDroppedDelete(instance, false);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::surrNativeDroppedDelete(instance, true);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::surrNativeDroppedDelete(instance, false,
+                                                              true);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::surrNativeDroppedDelete(instance, false,
+                                                              false, true);
     }
     for (auto mode : {fcitx::SKeyOutputMode::Uinput, fcitx::SKeyOutputMode::Native}) {
         fcitx::Instance instance(argc, argv);

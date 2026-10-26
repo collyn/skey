@@ -1173,6 +1173,16 @@ void SKeyEngine::setOutputMode(SKeyOutputMode mode) {
   updateMenuActions();
 }
 
+bool SKeyEngine::isSurrDeleteBrokenApp(const std::string &prog) const {
+  return !prog.empty() && surrDeleteBrokenApps_.count(prog) > 0;
+}
+
+void SKeyEngine::markSurrDeleteBrokenApp(const std::string &prog) {
+  if (surrDeleteBrokenApps_.insert(prog).second) {
+    SKEY_DEBUG() << "Surr: app '" << prog << "' marked delete-broken";
+  }
+}
+
 void SKeyEngine::setChromiumAddressBarMode(SKeyChromiumAddressBarMode mode) {
   config_.chromiumAddressBarMode.setValue(mode);
   bool ok = safeSaveAsIni(config_, "conf/skey.conf");
@@ -1702,6 +1712,14 @@ void SKeyState::surroundingTextChanged() {
         resetForCellChange();
       }
     }
+  }
+  // Surr-mode native-delete verification: armed at a Wayland native
+  // replacement whose delete rode in blind — the app's own push can now
+  // prove the delete was dropped (see surrNativeRepairIfDropped).
+  if (surrNativePostVerify_) {
+    surrNativeRepairIfDropped(ic_->surroundingText(),
+                              /*enforceDeadline=*/true,
+                              /*repairAllowed=*/true);
   }
   surroundingCursor_.invalidate();
   if (surroundingMeasureStartedAt_) {
@@ -4586,6 +4604,9 @@ void SKeyState::resetForCellChange() {
   uinputCycleTimer_.reset();
   uinputDeleting_ = false;
   uinputShiftSelect_ = false;
+  surrNativePostVerify_ = false;
+  surrNativeDeletedWord_.clear();
+  surrNativeCommittedText_.clear();
   pendingUinputCommit_.clear();
   expectedUinputBackspaces_ = 0;
   seenUinputBackspaces_ = 0;
@@ -5978,13 +5999,32 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         const auto &surrounding = ic_->surroundingText();
         if (surrounding.isValid() &&
             !surroundingCacheEndsWith(surrounding, viet_.getComposed())) {
-          SKEY_DEBUG() << "Surr: word '" << viet_.getComposed()
-                       << "' not at caret, resetting model";
-          viet_.reset();
-          committedLen_ = 0;
-          clearLastWord();
-          surrResetTentative_ = false;
-          editorEntered_ = false;
+          // A push showing the armed replace's old word + committed suffix
+          // proves the native delete was dropped.  The current key is
+          // already in flight, so a repair here would race its commit —
+          // mark the app instead; its future replacements skip the native
+          // delete entirely.  A mid-transaction push (still the old word)
+          // means the app has not even seen the replacement yet — the
+          // caret cannot have moved, so skip the reset.
+          const int surrVerdict =
+              surrNativeRepairIfDropped(surrounding,
+                                        /*enforceDeadline=*/false,
+                                        /*repairAllowed=*/false);
+          // A delete-broken app's surrounding is known garbage (empty
+          // pushes, merged pushes) — its mismatch cannot mean the caret
+          // moved, so the tone-change window must survive it ("gõ" + "f"
+          // would otherwise reset and type "gõf").  Real cell changes on
+          // such apps rely on the blind-a11y check at push time instead.
+          if (surrVerdict != 2 &&
+              !engine_->isSurrDeleteBrokenApp(appProgram())) {
+            SKEY_DEBUG() << "Surr: word '" << viet_.getComposed()
+                         << "' not at caret, resetting model";
+            viet_.reset();
+            committedLen_ = 0;
+            clearLastWord();
+            surrResetTentative_ = false;
+            editorEntered_ = false;
+          }
         }
       }
 
@@ -7179,6 +7219,114 @@ void SKeyState::repairNativeDeletes() {
   deferredDeletedTail_.clear();
 }
 
+void SKeyState::armSurrNativePostVerify(const std::string &oldComposed,
+                                        const std::string &addedPart,
+                                        const std::string &newComposed,
+                                        int deleteLen, int newLen) {
+  surrNativePostVerify_ = true;
+  surrNativeDeletedWord_ = oldComposed;
+  surrNativeCommittedText_ = addedPart;
+  surrNativeNewComposed_ = newComposed;
+  surrNativeDeletedLen_ = deleteLen;
+  surrNativePostFinalLen_ = newLen;
+  surrNativePostVerifyDeadlineUsec_ = now(CLOCK_MONOTONIC) + 600000;
+}
+
+int SKeyState::surrNativeRepairIfDropped(const fcitx::SurroundingText &surr,
+                                         bool enforceDeadline,
+                                         bool repairAllowed) {
+  if (!surrNativePostVerify_ || surrNativeCommittedText_.empty())
+    return 0;
+  if (enforceDeadline &&
+      now(CLOCK_MONOTONIC) > surrNativePostVerifyDeadlineUsec_)
+    return 0; // keep the fields — the keyEvent backstop re-checks them
+  if (!surr.isValid())
+    return 0;
+  const std::string &text = surr.text();
+  // Empty pushes while the verify is armed: the app lost its surrounding
+  // reporting after the native replace (areca-settings pushes text=''
+  // forever after) — no repair evidence will ever arrive.  Mark the app
+  // sticky so every later replacement skips the native delete; this word
+  // stays broken once.
+  if (text.empty()) {
+    surrNativePostVerify_ = false;
+    engine_->markSurrDeleteBrokenApp(appProgram());
+    SKEY_DEBUG() << "Surr: app pushed empty surrounding after native "
+                    "replace, marking broken";
+    return 1;
+  }
+  // Only a word the caret still sits at the end of can be repaired by
+  // deleting backwards — anything else belongs to the cell-change reset.
+  if (static_cast<size_t>(surr.cursor()) != utf8::length(text))
+    return 0;
+  auto endsWith = [&text](const std::string &suffix) {
+    return text.size() >= suffix.size() &&
+           text.compare(text.size() - suffix.size(), suffix.size(),
+                        suffix) == 0;
+  };
+  const std::string broken = surrNativeDeletedWord_ + surrNativeCommittedText_;
+  if (endsWith(broken)) {
+    // The app applied the commit but dropped the delete_surrounding_text
+    // request — the old word is intact with the committed suffix right
+    // after it (areca-settings: "go" + "ô" = "goô").  Repair through the
+    // uinput transport (kernel BS + sync anchor — the proven channel on
+    // Wayland) and remember the app so its replacements skip the native
+    // delete entirely from here on.
+    surrNativePostVerify_ = false;
+    engine_->markSurrDeleteBrokenApp(appProgram());
+    if (!repairAllowed) {
+      SKEY_DEBUG() << "Surr: native delete dropped (key in flight), "
+                      "marking app broken";
+      return 1;
+    }
+    SKEY_DEBUG() << "Surr: native delete dropped, repairing via uinput";
+    const int total =
+        static_cast<int>(utf8::length(surrNativeCommittedText_)) +
+        surrNativeDeletedLen_;
+    expectedUinputBackspaces_ = total;
+    seenUinputBackspaces_ = 0;
+    pendingUinputCommit_ = surrNativeCommittedText_;
+    uinputPendingFinalLen_ = surrNativePostFinalLen_;
+    uinputDeleting_ = true;
+    if (!sendBackspaceUinput(total + 1, 0, broken)) {
+      resetForCellChange();
+      return 1;
+    }
+    armUinputSafetyTimer();
+    return 1;
+  }
+  if (text.find(broken) != std::string::npos) {
+    // Merged push: the broken shape appears with later keys appended
+    // ("chaào" = intact old "cha" + committed "à" + the next letter).
+    // The evidence proves the delete was dropped, but a backspace
+    // repair would hit the new keys — mark the app sticky so every
+    // later replacement skips the native delete; this word stays
+    // broken once.
+    surrNativePostVerify_ = false;
+    engine_->markSurrDeleteBrokenApp(appProgram());
+    SKEY_DEBUG() << "Surr: native delete dropped (merged push), "
+                    "marking app broken";
+    return 1;
+  }
+  if (endsWith(surrNativeNewComposed_)) {
+    // The push shows the replacement fully applied — the native delete
+    // worked; disarm.
+    surrNativePostVerify_ = false;
+    return 0;
+  }
+  if (!surrNativeDeletedWord_.empty() && endsWith(surrNativeDeletedWord_)) {
+    // Mid-transaction push (pre-commit state): the app is still applying
+    // the replacement — the caret cannot have moved.  The keyEvent caller
+    // skips its desync reset on this evidence; the push-driven caller
+    // just gives the verdict more time.
+    if (enforceDeadline) {
+      surrNativePostVerifyDeadlineUsec_ = now(CLOCK_MONOTONIC) + 600000;
+    }
+    return 2;
+  }
+  return 0;
+}
+
 uint64_t SKeyState::x11ChromiumSurrDelayUsec() const {
   auto *chainMon = engine_->a11yMonitor();
   bool fbInput = chainMon && (chainMon->isFocusFbChatChain() ||
@@ -7242,7 +7390,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       // laggingPush: the surrounding text was VALID but did not reflect
       // the cache (stale or cursor-not-ready) — the app pushes updates
       // asynchronously.  See the commit branch below.
-      auto deleteViaBackspace = [&](bool laggingPush) {
+      auto deleteViaBackspace = [&](bool laggingPush, bool forceUinput = false) {
         // Chromium-family apps with shell children must keep the anchor
         // even when the shell scan flags them as terminals.
         // X11 native terminals also anchor through uinput even in Surr
@@ -7250,7 +7398,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         // into the terminal, so only the sync anchor proves the deletions
         // were dispatched before the commit is sent (kernel 7.0 PTY
         // interleaving — see the keyEvent terminal path).
-        bool usesUinputBs = useNativeBackspaceTransport() ||
+        bool usesUinputBs = forceUinput || useNativeBackspaceTransport() ||
             (useUinputMode() &&
              (isWayland() || !isTerminalAppCached() || isChromiumCached())) ||
             (!isWayland() && isTerminalAppCached()) ||
@@ -7262,7 +7410,10 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             // X11 Firefox: native deletes are unreliable through the async
             // renderer — anchor through uinput (see the native-path gate
             // above).
-            (!isWayland() && isFirefoxOrSnap());
+            (!isWayland() && isFirefoxOrSnap()) ||
+            // Apps proven to drop the native delete ride the uinput
+            // transport for every replacement (sticky, engine-level).
+            engine_->isSurrDeleteBrokenApp(appProgram());
         SKEY_DEBUG() << "Surr: BS x" << deleteLen
                      << (usesUinputBs ? " (uinput)" : " (forward)");
         // Chromium address bar: use uinput BS + buffering for both
@@ -7397,8 +7548,28 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       const bool firefoxDocsUinput = !isWayland() && isFirefoxOrSnap() &&
                                      a11yGoogleDocsFocused();
       if (useNativeSurroundingApi() && !inChromiumAddressBar() &&
-          !firefoxDocsUinput) {
+          !firefoxDocsUinput &&
+          !engine_->isSurrDeleteBrokenApp(appProgram())) {
         const auto &surrounding = ic_->surroundingText();
+        // Wayland apps with no usable snapshot (invalid, or empty-but-
+        // "valid" — apps that lose their surrounding reporting after a
+        // native replace, areca-settings pushes text='') ride the uinput
+        // transport instead of the blind native delete.  Placed before
+        // the staleButWayland gate: a stale cache on Wayland would
+        // otherwise route the never-reporting app into the native
+        // delete.  The armed verification supplies mid-transaction
+        // evidence and repairs the word if the uinput BS themselves
+        // failed.
+        if (isWayland() &&
+            (!surrounding.isValid() || surrounding.text().empty()) &&
+            !isChromiumCached() && !isFirefoxOrSnap()) {
+          SKEY_DEBUG() << "Surr: surrounding invalid at replace, "
+                          "uinput BS transport";
+          deleteViaBackspace(/*laggingPush=*/false, /*forceUinput=*/true);
+          armSurrNativePostVerify(oldComposed, addedPart, newComposed,
+                                  deleteLen, newLen);
+          return;
+        }
         bool cacheStale = !surroundingCacheEndsWith(surrounding, oldComposed);
         // On Wayland the forwardKey fallback is dropped by the apps
         // anyway (the synthetic keys never reach them), so a stale cache
@@ -7499,6 +7670,14 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             } else {
               SKEY_DEBUG() << "Surr: direct commit '" << addedPart << "'";
               commitText(addedPart);
+              // Wayland non-browser apps: arm the post-commit verification
+              // — the app's own push may prove the native delete was
+              // dropped (old word + committed suffix, see
+              // surrNativeRepairIfDropped in surroundingTextChanged).
+              if (isWayland()) {
+                armSurrNativePostVerify(oldComposed, addedPart, newComposed,
+                                        deleteLen, newLen);
+              }
             }
           }
         }
