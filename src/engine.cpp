@@ -355,6 +355,12 @@ bool SKeyState::gnomeOmniboxCaret() const {
          caret.width() <= 2 && caret.height() >= 14 && caret.height() <= 28;
 }
 
+bool SKeyState::addressBarModesAvailable() const {
+  // Keep GNOME's existing replacement routing intact: only its mode
+  // controls need to recognize the relay's caret signature as well.
+  return inChromiumAddressBar() || gnomeOmniboxCaret();
+}
+
 // The select-and-overtype replacement transport: active when (a) Auto
 // mode on the GNOME relay (Backspace is eaten there), or (b) the user
 // picked the explicit "Select" address-bar mode.  The explicit mode is
@@ -363,12 +369,12 @@ bool SKeyState::gnomeOmniboxCaret() const {
 // gate there; the GNOME Auto path keeps the caret+relay signature
 // because its a11y is often stale.
 bool SKeyState::selectTransportActive() const {
-  if (engine_->config().chromiumAddressBarMode.value() ==
-          SKeyChromiumAddressBarMode::Select &&
-      inChromiumAddressBar()) {
-    return true;
+  if (addressBarModesAvailable()) {
+    const auto mode = engine_->config().chromiumAddressBarMode.value();
+    return mode == SKeyChromiumAddressBarMode::Select ||
+           (mode == SKeyChromiumAddressBarMode::Auto && gnomeOmniboxCaret());
   }
-  return gnomeOmniboxCaret();
+  return false;
 }
 
 static bool isUtf8ContinuationByte(char ch) {
@@ -2106,9 +2112,16 @@ SKeyOutputMode SKeyState::effectiveMode() const {
 
   // Address bar output mode overrides the general and per-application modes.
   // NoVietnamese is handled as a pass-through in keyEvent().
-  if (inChromiumAddressBar()) {
+  if (addressBarModesAvailable()) {
     switch (engine_->config().chromiumAddressBarMode.value()) {
     case SKeyChromiumAddressBarMode::Auto:
+      // Mutter's surrounding-text hints fluctuate and snapshots lag.
+      // GNOME Auto uses the Select transport on top of Uinput.
+      if (gnomeOmniboxCaret()) {
+        cachedMode_ = SKeyOutputMode::Uinput;
+        modeCacheValid_ = true;
+        return cachedMode_;
+      }
       break; // fall through to normal Auto detection below
     case SKeyChromiumAddressBarMode::Uinput:
       cachedMode_ = engine_->config().replaceUinputWithNative.value()
@@ -2137,18 +2150,6 @@ SKeyOutputMode SKeyState::effectiveMode() const {
     case SKeyChromiumAddressBarMode::NoVietnamese:
       break;
     }
-  }
-
-  // GNOME relay omnibox (Auto): stay on the Uinput family.  The relay's
-  // caps fluctuate (0x12/0x52 — the SurroundingText bit comes and goes
-  // with the shell's IM context state) and its surrounding pushes are
-  // stale garbage — a Surr resolution here types wrong.  The explicit
-  // address-bar modes already returned above; the Select transport
-  // engages via selectTransportActive().
-  if (selectTransportActive() && !hasAppModeOverride_) {
-    cachedMode_ = SKeyOutputMode::Uinput;
-    modeCacheValid_ = true;
-    return cachedMode_;
   }
 
   auto resolved = hasAppModeOverride_ ? appModeOverride_
@@ -4812,7 +4813,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   if (!modeMenuActive_ &&
       engine_->config().chromiumAddressBarMode.value() ==
           SKeyChromiumAddressBarMode::NoVietnamese &&
-      inChromiumAddressBar() && !keyEvent.key().check(engine_->modeMenuKey())) {
+      addressBarModesAvailable() && !keyEvent.key().check(engine_->modeMenuKey())) {
     return;
   }
 
@@ -7925,7 +7926,7 @@ void SKeyState::clearUI() {
 
 void SKeyState::showModeMenu() {
   modeMenuActive_ = true;
-  modeMenuForAddressBar_ = inChromiumAddressBar();
+  modeMenuForAddressBar_ = addressBarModesAvailable();
 
   // Build candidate list for dropdown menu
   auto candList = std::make_unique<CommonCandidateList>();
@@ -7939,7 +7940,7 @@ void SKeyState::showModeMenu() {
     auto addressBarMode = engine_->config().chromiumAddressBarMode.value();
     const bool nativeEnabled = engine_->config().enableNative.value();
     std::string autoLabel = "1. Auto (";
-    autoLabel += outputModeName(effectiveMode());
+    autoLabel += gnomeOmniboxCaret() ? "Select" : outputModeName(effectiveMode());
     autoLabel += ")";
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
         engine_, this, autoLabel, SKeyChromiumAddressBarMode::Auto));

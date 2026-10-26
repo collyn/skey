@@ -124,6 +124,8 @@ private:
     /// GNOME Wayland + the omnibox's 1px-beam caret — the shift-select
     /// replacement target (see the consume path).
     bool gnomeOmniboxCaret() const;
+    /// Address-bar mode controls also cover Mutter's anonymous relay target.
+    bool addressBarModesAvailable() const;
     /// Select-and-overtype transport active: Auto-on-GNOME or the
     /// explicit "Select" address-bar mode (omnibox-shaped caret).
     bool selectTransportActive() const;

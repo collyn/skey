@@ -41,12 +41,14 @@ public:
         if (selStart < deletes) return false;
         const auto selBeginB = offset(text, selStart);
         const auto selEndB = offset(text, selEnd);
+        const auto deleteBeginB = offset(text, selStart - deletes);
         if (selBeginB == std::string::npos || selEndB == std::string::npos ||
+            deleteBeginB == std::string::npos ||
             selBeginB < oldWord.size() ||
             text.compare(selBeginB - oldWord.size(), oldWord.size(), oldWord) != 0)
             return false;
         expected_ = text;
-        expected_.erase(selBeginB - deletes, deletes);
+        expected_.erase(deleteBeginB, selBeginB - deleteBeginB);
         cursor_ = selStart - deletes;
         expectedAnchor_ = selEnd - deletes;
         word_ = oldWord;

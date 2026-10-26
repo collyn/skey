@@ -201,6 +201,7 @@ struct EnginePerformanceTest {
         SKeyEngine engine(&instance, false);
         engine.config_.outputMode.setValue(SKeyOutputMode::Auto);
         engine.config_.chromiumAddressBarMode.setValue(SKeyChromiumAddressBarMode::SurroundingText);
+        engine.config_.enableNative.setValue(native);
         engine.config_.replaceUinputWithNative.setValue(native);
         FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
         Editor input(instance.inputContextManager(), "google-chrome");
@@ -468,6 +469,72 @@ struct EnginePerformanceTest {
         }
         engine.config_.enableNative.setValue(false);
         engine.config_.replaceUinputWithNative.setValue(false);
+    }
+
+    static void gnomeAddressBarMenu(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        for (const char *program : {"gnome-shell", "google-chrome"}) {
+            TestInput input(instance.inputContextManager(), program);
+            input.setFocusGroup(&group);
+            // Mutter need not forward Url or SurroundingText capabilities.
+            input.setCapabilityFlags(std::string(program) == "gnome-shell"
+                                         ? CapabilityFlags{}
+                                         : CapabilityFlags(CapabilityFlag::Url));
+            input.setCursorRect(Rect(10, 50, 11, 70));
+            auto &state = *input.propertyFor(&engine.factory_);
+            state.cachedProgram_ = program;
+            engine.config_.outputMode.setValue(SKeyOutputMode::SurroundingText);
+            state.hasAppModeOverride_ = true;
+            state.appModeOverride_ = SKeyOutputMode::SurroundingText;
+            for (bool native : {false, true}) {
+                engine.config_.enableNative.setValue(native);
+                engine.config_.replaceUinputWithNative.setValue(false);
+                engine.config_.chromiumAddressBarMode.setValue(SKeyChromiumAddressBarMode::Auto);
+                state.modeCacheValid_ = false;
+                check(state.addressBarModesAvailable(), "GNOME omnibox exposes address-bar modes");
+                if (std::string(program) == "gnome-shell")
+                    check(!state.inChromiumAddressBar(), "mode controls preserve GNOME replacement routing");
+                check(state.effectiveMode() == SKeyOutputMode::Uinput && state.selectTransportActive(),
+                      "GNOME omnibox Auto selects shift-select over general/per-app modes");
+                state.showModeMenu();
+                check(state.modeMenuForAddressBar_, "GNOME omnibox uses address-bar menu");
+                auto list = input.inputPanel().candidateList();
+                check(list->candidate(0).text().toString() == "1. Auto (Select)",
+                      "GNOME Auto label names the Select transport");
+                const int selectIndex = native ? 5 : 4;
+                check(list->candidate(selectIndex).text().toString() ==
+                          std::to_string(selectIndex + 1) + ". Select",
+                      "GNOME omnibox includes numbered Select option");
+                KeyEvent select(&input, Key(native ? FcitxKey_6 : FcitxKey_5));
+                state.keyEvent(select);
+                check(select.accepted() && !state.modeMenuActive_ &&
+                          engine.config_.chromiumAddressBarMode.value() == SKeyChromiumAddressBarMode::Select,
+                      "GNOME Select shortcut saves address-bar mode");
+                state.modeCacheValid_ = false;
+                check(state.effectiveMode() == SKeyOutputMode::Uinput && state.selectTransportActive(),
+                      "explicit GNOME Select uses uinput shift-select");
+                state.showModeMenu();
+                check(input.inputPanel().candidateList()->cursorIndex() == selectIndex,
+                      "explicit GNOME Select highlights the Select row");
+                state.dismissModeMenu();
+            }
+            for (auto mode : {SKeyChromiumAddressBarMode::Uinput,
+                              SKeyChromiumAddressBarMode::SurroundingText,
+                              SKeyChromiumAddressBarMode::Preedit,
+                              SKeyChromiumAddressBarMode::Native,
+                              SKeyChromiumAddressBarMode::NoVietnamese}) {
+                engine.config_.chromiumAddressBarMode.setValue(mode);
+                check(!state.selectTransportActive(), "explicit GNOME modes do not silently use Select");
+            }
+            if (std::string(program) == "gnome-shell") {
+                input.setCursorRect(Rect(10, 50, 18, 70));
+                check(!state.addressBarModesAvailable(), "wide GNOME caret keeps ordinary app routing");
+                state.showModeMenu();
+                check(!state.modeMenuForAddressBar_, "ordinary GNOME fields keep application menu");
+                state.dismissModeMenu();
+            }
+        }
     }
 
     // Model keys arriving at Fcitx BEFORE the application. Consuming a real
@@ -1480,6 +1547,10 @@ struct EnginePerformanceTest {
         const std::string word = "t" + suffix;
         SKeyEngine engine(&instance, false);
         engine.config_.autoDelay.setValue(true);
+        // Exercise the regular 80ms acknowledgement deadline. Blind-mode
+        // repair has its own shorter deadline and separate regression cases.
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+        engine.a11yMonitor_->focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
         const bool wayland = !firefox && !chromiumX11;
         FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
         TimedInput input(instance.inputContextManager(), program);
@@ -1596,13 +1667,14 @@ struct EnginePerformanceTest {
             const auto earliest = ackDelayMs >= 0 ? acknowledgedAt + skey::UinputDeleteAck::guardUsec
                                                  : sentAt + skey::UinputDeleteAck::timeoutUsec;
             check(input.committedAt >= earliest, "never commit before acknowledgement guard or bounded timeout");
-            check(state.uinputAckUnavailable_ == (ackDelayMs < 0),
-                  "only missing/unusable acknowledgements disable further waits for this focus");
+            check(state.uinputAckUnavailable_ == (ackDelayMs < 0 && !wayland),
+                  "X11 backs off missing acknowledgements; Wayland keeps family verification armed");
             if (ackDelayMs < 0) {
                 input.surroundingText().setText("xin tư!", 6, 6);
                 input.updateSurroundingText();
                 state.sendBackspaceUinput(2, 0, "tư");
-                check(!state.uinputDeleteAck_.active(), "silent input must not pay 80ms on every replacement");
+                check(state.uinputDeleteAck_.active() == wayland,
+                      "missing acknowledgements back off on X11 and remain armed for Wayland browsers");
             }
         }
         state.uinputTestSend_ = {};
@@ -1615,11 +1687,11 @@ struct EnginePerformanceTest {
                                  bool sheets = false, bool omnibox = false) {
         SKeyEngine engine(&instance, false);
         engine.config_.autoDelay.setValue(autoDelay);
-        if (sheets) {
-            engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
-            engine.a11yMonitor_->sheetsEditorFocused_ = true;
-            engine.a11yMonitor_->focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
-        }
+        // Test the normal scope independently of the blind-browser repair
+        // policy, which deliberately arms acknowledgement without a11y.
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+        engine.a11yMonitor_->sheetsEditorFocused_ = sheets;
+        engine.a11yMonitor_->focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
         FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
         TestInput input(instance.inputContextManager(), program);
         input.setFocusGroup(&group);
@@ -1640,8 +1712,13 @@ struct EnginePerformanceTest {
               "create scope-test transport");
         captureUinput(state, sockets[0]);
         state.sendBackspaceUinput(2, 0, "tư");
+        if (state.uinputDeleteAck_.active() != expected)
+            std::cerr << "Ack scope: program=" << program << " wayland=" << wayland
+                      << " autoDelay=" << autoDelay << " overrideMs=" << overrideMs
+                      << " url=" << url << " sheets=" << sheets << " omnibox=" << omnibox
+                      << " expected=" << expected << " actual=" << state.uinputDeleteAck_.active() << '\n';
         check(state.uinputDeleteAck_.active() == expected,
-              "ack timing is limited to automatic browser page replacements");
+              "ack timing respects X11 browser-page scope and Wayland family verification");
         if (expected) {
             engine.appDelayOverrides_[skey::appDelayKey(program, wayland)].preCommitMs = 7;
             state.uinputDeleting_ = true;
@@ -2776,6 +2853,14 @@ static void policies() {
     check(!ack.acknowledged(), "selected text is not deletion acknowledgement");
     ack.observe(true, "đ", 1, 1, start + 3000);
     check(ack.acknowledged(), "exact multi-delete result acknowledges");
+    check(ack.start("🙂đây!tail", 4, 9, "đây", 2, start),
+          "UTF-8 prefix and autocomplete selection are trackable");
+    ack.observe(true, "🙂đ!tail", 2, 7, start + 1000);
+    check(ack.acknowledged(), "multi-character deletion preserves UTF-8 prefix and selected tail");
+    check(ack.start("a🙂ớz", 3, 3, "🙂ớ", 2, start),
+          "mixed four-byte and three-byte characters are trackable");
+    ack.observe(true, "az", 1, 1, start + 1000);
+    check(ack.acknowledged(), "deletion removes whole UTF-8 characters before the caret");
     ack.observe(false, "đ", 1, 1, start + 4000);
     check(!ack.acknowledged(), "new invalid snapshot revokes earlier acknowledgement");
     check(ack.nextCheckDelay(start + 4000) == ack.timeoutUsec - 4000,
@@ -2843,6 +2928,14 @@ int main(int argc, char **argv) {
     // active-window origin or DPI. Live X11 geometry is tested separately.
     unsetenv("DISPLAY");
     unsetenv("WAYLAND_DISPLAY");
+
+    if (std::getenv("SKEY_TEST_GNOME_MENU_ONLY")) {
+        setenv("XDG_CURRENT_DESKTOP", "GNOME", 1);
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::gnomeAddressBarMenu(instance);
+        std::cout << "GNOME address-bar menu: " << checks << " checks passed\n";
+        return 0;
+    }
 
     if (std::getenv("SKEY_TEST_X11_SELECT_ONLY")) {
         fcitx::Instance instance(argc, argv);
@@ -3015,10 +3108,12 @@ int main(int argc, char **argv) {
         fcitx::EnginePerformanceTest::chromiumAckScope(instance, false, "code", true, -1, false, false);
         fcitx::EnginePerformanceTest::chromiumAckScope(instance, false, "google-chrome", true, -1, false, false, true);
         fcitx::EnginePerformanceTest::chromiumAckScope(instance, false, "google-chrome", true, -1, false, false, false, true);
-        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", false, -1, false, false);
-        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", true, 7, false, false);
-        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", true, -1, true, false);
-        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "antigravity-ide", true, -1, false, false);
+        // Wayland verifies Chromium-family deletes even with manual timing
+        // or Url hints; the commit stage still honors a manual delay.
+        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", false, -1, false, true);
+        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", true, 7, false, true);
+        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", true, -1, true, true);
+        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "antigravity-ide", true, -1, false, true);
     }
     for (bool wayland : {false, true})
         for (bool cap : {false, true})

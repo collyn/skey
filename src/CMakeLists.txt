@@ -90,6 +90,8 @@ target_include_directories(test_engine_performance PRIVATE ${SKEY_ENGINE_DIR} ${
 target_compile_features(test_engine_performance PRIVATE cxx_std_17)
 target_compile_definitions(test_engine_performance PRIVATE SKEY_TESTING=1 FCITX_SKEY_ICON_PATH="/tmp/skey-test.svg" FCITX_SKEY_ICON_DIR="/tmp")
 add_test(NAME EnginePerformance COMMAND test_engine_performance)
+add_test(NAME GnomeAddressBarMenu COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_GNOME_MENU_ONLY=1 $<TARGET_FILE:test_engine_performance>)
 add_test(NAME X11SelectReplacement COMMAND ${CMAKE_COMMAND} -E env
     SKEY_TEST_X11_SELECT_ONLY=1 $<TARGET_FILE:test_engine_performance>)
 add_test(NAME InjectedBackspaceContract COMMAND ${CMAKE_COMMAND} -E env
