@@ -96,7 +96,9 @@ add_test(NAME GnomeOmniboxUinput COMMAND ${CMAKE_COMMAND} -E env
     SKEY_TEST_GNOME_UINPUT_ONLY=1 $<TARGET_FILE:test_engine_performance>)
 add_test(NAME GnomeOmniboxEditing COMMAND ${CMAKE_COMMAND} -E env
     SKEY_TEST_GNOME_EDIT_ONLY=1 $<TARGET_FILE:test_engine_performance>)
-set_tests_properties(GnomeOmniboxUinput GnomeOmniboxEditing PROPERTIES TIMEOUT 15)
+add_test(NAME GnomeOmniboxNative COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_GNOME_NATIVE_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+set_tests_properties(GnomeOmniboxUinput GnomeOmniboxEditing GnomeOmniboxNative PROPERTIES TIMEOUT 15)
 add_test(NAME X11SelectReplacement COMMAND ${CMAKE_COMMAND} -E env
     SKEY_TEST_X11_SELECT_ONLY=1 $<TARGET_FILE:test_engine_performance>)
 add_test(NAME InjectedBackspaceContract COMMAND ${CMAKE_COMMAND} -E env

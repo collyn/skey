@@ -471,7 +471,26 @@ struct EnginePerformanceTest {
         engine.config_.replaceUinputWithNative.setValue(false);
     }
 
-    static void gnomeOmniboxUinput(Instance &instance) {
+    static void configureGnomeOmnibox(SKeyEngine &engine, bool native) {
+        engine.config_.enableNative.setValue(native);
+        engine.config_.chromiumAddressBarMode.setValue(
+            native ? SKeyChromiumAddressBarMode::Native : SKeyChromiumAddressBarMode::Uinput);
+    }
+
+    static void captureGnomeTransport(SKeyState &state, int fd, bool native) {
+        captureUinput(state, fd);
+        check(state.useNativeBackspaceTransport() == native,
+              "GNOME omnibox selects the requested replacement transport");
+        if (native) {
+            state.nativeTestSend_ = std::move(state.uinputTestSend_);
+            state.uinputTestSend_ = [](int, uint32_t, uint32_t) {
+                check(false, "Native must not fall back to Uinput");
+                return false;
+            };
+        }
+    }
+
+    static void gnomeOmniboxReplacement(Instance &instance, bool native = false) {
         class Omnibox : public TestInput {
         public:
             using TestInput::TestInput;
@@ -497,7 +516,7 @@ struct EnginePerformanceTest {
             for (bool selected : {false, true})
                 for (bool reversed : {false, true}) {
                     SKeyEngine engine(&instance, false);
-                    engine.config_.chromiumAddressBarMode.setValue(SKeyChromiumAddressBarMode::Uinput);
+                    configureGnomeOmnibox(engine, native);
                     FocusGroup group("wayland:test", instance.inputContextManager());
                     Omnibox input(instance.inputContextManager(), "gnome-shell");
                     input.setFocusGroup(&group);
@@ -517,14 +536,14 @@ struct EnginePerformanceTest {
                     int sockets[2];
                     check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
                           "isolate GNOME omnibox Backspace transport");
-                    captureUinput(state, sockets[0]);
+                    captureGnomeTransport(state, sockets[0], native);
                     KeyEvent tone(&input, Key(FcitxKey_f));
                     state.keyEvent(tone);
                     uint32_t request[4] = {};
-                    check(recv(sockets[1], request, sizeof(request), 0) == sizeof(request), "GNOME Uinput sends a replacement");
+                    check(recv(sockets[1], request, sizeof(request), 0) == sizeof(request), "GNOME replacement sends a replacement");
                     check(request[0] == (selected ? 3u : 2u) && request[1] == 0 && request[3] == 5000,
-                          "GNOME Uinput dismisses only active autofill and paces Backspaces");
-                    check(!state.uinputShiftSelect_, "explicit Uinput stays on Backspace transport");
+                          "GNOME replacement dismisses only active autofill and paces Backspaces");
+                    check(!state.uinputShiftSelect_, "explicit replacement mode stays on Backspace transport");
                     if (reversed) {
                         KeyEvent append(&input, Key(FcitxKey_o));
                         state.keyEvent(append);
@@ -545,7 +564,7 @@ struct EnginePerformanceTest {
                         state.keyEvent(append);
                         if (!append.accepted()) input.text += "o";
                     }
-                    check(input.text == prefix + "chào", "GNOME Uinput produces chào without leftover a or lost prefix");
+                    check(input.text == prefix + "chào", "GNOME replacement produces chào without leftover a or lost prefix");
                     state.resetForCellChange();
                     close(sockets[1]);
                 }
@@ -553,8 +572,8 @@ struct EnginePerformanceTest {
         // non-relay program must not receive the GNOME-only extra BS.
         for (int scenario = 0; scenario < 3; ++scenario) {
             SKeyEngine engine(&instance, false);
-            engine.config_.chromiumAddressBarMode.setValue(SKeyChromiumAddressBarMode::Uinput);
-            engine.config_.outputMode.setValue(SKeyOutputMode::Uinput);
+            configureGnomeOmnibox(engine, native);
+            engine.config_.outputMode.setValue(native ? SKeyOutputMode::Native : SKeyOutputMode::Uinput);
             const std::string program = scenario == 2 ? "code" : "gnome-shell";
             FocusGroup group("wayland:test", instance.inputContextManager());
             TestInput input(instance.inputContextManager(), program);
@@ -569,7 +588,7 @@ struct EnginePerformanceTest {
             state.committedLen_ = 3;
             int sockets[2];
             check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0, "isolate negative GNOME cases");
-            captureUinput(state, sockets[0]);
+            captureGnomeTransport(state, sockets[0], native);
             KeyEvent tone(&input, Key(FcitxKey_f));
             state.keyEvent(tone);
             uint32_t request[4] = {};
@@ -581,7 +600,7 @@ struct EnginePerformanceTest {
         }
     }
 
-    static void gnomeOmniboxAppendAfterTimeout(Instance &instance) {
+    static void gnomeOmniboxAppendAfterTimeout(Instance &instance, bool native = false) {
         class Omnibox : public TestInput {
         public:
             using TestInput::TestInput;
@@ -610,7 +629,7 @@ struct EnginePerformanceTest {
         for (const std::string &prefix : {std::string("chào "), std::string("chào các ")})
             for (bool queued : {false, true}) {
                 SKeyEngine engine(&instance, false);
-                engine.config_.chromiumAddressBarMode.setValue(SKeyChromiumAddressBarMode::Uinput);
+                configureGnomeOmnibox(engine, native);
                 FocusGroup group("wayland:test", instance.inputContextManager());
                 Omnibox input(instance.inputContextManager(), "gnome-shell");
                 input.setFocusGroup(&group);
@@ -627,7 +646,7 @@ struct EnginePerformanceTest {
                 int sockets[2];
                 check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
                       "isolate GNOME subsequent-word replacement");
-                captureUinput(state, sockets[0]);
+                captureGnomeTransport(state, sockets[0], native);
                 KeyEvent tone(&input, Key(FcitxKey_s));
                 state.keyEvent(tone);
                 uint32_t request[4] = {};
@@ -656,7 +675,7 @@ struct EnginePerformanceTest {
                 }
                 input.flush();
                 check(input.text == prefix + "các" && input.droppedRaw == 0,
-                      "GNOME Uinput preserves the final c after an unconfirmed tone replacement");
+                      "GNOME replacement preserves the final c after an unconfirmed tone replacement");
                 check(input.commits == std::vector<std::string>{"á", "c"},
                       "GNOME replacement and append use one ordered commit channel");
                 state.resetForCellChange();
@@ -664,7 +683,7 @@ struct EnginePerformanceTest {
             }
     }
 
-    static void gnomeOmniboxEditing(Instance &instance) {
+    static void gnomeOmniboxEditing(Instance &instance, bool native = false) {
         class Editor : public TestInput {
         public:
             using TestInput::TestInput;
@@ -727,7 +746,7 @@ struct EnginePerformanceTest {
                                     Edit::ClearWithDelete, Edit::ClearAddressBar,
                                     Edit::DeleteLastLetter, Edit::RepeatEdits}) {
             SKeyEngine engine(&instance, false);
-            engine.config_.chromiumAddressBarMode.setValue(SKeyChromiumAddressBarMode::Uinput);
+            configureGnomeOmnibox(engine, native);
             // These cases test editing, not the acknowledgement deadline;
             // the preceding regression covers stale snapshots and timeouts.
             engine.config_.autoDelay.setValue(false);
@@ -742,7 +761,7 @@ struct EnginePerformanceTest {
             int sockets[2];
             check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
                   "isolate GNOME edit/retype session");
-            captureUinput(state, sockets[0]);
+            captureGnomeTransport(state, sockets[0], native);
             input.publish();
             auto press = [&](Key key, bool publish = true) {
                 KeyEvent event(&input, key);
@@ -3282,10 +3301,20 @@ int main(int argc, char **argv) {
     unsetenv("DISPLAY");
     unsetenv("WAYLAND_DISPLAY");
 
+    if (std::getenv("SKEY_TEST_GNOME_NATIVE_ONLY")) {
+        setenv("XDG_CURRENT_DESKTOP", "GNOME", 1);
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::gnomeOmniboxReplacement(instance, true);
+        fcitx::EnginePerformanceTest::gnomeOmniboxAppendAfterTimeout(instance, true);
+        fcitx::EnginePerformanceTest::gnomeOmniboxEditing(instance, true);
+        std::cout << "GNOME omnibox Native: " << checks << " checks passed\n";
+        return 0;
+    }
+
     if (std::getenv("SKEY_TEST_GNOME_UINPUT_ONLY")) {
         setenv("XDG_CURRENT_DESKTOP", "GNOME", 1);
         fcitx::Instance instance(argc, argv);
-        fcitx::EnginePerformanceTest::gnomeOmniboxUinput(instance);
+        fcitx::EnginePerformanceTest::gnomeOmniboxReplacement(instance);
         fcitx::EnginePerformanceTest::gnomeOmniboxAppendAfterTimeout(instance);
         std::cout << "GNOME omnibox Uinput: " << checks << " checks passed\n";
         return 0;

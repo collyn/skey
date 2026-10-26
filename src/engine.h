@@ -354,9 +354,10 @@ private:
     std::unique_ptr<EventSourceTime> uinputRequestTimer_;
     std::string uinputStatus_;
 #ifdef SKEY_TESTING
-    // Request capture only; tests never open the desktop's uinput device.
+    // Request capture only; tests never inject keys into the desktop.
     std::function<bool(int, uint32_t, uint32_t)> uinputTestSend_;
     bool uinputTestReady_ = true;
+    std::function<bool(int, uint32_t, uint32_t)> nativeTestSend_;
 #endif
     // Uinput replacement state
     bool uinputDeleting_ = false;

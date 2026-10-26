@@ -3335,7 +3335,14 @@ bool SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
     // Preserve the Uinput event contract: N deletions followed by one
     // anchor. Fcitx must pass the real deletions to the application and
     // consume only the anchor in handlePendingUinputBackspace().
-    if (engine_->native_.backspaces(count, flags & 1, paceUsec)) {
+#ifdef SKEY_TESTING
+    const bool sent = nativeTestSend_
+                          ? nativeTestSend_(count, flags, paceUsec)
+                          : engine_->native_.backspaces(count, flags & 1, paceUsec);
+#else
+    const bool sent = engine_->native_.backspaces(count, flags & 1, paceUsec);
+#endif
+    if (sent) {
       uinputBsOutstanding_ += count;
       SKEY_DEBUG() << "Native: sent BS=" << count << " (includes sync anchor) paceUs=" << paceUsec;
       return true;
@@ -4821,6 +4828,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   }
 
   if (useNativeBackspaceTransport() && !modeMenuActive_ &&
+#ifdef SKEY_TESTING
+      !nativeTestSend_ &&
+#endif
       !keyEvent.key().check(engine_->modeMenuKey())) {
     engine_->native_.start();
     const auto status = engine_->native_.status();
@@ -6344,7 +6354,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               int realBackspaces = deleteLen;
               bool dismissGnomeAutofill = false;
               if (appProgram() == "gnome-shell" && gnomeOmniboxCaret() &&
-                  !useNativeBackspaceTransport() && isAutofillCertain()) {
+                  isAutofillCertain()) {
                 // The relay hides Chrome's identity, so the normal addrbar
                 // route above does not run. A selected suggestion consumes
                 // the first BS without deleting the typed suffix. Require
