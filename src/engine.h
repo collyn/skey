@@ -97,6 +97,9 @@ private:
     friend class AddressBarModeCandidateWord;
     SKeyOutputMode effectiveMode() const;
     bool inChromiumAddressBar() const;
+    bool inFirefoxAddressBar() const;
+    bool x11AddressBarCaret() const;
+    bool isFirefoxBrowserCached() const;
     bool isX11Tabby() const;
     bool useOrderedUinputReplay() const;
     bool forwardUserBackspace() const;
@@ -113,6 +116,20 @@ private:
     const struct UinputTiming& uinputTiming() const;
     bool useUinputMode() const;
     bool useNativeMode() const;
+    enum class EditChannel { FcitxForward, Uinput, Native };
+    struct EditRoute {
+        EditChannel channel;
+        const char *reason;
+        const char *name() const {
+            switch (channel) {
+            case EditChannel::FcitxForward: return "fcitx-forward";
+            case EditChannel::Native: return "native";
+            case EditChannel::Uinput: return "uinput";
+            }
+            return "uinput";
+        }
+    };
+    EditRoute editRoute(bool injectedOnly = false) const;
     bool useNativeBackspaceTransport() const;
     bool nativeFailed_ = false;
     std::string nativeStatus_;
@@ -135,7 +152,8 @@ private:
     bool selectTransportActive() const;
     bool useX11ForwardedReplacement() const;
     bool tryX11ForwardedReplacement(int deleteLen, const std::string &text,
-                                    int finalLen);
+                                    int finalLen, const std::string &oldWord,
+                                    const std::string &newWord, bool select = false);
     bool x11ForwardedReplacement_ = false;
     int forwardedFocusRetries_ = 0;
     /// Shift+Left select-and-overtype replacement (self-contained).
@@ -313,6 +331,7 @@ private:
     int addrBarLeftEdgeCaretX_ = -1;
     mutable int cachedIsTerminalApp_ = -1; // tristate: name list + shell scan
     mutable int cachedIsFirefoxOrSnap_ = -1;
+    mutable int cachedIsFirefoxBrowser_ = -1;
     mutable int cachedIsWebKitGtk_ = -1;
     mutable std::string cachedWebKitProgram_;
     // Sticky Uinput for Chromium-family apps that initially report bare caps

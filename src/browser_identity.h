@@ -27,6 +27,19 @@ inline bool isVivaldiBrowser(const std::string &program) {
            name == "vivaldi-snapshot" || name == "com.vivaldi.vivaldi";
 }
 
+inline bool isFirefoxBrowser(const std::string &program) {
+    const auto name = browserProgramName(program);
+    static constexpr std::string_view names[] = {
+        "firefox", "firefox-bin", "firefox-esr", "firefox-developer-edition",
+        "firefox-nightly", "org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition",
+        "librewolf", "io.gitlab.librewolf-community", "floorp", "one.ablaze.floorp",
+        "zen", "zen-bin", "zen-browser", "app.zen_browser.zen",
+        "waterfox", "net.waterfox.waterfox", "icecat", "org.gnu.icecat",
+        "firedragon", "mercury", "seamonkey"
+    };
+    return std::find(std::begin(names), std::end(names), name) != std::end(names);
+}
+
 // Browser identity, not Chromium runtime identity. An Electron executable or
 // app id containing "chrome"/"opera" must never enable omnibox editing.
 inline bool isChromiumBrowser(const std::string &program) {

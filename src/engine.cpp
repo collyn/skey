@@ -358,7 +358,8 @@ bool SKeyState::gnomeOmniboxCaret() const {
 bool SKeyState::addressBarModesAvailable() const {
   // Keep GNOME's existing replacement routing intact: only its mode
   // controls need to recognize the relay's caret signature as well.
-  return inChromiumAddressBar() || gnomeOmniboxCaret();
+  return inChromiumAddressBar() || inFirefoxAddressBar() ||
+         (gnomeOmniboxCaret() && !isFirefoxBrowserCached());
 }
 
 bool SKeyState::gnomeRelayOmnibox() const {
@@ -370,7 +371,8 @@ bool SKeyState::gnomeRelayOmnibox() const {
 
 bool SKeyState::autoSelectAddressBar() const {
   return gnomeOmniboxCaret() ||
-         (!isWayland() && gnomeDesktop() && inChromiumAddressBar());
+         (!isWayland() && gnomeDesktop() &&
+          (inChromiumAddressBar() || inFirefoxAddressBar()));
 }
 
 // Select-and-overtype is preferred by GNOME Auto or explicitly selected.
@@ -443,8 +445,11 @@ FCITX_DEFINE_LOG_CATEGORY(skey_log, "skey");
 
 bool SKeyState::tryX11ForwardedReplacement(int deleteLen,
                                           const std::string &text,
-                                          int finalLen) {
-  if (!useX11ForwardedReplacement()) return false;
+                                          int finalLen,
+                                          const std::string &oldWord,
+                                          const std::string &newWord, bool select) {
+  const auto route = editRoute();
+  if (route.channel != EditChannel::FcitxForward) return false;
   // Supported D-Bus/IBus clients accept forwarded edits. Keep these on
   // the IM channel, instead of waiting for kernel echoes.
   x11ForwardedReplacement_ = true;
@@ -455,19 +460,56 @@ bool SKeyState::tryX11ForwardedReplacement(int deleteLen,
   uinputPostVerify_ = false;
   expectedUinputBackspaces_ = seenUinputBackspaces_ = 0;
   pendingUinputCommit_ = text;
+  bool selectAll = false;
+  bool forwardSelect = select;
+  const auto &surrounding = ic_->surroundingText();
+  if (isFirefoxOrSnap() && surrounding.isValid() && !oldWord.empty()) {
+    const auto &value = surrounding.text();
+    const auto cursor = std::min(surrounding.cursor(), surrounding.anchor());
+    const auto wordLen = utf8::length(oldWord);
+    const bool initialWord = cursor == wordLen &&
+        value.compare(0, oldWord.size(), oldWord) == 0;
+    const bool urlSuffix = initialWord && value.size() > oldWord.size() &&
+        value.find_first_not_of(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+            "-._~:/?#[]@!$&'()*+,;=%", oldWord.size()) == std::string::npos;
+    SKEY_DEBUG() << "Uinput: Firefox forward snapshot bytes=" << value.size()
+                 << " cursor=" << surrounding.cursor()
+                 << " anchor=" << surrounding.anchor()
+                 << " initialWord=" << initialWord << " urlSuffix=" << urlSuffix;
+    if (initialWord && (value == oldWord || urlSuffix)) {
+      pendingUinputCommit_ = newWord;
+      if (select && value == oldWord) {
+        // The complete field is ours. Select all also covers inline autofill
+        // that Firefox omits from surrounding text.
+        selectAll = true;
+        deleteLen = 1;
+      } else {
+        // Preserve text after the caret when it may be an existing URL suffix.
+        forwardSelect = false;
+        deleteLen = static_cast<int>(wordLen) + 1;
+      }
+      SKEY_DEBUG() << "Uinput: Firefox initial field word, replace whole word edits="
+                   << deleteLen << " selectAll=" << selectAll;
+    }
+  }
   uinputPendingFinalLen_ = finalLen;
   uinputDeleting_ = true;
+  const Key edit = selectAll ? Key(FcitxKey_a, KeyState::Ctrl)
+      : forwardSelect ? Key(FcitxKey_Left, KeyState::Shift) : Key(FcitxKey_BackSpace);
   for (int i = 0; i < deleteLen; ++i) {
-    ic_->forwardKey(Key(FcitxKey_BackSpace));
-    ic_->forwardKey(Key(FcitxKey_BackSpace), true);
+    ic_->forwardKey(edit);
+    ic_->forwardKey(edit, true);
   }
   const auto ov = appDelayOverrideResolved();
   const uint64_t delay = ov.preCommitMs >= 0
       ? static_cast<uint64_t>(std::min(ov.preCommitMs, skey::kMaxPreCommitMs)) * 1000
       : std::max<uint64_t>(15000, static_cast<uint64_t>(deleteLen) * 4000);
   engine_->noteAppSleep(appProgram(), false, delay);
-  SKEY_DEBUG() << "Uinput: X11 " << ic_->frontend() << " forward BS=" << deleteLen
-               << ", settle " << delay / 1000 << "ms";
+  SKEY_DEBUG() << "Uinput: X11 " << ic_->frontend()
+               << (selectAll ? " forward Ctrl+A=" : forwardSelect ? " forward Shift+Left=" : " forward BS=")
+               << deleteLen
+               << ", settle " << delay / 1000 << "ms reason=" << route.reason;
   scheduleUinputSettle(delay, 0, ov.postCommitMs);
   return true;
 }
@@ -488,6 +530,12 @@ bool SKeyState::tryShiftSelectReplace(int deleteLen,
                                       KeyEvent &keyEvent) {
   if (!selectTransportActive()) {
     return false;
+  }
+  if (tryX11ForwardedReplacement(deleteLen, addPart,
+          static_cast<int>(utf8::length(newComposed)), oldComposed, newComposed, true)) {
+    keyEvent.filterAndAccept();
+    committedLen_ = static_cast<int>(utf8::length(newComposed));
+    return true;
   }
   SKEY_DEBUG() << "Uinput: shift-select replace '" << addPart << "'";
   bsSentAt_ = now(CLOCK_MONOTONIC);
@@ -559,29 +607,56 @@ static bool isOfficeSuiteApp(const std::string &prog) {
   return false;
 }
 
-// Ordered D-Bus and supported IBus clients avoid a kernel/XTest round trip.
-// Keep clients with known application-specific replacement semantics separate.
-bool SKeyState::useX11ForwardedReplacement() const {
+SKeyState::EditRoute SKeyState::editRoute(bool injectedOnly) const {
+  const auto mode = effectiveMode();
+  const bool native = mode == SKeyOutputMode::Native ||
+      (mode == SKeyOutputMode::SurroundingText &&
+       engine_->config().replaceUinputWithNative.value() &&
+       engine_->config().enableNative.value() && inChromiumAddressBar());
+  const EditChannel fallback = native ? EditChannel::Native : EditChannel::Uinput;
+  auto keep = [fallback](const char *reason) { return EditRoute{fallback, reason}; };
+  if (injectedOnly) return keep(native ? "native-configured" : "uinput-configured");
+  if (isWayland()) return keep("wayland-input");
   const char *waylandDisplay = getenv("WAYLAND_DISPLAY");
-  if (isWayland() || (waylandDisplay && *waylandDisplay) || !gnomeDesktop() ||
-      !useUinputMode()) return false;
+  if (waylandDisplay && *waylandDisplay) return keep("xwayland-input");
+  if (!gnomeDesktop()) return keep("desktop-policy");
+  if (mode != SKeyOutputMode::Native && mode != SKeyOutputMode::Uinput)
+    return keep("mode-does-not-forward");
+
   const std::string_view frontend(ic_->frontend());
   const auto &program = appProgram();
+  const auto caps = ic_->capabilityFlags();
+  const char *reason;
   if (frontend == "ibus") {
-    // GNOME Shell search uses IBus with an empty program and no ordering
-    // capability. IBus forwards edits; SDL ignores them and GTK4 loops
-    // them back into the IM instead of delivering them to the widget.
     if (program.rfind("SDL", 0) == 0 || program.rfind("gtk4-im:", 0) == 0)
-      return false;
-  } else if (frontend != "dbus" ||
-             !ic_->capabilityFlags().test(CapabilityFlag::KeyEventOrderFix)) {
-    return false;
+      return keep("ibus-unsupported-client");
+    reason = "ibus-forward-key";
+  } else if (frontend == "fcitx4") {
+    if (!caps.test(CapabilityFlag::FormattedPreedit) &&
+        !caps.test(CapabilityFlag::SurroundingText))
+      return keep("fcitx4-missing-capability");
+    reason = "fcitx4-forward-key";
+  } else if (frontend == "dbus") {
+    if (!caps.test(CapabilityFlag::KeyEventOrderFix))
+      return keep("dbus-missing-ordering");
+    reason = "dbus-ordered-forward-key";
+  } else {
+    return keep("unsupported-frontend");
   }
-  if (isOfficeSuiteApp(program) || isX11Tabby() || inChromiumAddressBar())
-    return false;
+  if (isOfficeSuiteApp(program) || isX11Tabby())
+    return keep("application-specific-editing");
+  if (inChromiumAddressBar()) return keep("chromium-omnibox");
+  if (selectTransportActive() && !inFirefoxAddressBar())
+    return keep("select-needs-injector");
   const auto *monitor = engine_->a11yMonitor();
-  return !(skey::isChromiumBrowser(appProgram()) && monitor &&
-           monitor->isFocusSnapshotFresh(5000000) && monitor->sheetsEditorFocused());
+  if (skey::isChromiumBrowser(program) && monitor &&
+      monitor->isFocusSnapshotFresh(5000000) && monitor->sheetsEditorFocused())
+    return keep("sheets-editor");
+  return {EditChannel::FcitxForward, reason};
+}
+
+bool SKeyState::useX11ForwardedReplacement() const {
+  return editRoute().channel == EditChannel::FcitxForward;
 }
 
 // Shared with the settings GUI via src/app_delay_key.h — the key scheme
@@ -2015,6 +2090,31 @@ bool SKeyState::forwardUserBackspace() const {
          !isChromiumBrowser(appProgram());
 }
 
+bool SKeyState::x11AddressBarCaret() const {
+  const double dpiScale = std::clamp(x11DisplayDpi() / 96.0, 1.0, 2.5);
+  const int thinCaretMaxW = static_cast<int>(2 * dpiScale + 0.5);
+  const int barMinH = static_cast<int>(16 * dpiScale + 0.5);
+  const int barMaxH = static_cast<int>(24 * dpiScale + 0.5);
+  const int barTopMax = static_cast<int>(200 * dpiScale + 0.5);
+  // X11 cursor rectangles are root-relative. Comparing their absolute Y
+  // to the toolbar height misclassifies an omnibox when its window moves.
+  const int caretTop = ic_->cursorRect().top() - x11ActiveWindowTop().value_or(0);
+  const auto &rect = ic_->cursorRect();
+  return rect.width() <= thinCaretMaxW &&
+         rect.height() >= barMinH && rect.height() <= barMaxH &&
+         caretTop >= 0 && caretTop < barTopMax;
+}
+
+bool SKeyState::inFirefoxAddressBar() const {
+  if (!isFirefoxBrowserCached()) return false;
+  if (ic_->capabilityFlags().test(CapabilityFlag::Url)) return true;
+  if (isWayland()) return false;
+  auto *monitor = engine_->a11yMonitor();
+  if (monitor && monitor->isFocusSnapshotFresh(5000000) &&
+      monitor->isWebContentFocused()) return false;
+  return x11AddressBarCaret();
+}
+
 // True when the cursor is in a Chromium-family browser's address/search bar
 // (as opposed to web content). Two detection paths: the native Url capability
 // (Wayland) and the AT-SPI2 accessibility monitor (X11 / Vivaldi HTML UI).
@@ -2064,19 +2164,7 @@ bool SKeyState::inChromiumAddressBar() const {
     // width ≤2 vs web editors' 81+); width is the real discriminator,
     // height/top are sanity bounds.  The a11y web-content/browser-UI
     // split above is DPI-independent and does the heavy lifting.
-    const double dpiScale = std::clamp(x11DisplayDpi() / 96.0, 1.0, 2.5);
-    const int thinCaretMaxW = static_cast<int>(2 * dpiScale + 0.5);
-    const int barMinH = static_cast<int>(16 * dpiScale + 0.5);
-    const int barMaxH = static_cast<int>(24 * dpiScale + 0.5);
-    const int barTopMax = static_cast<int>(200 * dpiScale + 0.5);
-    // X11 cursor rectangles are root-relative. Comparing their absolute Y
-    // to the toolbar height misclassifies an omnibox when its window moves.
-    const int caretTop = ic_->cursorRect().top() - x11ActiveWindowTop().value_or(0);
-    const auto &rect = ic_->cursorRect();
-    const bool addrbarShaped = rect.width() <= thinCaretMaxW &&
-                              rect.height() >= barMinH &&
-                              rect.height() <= barMaxH && caretTop >= 0 &&
-                              caretTop < barTopMax;
+    const bool addrbarShaped = x11AddressBarCaret();
     // Fresh snapshot with WEB CONTENT focus means the user is in a web
     // page (Facebook chat, forms...) — never the omnibox.  Must be
     // checked BEFORE the verdict latch and the cursor-rect fallback: a
@@ -2241,13 +2329,7 @@ bool SKeyState::useNativeMode() const {
 }
 
 bool SKeyState::useNativeBackspaceTransport() const {
-  // The omnibox uses injected deletions even in Surrounding Text.
-  // Keep the output mode, but honor the configured replacement transport.
-  return useNativeMode() ||
-         (effectiveMode() == SKeyOutputMode::SurroundingText &&
-          engine_->config().replaceUinputWithNative.value() &&
-          engine_->config().enableNative.value() &&
-          inChromiumAddressBar());
+  return editRoute(true).channel == EditChannel::Native;
 }
 
 bool SKeyState::useUinputMode() const {
@@ -2839,6 +2921,34 @@ bool SKeyState::isTerminalAppCached() const {
   return term;
 }
 
+bool SKeyState::isFirefoxBrowserCached() const {
+  if (cachedIsFirefoxBrowser_ >= 0) return cachedIsFirefoxBrowser_ == 1;
+  const auto &program = appProgram();
+  bool firefox = skey::isFirefoxBrowser(program);
+  if (!firefox && !program.empty() &&
+      program.find("thunderbird") == std::string::npos) {
+    const int pid = a11yAppPid();
+    if (pid > 0) {
+      firefox = processHasGeckoMarker(pid);
+    } else if (DIR *dir = opendir("/proc")) {
+      while (auto *entry = readdir(dir)) {
+        if (!isdigit(entry->d_name[0])) continue;
+        std::ifstream file(std::string("/proc/") + entry->d_name + "/comm");
+        std::string comm;
+        if (std::getline(file, comm) &&
+            (comm == program || (comm.size() == 15 && program.compare(0, 15, comm) == 0)) &&
+            processHasGeckoMarker(static_cast<pid_t>(std::atoi(entry->d_name)))) {
+          firefox = true;
+          break;
+        }
+      }
+      closedir(dir);
+    }
+  }
+  cachedIsFirefoxBrowser_ = firefox ? 1 : 0;
+  return firefox;
+}
+
 bool SKeyState::isFirefoxOrSnap() const {
   if (cachedIsFirefoxOrSnap_ >= 0) {
     return cachedIsFirefoxOrSnap_ == 1;
@@ -3222,6 +3332,7 @@ void SKeyState::activate() {
   triggerBackoffUntilUsec_ = 0;
   cachedIsChromium_ = -1;
   cachedIsFirefoxOrSnap_ = -1;
+  cachedIsFirefoxBrowser_ = -1;
   cachedIsTerminalApp_ = -1;
   cachedIsWebKitGtk_ = -1;
   // A bare-caps decision belongs to the previous focus session.  A stale
@@ -3259,8 +3370,8 @@ void SKeyState::activate() {
   }
   auto mode = effectiveMode();
   auto configuredMode = engine_->config().outputMode.value();
-  if (useNativeBackspaceTransport() && !useX11ForwardedReplacement() && !appExcluded_)
-    engine_->native_.start();
+  const auto route = editRoute();
+  if (route.channel == EditChannel::Native && !appExcluded_) engine_->native_.start();
 #ifndef SKEY_TESTING
   if (!appExcluded_) engine_->uinput_.start();
 #endif
@@ -3273,6 +3384,7 @@ void SKeyState::activate() {
                << " urlCap=" << caps.test(CapabilityFlag::Url)
                << " preeditCap=" << caps.test(CapabilityFlag::Preedit)
                << " nativeSurrounding=" << useNativeSurroundingApi()
+               << " editChannel=" << route.name() << " routeReason=" << route.reason
                << " frontend=" << ic_->frontend()
                << " display=" << ic_->display() << " wayland=" << isWayland()
                << " app=" << appProgram() << " caps=0x" << std::hex
@@ -3509,7 +3621,7 @@ bool SKeyState::isX11Tabby() const {
 }
 
 bool SKeyState::useOrderedUinputReplay() const {
-  return gnomeRelayOmnibox() ||
+  return selectTransportActive() || gnomeRelayOmnibox() ||
          (!isWayland() && (inChromiumAddressBar() || isX11Tabby()));
 }
 
@@ -4031,7 +4143,9 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
                  << "' surrValid=" << surrounding.isValid()
                  << " cursor=" << surrounding.cursor()
                  << " anchor=" << surrounding.anchor();
-    if (!commitText(text, !forwarded)) return;
+    // Firefox still needs a composition transaction after a forwarded
+    // delete; a bare commit can insert at its cached pre-delete caret.
+    if (!commitText(text, !forwarded || (!isWayland() && isFirefoxOrSnap()))) return;
     if (postVerifyBlind) {
       uinputPostVerifyDone_ = true;
       uinputPostVerify_ = true;
@@ -4096,8 +4210,8 @@ void SKeyState::replaySettledKeys() {
       const auto sym = event.key().sym();
       const bool printable = sym >= FcitxKey_space && sym <= FcitxKey_asciitilde;
       const auto states = event.key().states();
-      if (((!isWayland() && inChromiumAddressBar()) || gnomeRelayOmnibox()) &&
-          printable &&
+      if ((selectTransportActive() || (!isWayland() && inChromiumAddressBar()) ||
+           gnomeRelayOmnibox()) && printable &&
           !states.test(KeyState::Ctrl) && !states.test(KeyState::Alt) &&
           !states.test(KeyState::Super)) {
         if (!saved.release) {
@@ -4293,8 +4407,9 @@ void SKeyState::deactivate() {
     }
   }
 
-  // Firefox/Snap: preserve uinput state during spurious deactivate.
-  if (uinputKeyForwarded_ && isFirefoxOrSnap()) {
+  // Forwarded replacements use the focus-loss guard below so an old
+  // Firefox append cannot bypass the pending deletion's focus barrier.
+  if (uinputKeyForwarded_ && isFirefoxOrSnap() && !x11ForwardedReplacement_) {
     SKEY_DEBUG() << "Deactivate: Firefox/Snap guard hit, preserving state";
     uinputKeyForwarded_ = false;
     return;
@@ -4503,6 +4618,7 @@ void SKeyState::reset() {
   editorEntered_ = false;
   cachedIsChromium_ = -1;
   cachedIsFirefoxOrSnap_ = -1;
+  cachedIsFirefoxBrowser_ = -1;
   cachedIsTerminalApp_ = -1;
   clearLastWord();
   clearUI();
@@ -4915,7 +5031,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
-  if (useNativeBackspaceTransport() && !useX11ForwardedReplacement() && !modeMenuActive_ &&
+  const auto route = editRoute();
+  if (route.channel == EditChannel::Native && !modeMenuActive_ &&
 #ifdef SKEY_TESTING
       !nativeTestSend_ &&
 #endif
@@ -4933,7 +5050,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     }
   }
 
-  if (!useNativeBackspaceTransport() && !useX11ForwardedReplacement() && !modeMenuActive_ &&
+  if (route.channel == EditChannel::Uinput && !modeMenuActive_ &&
       !keyEvent.key().check(engine_->modeMenuKey()) &&
       (useUinputMode() || (useSurroundingText() && inChromiumAddressBar()))) {
 #ifdef SKEY_TESTING
@@ -6423,7 +6540,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 return;
               }
               if (tryX11ForwardedReplacement(
-                      deleteLen, addPart, static_cast<int>(utf8::length(newComposed)))) {
+                      deleteLen, addPart, static_cast<int>(utf8::length(newComposed)),
+                      oldComposed, newComposed)) {
                 keyEvent.filterAndAccept();
                 return;
               }
@@ -7515,7 +7633,8 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
     SKEY_DEBUG() << "Surr: replace '" << oldComposed << "' -> '" << newComposed
                  << "' (delete suffix x" << deleteLen << ")";
     if (deleteLen > 0) {
-      if (tryX11ForwardedReplacement(deleteLen, addedPart, newLen)) {
+      if (tryX11ForwardedReplacement(deleteLen, addedPart, newLen,
+                                     oldComposed, newComposed)) {
         committedLen_ = newLen;
         return;
       }
