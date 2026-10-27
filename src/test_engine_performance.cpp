@@ -182,7 +182,8 @@ struct EnginePerformanceTest {
             return send(fd, request, sizeof(request), MSG_NOSIGNAL) == sizeof(request);
         };
     }
-    static void omniboxSurrounding(Instance &instance, bool native, bool wayland) {
+    static void omniboxSurrounding(Instance &instance, bool native, bool wayland,
+                                   bool nativeSuccess = false) {
         class Editor : public TestInput {
         public:
             using TestInput::TestInput;
@@ -201,6 +202,8 @@ struct EnginePerformanceTest {
         SKeyEngine engine(&instance, false);
         engine.config_.outputMode.setValue(SKeyOutputMode::Auto);
         engine.config_.chromiumAddressBarMode.setValue(SKeyChromiumAddressBarMode::SurroundingText);
+        if (nativeSuccess)
+            engine.config_.chromiumAddressBarMode.setValue(SKeyChromiumAddressBarMode::Native);
         engine.config_.enableNative.setValue(native);
         engine.config_.replaceUinputWithNative.setValue(native);
         FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
@@ -214,17 +217,24 @@ struct EnginePerformanceTest {
         state.cachedIsChromium_ = 1;
         state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = state.cachedIsWebKitGtk_ = 0;
         state.cachedWebKitProgram_ = "google-chrome";
-        check(state.effectiveMode() == SKeyOutputMode::SurroundingText,
-              "omnibox override preserves Surrounding Text output");
+        check(state.effectiveMode() == (nativeSuccess ? SKeyOutputMode::Native : SKeyOutputMode::SurroundingText),
+              "omnibox override preserves the requested output mode");
         check(state.useNativeBackspaceTransport() == native,
               "omnibox Surrounding Text honors replacement transport preference");
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "isolate omnibox transport without desktop injection");
         captureUinput(state, sockets[0]);
-        state.viet_.setRawInput(native ? "chaf" : "cha");
+        if (nativeSuccess) {
+            state.nativeTestSend_ = std::move(state.uinputTestSend_);
+            state.uinputTestSend_ = [](int, uint32_t, uint32_t) {
+                check(false, "X11 Native must not fall back to Uinput");
+                return false;
+            };
+        }
+        state.viet_.setRawInput(native && !nativeSuccess ? "chaf" : "cha");
         state.committedLen_ = 3;
-        if (native) {
+        if (native && !nativeSuccess) {
             // An unstarted native injector rejects deterministically. It
             // must neither fall back to the Uinput request capture nor
             // schedule a timeout that commits over unchanged text.
@@ -3416,6 +3426,10 @@ int main(int argc, char **argv) {
     for (bool native : {false, true}) {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::omniboxSurrounding(instance, native, false);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::omniboxSurrounding(instance, true, false, true);
     }
     if (std::getenv("SKEY_TEST_X11_OMNIBOX_ONLY")) {
         fcitx::Instance instance(argc, argv);
