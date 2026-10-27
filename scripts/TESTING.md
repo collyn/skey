@@ -47,8 +47,119 @@ ctest --test-dir build -R 'EnginePerformance|VietnameseTyping' --output-on-failu
 Plasma login script with temporary config files and a fake systemd manager.
 It checks that KDE Wayland removes toolkit variables, including empty values,
 from both child processes and the manager, keeps XMODIFIERS/GLFW_IM_MODULE,
-repairs old login scripts, honors `--no-env`, and preserves other desktops'
-module settings. It never contacts the desktop session bus.
+repairs old login scripts, honors `--no-env`, and checks the desktop/session
+matrix of 13 supported desktops/compositors, plus unknown sessions.
+It verifies portable `fcitx` module IDs for GTK/Qt/SDL, migration from
+`fcitx5`, repair of a stale manager with correct files, idempotent reruns,
+and colon-separated XDG desktop detection. It also covers all eight distro
+families, derived `ID_LIKE` values, non-systemd user sessions, Bash/Zsh/Fish
+login files, preserving pre-existing Bash profile behavior, and idempotent
+WM autostart (including Niri migration and Hyprland Lua). These are isolated
+setup/configuration tests, not live end-to-end certification of every distro.
+They never contact the desktop session bus.
+
+The setup policy is:
+
+| Session | GTK / Qt / SDL module | Other variables | Login configuration |
+| --- | --- | --- | --- |
+| Full X11 desktop, including GNOME/Plasma | `fcitx` | `XMODIFIERS=@im=fcitx`, `GLFW_IM_MODULE=ibus` | `.profile`; Plasma uses its session env script |
+| Plasma Wayland | Unset all three | Same | Plasma session env script |
+| Other full Wayland desktops | `fcitx` | Same | `environment.d`; `.profile` without a systemd user manager |
+| i3 / Sway / Hyprland / Niri | `fcitx` | Same | Bash `.bash_profile`, Zsh `.zprofile`, Fish login-only `config.fish` block |
+
+Supported setup cases:
+
+- Distros: Ubuntu, Debian, Fedora, Arch Linux, openSUSE, NixOS, Void Linux,
+  Gentoo; derivatives are mapped via `ID_LIKE`. Unknown distros receive
+  generic instructions instead of an incorrect `apt` command.
+- Desktops/compositors: GNOME, KDE Plasma, Xfce, Cinnamon, MATE, Pantheon,
+  Budgie, LXQt, COSMIC, i3, Sway, Hyprland, Niri.
+- Shells: Bash, Zsh, Fish. Sessions: X11 and Wayland where supported by
+  the compositor. Init systems: systemd, OpenRC and runit; environment setup
+  checks for a working **user manager**, not just a `systemctl` binary.
+
+Full desktops use XDG autostart; bare WMs use their own configuration.
+SKey does not install distro repositories or replace the system's init
+configuration. Void/Gentoo users need a working local seat (elogind and
+udev/eudev) for the existing uinput ACL model. No root input server or broad
+`input` group grant is introduced. NixOS defaults to declarative environment
+management; `--yes` explicitly opts into user environment overrides.
+
+The portable module name is `fcitx`. A GTK plugin's filename can be `im-fcitx5.so`
+while its registered module ID is `fcitx`; older bundled/Snap plugins may
+not accept the `fcitx5` alias. Qt and SDL likewise use `fcitx`. The daemon,
+package names, and `im-config -n fcitx5` retain the framework name `fcitx5`.
+
+Non-Plasma Wayland uses direct modules. `QT_IM_MODULES="wayland;fcitx"`
+previously broke the tested Qt input path. The session manager updates
+only affect future activation; users need a new login so existing launchers
+and applications inherit consistent values. NixOS environment configuration
+remains owned by its `i18n.inputMethod` module.
+
+Legacy environment migration follows ownership rather than variable value:
+
+- Scan marked SKey blocks across all shell/login files, even if the selected
+  file is already correct or the user has since switched shells. Remove
+  obsolete SKey `environment.d`/Plasma files after authorization too.
+- Back up changed/removed user files under
+  `${XDG_STATE_HOME:-~/.local/state}/skey/environment-backups`; preserve
+  permissions and live symlinks. Snapshot symlink targets as regular files.
+- Reject unbalanced markers rather than deleting trailing user configuration.
+  Handle duplicate complete blocks and the legacy Fish `end# <marker>` form.
+- Preserve unmarked declarations and shared `/etc/environment`; report them
+  for review. A value of `fcitx` or `ibus` does not prove SKey ownership.
+- Archive the retired `/etc/profile.d/fcitx5-skey.sh` with a non-`.sh` suffix
+  before disabling it. `--no-env` skips mutations, including cleanup and
+  environment removal during uninstall.
+- Remove legacy `QT_IM_MODULES` from the setup process and user manager;
+  Plasma login scripts unset it too. Never publish empty toolkit module
+  values to D-Bus to simulate removal. Existing launchers/apps and stale
+  D-Bus activation entries still require a new login.
+
+The environment regression group includes 47 tests covering these cases
+alongside the desktop/distro/shell matrix described above. It also runs the
+install/uninstall branches with mocked daemon/session commands:
+
+- Journal original and applied file contents under
+  `${XDG_STATE_HOME:-~/.local/state}/skey/session-changes`. Restore originals
+  only when contents, permissions and symlink targets still match setup's
+  writes; keep later user changes and their original snapshots for review.
+  Shared files are compared as a whole, so even edits outside SKey's block
+  cause uninstall to retain the file. Legacy dedicated files without a
+  journal are reported for manual review rather than deleted on uninstall.
+- Remove only `skey-im` from every profile group. If another non-keyboard
+  input method remains, retain shared Fcitx
+  behavior, addon, autostart, toolkit environment, `.xinputrc` and KWin
+  configuration even when SKey setup originally created them. Retire their
+  journals under `retained-changes` so a repeated uninstall cannot roll back
+  these shared settings. This applies to legacy marked environment too.
+- With no other input method configured, restore previous journaled settings.
+  Keep the shared keyboard profile itself. Restore the previous default IM
+  if it remains in the edited profile; otherwise prefer another IM before a
+  keyboard fallback. Stop only the current user's daemon before profile
+  edits, and leave it running on subsequent no-op uninstall calls.
+  Retain modified profiles' original snapshots under `retained-changes`.
+- After removing SKey, renumber each group's `Items/N` contiguously in
+  numeric order. Fcitx's vector unmarshalling stops at the first absent index;
+  checking that names still appear somewhere in the INI file is insufficient.
+  CTest builds `test_setup_profile_reader`, linked to Fcitx5::Config, and
+  verifies that the real INI/vector parser reads every retained Name/Layout,
+  including multiple groups, indices above 9 and repeated uninstall.
+- Decide whether to keep shared configuration after the old daemon stops,
+  including methods flushed from the settings UI during shutdown.
+- Do not restore old marked SKey environment blocks after migration.
+  `--no-env` skips im-config and environment restoration on uninstall.
+- Honor XDG config/data/state locations, use KWin's InputMethod on Plasma
+  Wayland, and reuse existing system autostart IDs on other desktops.
+- Test im-config `-n` with the old `-w` fallback, no-op setup and controller
+  restart, plus Debian/Arch/RPM removal hooks resolving the active seat's
+  user when a GUI package manager provides no `SUDO_USER`. Upgrade hooks
+  must not invoke uninstall.
+
+Uninstall leaves the live activation environment until the next login;
+blanket unsetting IM variables could remove another input method's settings.
+Daemon/session operations in these tests are mocked; this is not a live
+validation of every desktop/compositor.
 
 Qt5 distinguishes an absent `QT_IM_MODULE` from `QT_IM_MODULE=`: the empty
 value prevents the native Wayland input context. Live verification on this

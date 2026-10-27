@@ -361,21 +361,30 @@ bool SKeyState::addressBarModesAvailable() const {
   return inChromiumAddressBar() || gnomeOmniboxCaret();
 }
 
-// The select-and-overtype replacement transport: active when (a) Auto
-// mode on the GNOME relay (Backspace is eaten there), or (b) the user
-// picked the explicit "Select" address-bar mode.  The explicit mode is
-// scoped by the addrbar machinery's own detection (a11y-fresh browser
-// UI) — KDE's cursor rect can be (0,0,0x0) at activation, so no caret
-// gate there; the GNOME Auto path keeps the caret+relay signature
-// because its a11y is often stale.
+bool SKeyState::gnomeRelayOmnibox() const {
+  // Mutter may omit the application name (Ubuntu 24.04). Keep this
+  // workaround scoped to anonymous/GNOME relay contexts with a thin caret.
+  const auto program = appProgram();
+  return (program.empty() || program == "gnome-shell") && gnomeOmniboxCaret();
+}
+
+bool SKeyState::autoSelectAddressBar() const {
+  return gnomeOmniboxCaret() ||
+         (!isWayland() && gnomeDesktop() && inChromiumAddressBar());
+}
+
+// Select-and-overtype is preferred by GNOME Auto or explicitly selected.
+// X11 uses the existing browser/omnibox detector; GNOME Wayland keeps
+// the relay's caret signature because its accessibility snapshot lags.
 bool SKeyState::selectTransportActive() const {
   if (addressBarModesAvailable()) {
     const auto mode = engine_->config().chromiumAddressBarMode.value();
     return mode == SKeyChromiumAddressBarMode::Select ||
-           (mode == SKeyChromiumAddressBarMode::Auto && gnomeOmniboxCaret());
+           (mode == SKeyChromiumAddressBarMode::Auto && autoSelectAddressBar());
   }
   return false;
 }
+
 
 static bool isUtf8ContinuationByte(char ch) {
   return (static_cast<unsigned char>(ch) & 0xC0) == 0x80;
@@ -431,6 +440,37 @@ static constexpr size_t maxBufferedUinputKeys = 32;
 FCITX_DEFINE_LOG_CATEGORY(skey_log, "skey");
 #define SKEY_DEBUG() SKeyLogger()
 #define SKEY_INFO() SKeyLogger()
+
+bool SKeyState::tryX11ForwardedReplacement(int deleteLen,
+                                          const std::string &text,
+                                          int finalLen) {
+  if (!useX11ForwardedReplacement()) return false;
+  // Supported D-Bus/IBus clients accept forwarded edits. Keep these on
+  // the IM channel, instead of waiting for kernel echoes.
+  x11ForwardedReplacement_ = true;
+  forwardedFocusRetries_ = 0;
+  uinputShiftSelect_ = false;
+  uinputDeleteAck_.reset();
+  uinputDeletedWord_.clear();
+  uinputPostVerify_ = false;
+  expectedUinputBackspaces_ = seenUinputBackspaces_ = 0;
+  pendingUinputCommit_ = text;
+  uinputPendingFinalLen_ = finalLen;
+  uinputDeleting_ = true;
+  for (int i = 0; i < deleteLen; ++i) {
+    ic_->forwardKey(Key(FcitxKey_BackSpace));
+    ic_->forwardKey(Key(FcitxKey_BackSpace), true);
+  }
+  const auto ov = appDelayOverrideResolved();
+  const uint64_t delay = ov.preCommitMs >= 0
+      ? static_cast<uint64_t>(std::min(ov.preCommitMs, skey::kMaxPreCommitMs)) * 1000
+      : std::max<uint64_t>(15000, static_cast<uint64_t>(deleteLen) * 4000);
+  engine_->noteAppSleep(appProgram(), false, delay);
+  SKEY_DEBUG() << "Uinput: X11 " << ic_->frontend() << " forward BS=" << deleteLen
+               << ", settle " << delay / 1000 << "ms";
+  scheduleUinputSettle(delay, 0, ov.postCommitMs);
+  return true;
+}
 
 // Shift+Left select-and-overtype replacement, self-contained: the
 // address bar's autocomplete eats an injected Backspace (the deletion
@@ -517,6 +557,31 @@ static bool isOfficeSuiteApp(const std::string &prog) {
       p.find("desktopeditors") != std::string::npos)
     return true;
   return false;
+}
+
+// Ordered D-Bus and supported IBus clients avoid a kernel/XTest round trip.
+// Keep clients with known application-specific replacement semantics separate.
+bool SKeyState::useX11ForwardedReplacement() const {
+  const char *waylandDisplay = getenv("WAYLAND_DISPLAY");
+  if (isWayland() || (waylandDisplay && *waylandDisplay) || !gnomeDesktop() ||
+      !useUinputMode()) return false;
+  const std::string_view frontend(ic_->frontend());
+  const auto &program = appProgram();
+  if (frontend == "ibus") {
+    // GNOME Shell search uses IBus with an empty program and no ordering
+    // capability. IBus forwards edits; SDL ignores them and GTK4 loops
+    // them back into the IM instead of delivering them to the widget.
+    if (program.rfind("SDL", 0) == 0 || program.rfind("gtk4-im:", 0) == 0)
+      return false;
+  } else if (frontend != "dbus" ||
+             !ic_->capabilityFlags().test(CapabilityFlag::KeyEventOrderFix)) {
+    return false;
+  }
+  if (isOfficeSuiteApp(program) || isX11Tabby() || inChromiumAddressBar())
+    return false;
+  const auto *monitor = engine_->a11yMonitor();
+  return !(skey::isChromiumBrowser(appProgram()) && monitor &&
+           monitor->isFocusSnapshotFresh(5000000) && monitor->sheetsEditorFocused());
 }
 
 // Shared with the settings GUI via src/app_delay_key.h — the key scheme
@@ -1859,6 +1924,7 @@ bool SKeyState::commitText(const std::string &utf8, bool uinputReplacement) {
     SKEY_DEBUG() << "Commit timing: clearPreedit="
                  << (now(CLOCK_MONOTONIC) - commitStartedAt) / 1000 << "ms";
   }
+  if (gnomeRelayOmnibox() && useUinputMode()) scheduleUinputReplay();
   return true;
 }
 
@@ -2006,6 +2072,11 @@ bool SKeyState::inChromiumAddressBar() const {
     // X11 cursor rectangles are root-relative. Comparing their absolute Y
     // to the toolbar height misclassifies an omnibox when its window moves.
     const int caretTop = ic_->cursorRect().top() - x11ActiveWindowTop().value_or(0);
+    const auto &rect = ic_->cursorRect();
+    const bool addrbarShaped = rect.width() <= thinCaretMaxW &&
+                              rect.height() >= barMinH &&
+                              rect.height() <= barMaxH && caretTop >= 0 &&
+                              caretTop < barTopMax;
     // Fresh snapshot with WEB CONTENT focus means the user is in a web
     // page (Facebook chat, forms...) — never the omnibox.  Must be
     // checked BEFORE the verdict latch and the cursor-rect fallback: a
@@ -2026,11 +2097,6 @@ bool SKeyState::inChromiumAddressBar() const {
       // deterministic cursor-rect fallback below still covers the real
       // omnibox.  X11-only (this whole branch is !isWayland()).
       if (mon->isFocusSnapshotFresh(5000000)) {
-        const auto &rect = ic_->cursorRect();
-        bool addrbarShaped = rect.width() <= thinCaretMaxW &&
-                             rect.height() >= barMinH &&
-                             rect.height() <= barMaxH && caretTop >= 0 &&
-                             caretTop < barTopMax;
         if (addrbarShaped) {
           addrBarUiVerdictAtUsec_ = now(CLOCK_MONOTONIC);
           return true;
@@ -2045,11 +2111,9 @@ bool SKeyState::inChromiumAddressBar() const {
     // while still latching off after a real focus change.
     if (addrBarUiVerdictAtUsec_ != 0 &&
         now(CLOCK_MONOTONIC) - addrBarUiVerdictAtUsec_ <= 5000000) {
-      // A WIDE caret proves a real editor is focused (the FB search box
-      // can momentarily report a thin IME caret during delete/retype
-      // churn and latch the verdict — the hijack in the 03:07 trace
-      // where "chào" became "hào").  Clear the latch instead.
-      if (ic_->cursorRect().width() > thinCaretMaxW) {
+      // Web editors also report thin carets. A move below the toolbar or
+      // a missing caret must invalidate the latch while a11y catches up.
+      if (!addrbarShaped) {
         addrBarUiVerdictAtUsec_ = 0;
       } else {
         return true;
@@ -2063,10 +2127,7 @@ bool SKeyState::inChromiumAddressBar() const {
     // (0,0,0x0).  This keeps the address bar routing alive right after
     // fcitx5 restarts, before the a11y monitor has processed any focus
     // event.
-    const auto &rect = ic_->cursorRect();
-    if (rect.width() <= thinCaretMaxW && rect.height() >= barMinH &&
-        rect.height() <= barMaxH && caretTop >= 0 &&
-        caretTop < barTopMax) {
+    if (addrbarShaped) {
       return true;
     }
   }
@@ -2115,9 +2176,8 @@ SKeyOutputMode SKeyState::effectiveMode() const {
   if (addressBarModesAvailable()) {
     switch (engine_->config().chromiumAddressBarMode.value()) {
     case SKeyChromiumAddressBarMode::Auto:
-      // Mutter's surrounding-text hints fluctuate and snapshots lag.
-      // GNOME Auto uses the Select transport on top of Uinput.
-      if (gnomeOmniboxCaret()) {
+      // GNOME Auto uses Select on top of Uinput on both display protocols.
+      if (autoSelectAddressBar()) {
         cachedMode_ = SKeyOutputMode::Uinput;
         modeCacheValid_ = true;
         return cachedMode_;
@@ -2737,6 +2797,10 @@ int SKeyState::a11yAppPid() const {
 }
 
 bool SKeyState::isChromiumCached() const {
+  // GNOME Shell's anonymous X11 IBus context is distinct from the browser
+  // beneath the overview. Its a11y snapshot may still refer to that browser.
+  if (!isWayland() && std::string_view(ic_->frontend()) == "ibus" &&
+      appProgram().empty()) return false;
   if (cachedIsChromium_ < 0) {
     const std::string &prog = appProgram();
     bool chromium =
@@ -3195,7 +3259,8 @@ void SKeyState::activate() {
   }
   auto mode = effectiveMode();
   auto configuredMode = engine_->config().outputMode.value();
-  if (useNativeBackspaceTransport() && !appExcluded_) engine_->native_.start();
+  if (useNativeBackspaceTransport() && !useX11ForwardedReplacement() && !appExcluded_)
+    engine_->native_.start();
 #ifndef SKEY_TESTING
   if (!appExcluded_) engine_->uinput_.start();
 #endif
@@ -3208,7 +3273,7 @@ void SKeyState::activate() {
                << " urlCap=" << caps.test(CapabilityFlag::Url)
                << " preeditCap=" << caps.test(CapabilityFlag::Preedit)
                << " nativeSurrounding=" << useNativeSurroundingApi()
-               << " frontend=" << ic_->display()
+               << " frontend=" << ic_->frontend()
                << " display=" << ic_->display() << " wayland=" << isWayland()
                << " app=" << appProgram() << " caps=0x" << std::hex
                << static_cast<uint64_t>(caps.toInteger()) << std::dec
@@ -3256,8 +3321,7 @@ bool SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
   // flags bit 0 dismisses autocomplete with Escape before Backspace.
   // Mutter's omnibox must process autocomplete dismissal before the next
   // deletion. Keep the existing 1ms pace on the other desktop paths.
-  uint32_t paceUsec =
-      appProgram() == "gnome-shell" && gnomeOmniboxCaret() ? 5000 : 1000;
+  uint32_t paceUsec = gnomeRelayOmnibox() ? 5000 : 1000;
   if (const skey::AppDelayOverride *ov =
           engine_->appDelayOverride(appProgram(), isWayland());
       ov && ov->paceMs >= 0) {
@@ -3444,8 +3508,9 @@ bool SKeyState::isX11Tabby() const {
   return !isWayland() && appProgram() == "tabby" && isChromiumCached();
 }
 
-bool SKeyState::useOrderedX11Replay() const {
-  return !isWayland() && (inChromiumAddressBar() || isX11Tabby());
+bool SKeyState::useOrderedUinputReplay() const {
+  return gnomeRelayOmnibox() ||
+         (!isWayland() && (inChromiumAddressBar() || isX11Tabby()));
 }
 
 bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
@@ -3854,6 +3919,14 @@ void SKeyState::scheduleUinputSettle(uint64_t delay, int retries, int postMs) {
 void SKeyState::finishUinputSettle(int retries, int postMs) {
   if (deferUinputTimer(uinputCommitTimer_.get())) return;
   if (!uinputSettling_ || !uinputDeleting_) return;
+  if (x11ForwardedReplacement_ && uinputCycleTimer_) {
+    if (++forwardedFocusRetries_ > 5) {
+      resetForCellChange();
+      return;
+    }
+    scheduleUinputSettle(2000, retries, postMs);
+    return;
+  }
   if (checkCellSelection()) return; // never commit the previous Sheets cell
   auto *blindMon = engine_->a11yMonitor();
   const bool blindBrowser = (isChromiumCached() || isFirefoxOrSnap()) &&
@@ -3933,6 +4006,8 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
       return;
     }
   }
+  const bool forwarded = x11ForwardedReplacement_;
+  x11ForwardedReplacement_ = false;
   std::string text = std::move(pendingUinputCommit_);
   pendingUinputCommit_.clear();
   uinputCommitTimer_.reset();
@@ -3956,7 +4031,7 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
                  << "' surrValid=" << surrounding.isValid()
                  << " cursor=" << surrounding.cursor()
                  << " anchor=" << surrounding.anchor();
-    if (!commitText(text, true)) return;
+    if (!commitText(text, !forwarded)) return;
     if (postVerifyBlind) {
       uinputPostVerifyDone_ = true;
       uinputPostVerify_ = true;
@@ -3983,26 +4058,31 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
   }
   // Explicit user-configured post-commit pauses retain their semantics.
   postCommitPause(postMs);
-  if (useOrderedX11Replay()) {
-    // Dispatch the replacement before the next queued transform can send
-    // kernel Backspaces. Tabby's PTY commits can trail dispatch by a frame;
-    // retain a 20ms barrier even if the next physical key has not arrived.
-    settledReplayTimer_ = engine_->instance()->eventLoop().addTimeEvent(
-        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 20000, 1,
-        [this](EventSourceTime *, uint64_t) {
-          settledReplayTimer_.reset();
-          replayBufferedUinputKeys();
-          return true;
-        });
+  if (useOrderedUinputReplay()) {
+    scheduleUinputReplay();
     return;
   }
   replayBufferedUinputKeys();
 }
 
+// Yield to the frontend before another commit or injected deletion. Sleeping
+// inside keyEvent leaves Wayland's previous commit undispatched; a second
+// commit in that same turn can replace it (à + o -> o).
+void SKeyState::scheduleUinputReplay() {
+  settledReplayTimer_ = engine_->instance()->eventLoop().addTimeEvent(
+      CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 20000, 1,
+      [this](EventSourceTime *, uint64_t) {
+        settledReplayTimer_.reset();
+        replayBufferedUinputKeys();
+        return true;
+      });
+}
+
 void SKeyState::replaySettledKeys() {
   if (replayingSettledKeys_ || settledReplayTimer_) return;
   replayingSettledKeys_ = true;
-  while (!settledKeys_.empty() && !uinputDeleting_ && !uinputSettling_ &&
+  while (!settledKeys_.empty() && !settledReplayTimer_ &&
+         !uinputDeleting_ && !uinputSettling_ &&
          deferredNativeDeleteLen_ == 0) {
     auto saved = settledKeys_.front();
     settledKeys_.pop_front();
@@ -4010,21 +4090,26 @@ void SKeyState::replaySettledKeys() {
     KeyEvent event(ic_, saved.key, saved.release, saved.time);
     keyEvent(event);
     if (!event.accepted()) {
-      // X11 forwardKey is asynchronous with respect to commitString. A
-      // queued letter followed by a committed space can arrive as " ca"
-      // instead of "ca ". Keep printable replay on one commit channel.
+      // Raw keys and commits travel through different queues. Keep
+      // printable replay on one commit channel, including GNOME word
+      // boundaries, so neither letters nor spaces overtake replacements.
       const auto sym = event.key().sym();
       const bool printable = sym >= FcitxKey_space && sym <= FcitxKey_asciitilde;
       const auto states = event.key().states();
-      if (!isWayland() && inChromiumAddressBar() && printable &&
+      if (((!isWayland() && inChromiumAddressBar()) || gnomeRelayOmnibox()) &&
+          printable &&
           !states.test(KeyState::Ctrl) && !states.test(KeyState::Alt) &&
           !states.test(KeyState::Super)) {
-        if (!saved.release) ic_->commitString(Key::keySymToUTF8(sym));
+        if (!saved.release) {
+          if (gnomeRelayOmnibox()) commitText(Key::keySymToUTF8(sym));
+          else ic_->commitString(Key::keySymToUTF8(sym));
+        }
       } else {
         ic_->forwardKey(saved.key, saved.release, saved.time);
       }
     }
-    if (!saved.release && !uinputDeleting_ &&
+    if (!saved.release && !uinputDeleting_ && !settledReplayTimer_ &&
+        !useX11ForwardedReplacement() &&
         (hadQueuedReplay || isX11Tabby())) {
       // Let the frontend dispatch this commit before a queued transform
       // injects new kernel backspaces. A blocking sleep cannot do that.
@@ -4193,6 +4278,7 @@ void SKeyState::deactivate() {
   // isn't lost.  Otherwise the app ends up with only the deleted chars.
   if (uinputDeleting_ && !pendingUinputCommit_.empty() &&
       expectedUinputBackspaces_ == 0 &&
+      !x11ForwardedReplacement_ &&
       !(!isWayland() && addrBarExpectCycle_ && uinputSettling_)) {
     uinputCommitTimer_.reset();
     uinputDeleting_ = false;
@@ -4261,8 +4347,8 @@ void SKeyState::deactivate() {
   // state: the reactivation arrives within milliseconds and the anchor BS
   // completes the commit.  If nothing reactivates within 500ms it was a
   // genuine focus loss — discard the replacement instead of committing it
-  // into a stale focus.
-  if (!isWayland() && isChromiumCached() && uinputDeleting_ &&
+  // into a stale focus. Ordered D-Bus replacements need the same guard.
+  if (!isWayland() && (isChromiumCached() || x11ForwardedReplacement_) && uinputDeleting_ &&
       !pendingUinputCommit_.empty()) {
     SKEY_DEBUG() << "Deactivate: mid-replacement churn, keep uinput state";
     uinputCycleTimer_.reset();
@@ -4345,7 +4431,8 @@ void SKeyState::reset() {
   // and the word loses its tail ("bạn" → "b"). Firefox/Snap also resets
   // after the preceding append's commit, before the first injected BS.
   // Don't compare the new composed word with old surrounding text then.
-  if (!isWayland() && (isChromiumCached() || isFirefoxOrSnap()) && uinputDeleting_ &&
+  if (!isWayland() && (isChromiumCached() || isFirefoxOrSnap() ||
+                       x11ForwardedReplacement_) && uinputDeleting_ &&
       !pendingUinputCommit_.empty()) {
     surrResetTentative_ = false;
     SKEY_DEBUG() << "Reset: mid-replacement churn, keep uinput state";
@@ -4592,6 +4679,7 @@ bool SKeyState::checkCellSelection() {
 }
 
 void SKeyState::resetForCellChange() {
+  x11ForwardedReplacement_ = false;
   // The first word after a cell change travels the commit channel: raw
   // forwarded keys can drop while the browser's cell editor is still
   // opening after the click.
@@ -4676,7 +4764,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                                 (keyEvent.key().sym() == FcitxKey_Left ||
                                  keyEvent.key().sym() == FcitxKey_Shift_L ||
                                  keyEvent.key().sym() == FcitxKey_Shift_R)));
-  const bool orderedDeleting = uinputDeleting_ && useOrderedX11Replay();
+  const bool orderedDeleting = uinputDeleting_ && useOrderedUinputReplay();
   if (!replayingSettledKeys_ && !awaitingAnchor && (orderedDeleting || settledReplayTimer_ || uinputSettling_ || !settledKeys_.empty() ||
                                 (deferredNativeDeleteLen_ > 0 && hasDeferredCommitPending()))) {
     if (!keyEvent.isRelease()) checkCellSelection();
@@ -4827,7 +4915,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     return;
   }
 
-  if (useNativeBackspaceTransport() && !modeMenuActive_ &&
+  if (useNativeBackspaceTransport() && !useX11ForwardedReplacement() && !modeMenuActive_ &&
 #ifdef SKEY_TESTING
       !nativeTestSend_ &&
 #endif
@@ -4845,7 +4933,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     }
   }
 
-  if (!useNativeBackspaceTransport() && !modeMenuActive_ &&
+  if (!useNativeBackspaceTransport() && !useX11ForwardedReplacement() && !modeMenuActive_ &&
       !keyEvent.key().check(engine_->modeMenuKey()) &&
       (useUinputMode() || (useSurroundingText() && inChromiumAddressBar()))) {
 #ifdef SKEY_TESTING
@@ -5800,7 +5888,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         const bool tabbyReplay = isX11Tabby() && replayingSettledKeys_ &&
                                  !hadDeferred && !autoRestored;
         if (!hadDeferred && !(autoRestored && useUinputMode()) && !tabbyReplay) {
-          if (isX11Tabby()) commitText(" ");
+          if (isX11Tabby() || gnomeRelayOmnibox()) commitText(" ");
           else ic_->commitString(" ");
         }
         if (!tabbyReplay) keyEvent.filterAndAccept();
@@ -6252,14 +6340,11 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 // and pace them so Chrome processes the replacement first,
                 // including when replaying a buffered key. The relay's stale
                 // selection snapshot cannot guard this path.
-                const bool gnomeRelayOmnibox =
-                    appProgram() == "gnome-shell" && gnomeOmniboxCaret();
-                if ((selectTransportActive() || gnomeRelayOmnibox) &&
+                if ((selectTransportActive() || gnomeRelayOmnibox()) &&
                     editorEntered_) {
                   keyEvent.filterAndAccept();
                   SKEY_DEBUG() << "Uinput: commit append '" << keyUtf8
                                << "' [gnome-omnibox]";
-                  postCommitPause(20);
                   commitText(keyUtf8);
                   return;
                 }
@@ -6337,7 +6422,13 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                     oldAscii, oldComposed);
                 return;
               }
-              // X11 NATIVE terminals: NO forwardKey shortcut anymore.
+              if (tryX11ForwardedReplacement(
+                      deleteLen, addPart, static_cast<int>(utf8::length(newComposed)))) {
+                keyEvent.filterAndAccept();
+                return;
+              }
+              // Other X11 terminals retain the sync-anchor transport.
+              // Ordered D-Bus clients were handled above.
               // The old forwardKey + commit path relied on the X server
               // serializing key delivery, but the commit takes a DIFFERENT
               // channel into the terminal (D-Bus/GTK IM or XIM commit vs
@@ -6353,8 +6444,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               // on kernel 7.0's fast loopbacks.
               int realBackspaces = deleteLen;
               bool dismissGnomeAutofill = false;
-              if (appProgram() == "gnome-shell" && gnomeOmniboxCaret() &&
-                  isAutofillCertain()) {
+              if (gnomeRelayOmnibox() && isAutofillCertain()) {
                 // The relay hides Chrome's identity, so the normal addrbar
                 // route above does not run. A selected suggestion consumes
                 // the first BS without deleting the typed suffix. Require
@@ -6410,7 +6500,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 uinputPendingFinalLen_ = static_cast<int>(utf8::length(newComposed));
                 uinputDeleting_ = true;
                 scheduleUinputSettle(0, 0, 0);
-              } else if (!isWayland() && isChromiumCached() &&
+              } else if (!isWayland() && !useX11ForwardedReplacement() && isChromiumCached() &&
                   !inChromiumAddressBar() &&
                   (!isChromiumBrowser(appProgram()) || !x11BrowserFocusSettled_) &&
                   lastActivateUsec_ > 0 &&
@@ -7425,14 +7515,14 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
     SKEY_DEBUG() << "Surr: replace '" << oldComposed << "' -> '" << newComposed
                  << "' (delete suffix x" << deleteLen << ")";
     if (deleteLen > 0) {
-      // Helper: delete via BackSpace forwarding, then commit.
-      // D-Bus guarantees message ordering within a connection, so
-      // commitString always arrives after the forwarded BackSpace
-      // keys — no timer needed.
-      // laggingPush: the surrounding text was VALID but did not reflect
-      // the cache (stale or cursor-not-ready) — the app pushes updates
-      // asynchronously.  See the commit branch below.
-      auto deleteViaBackspace = [&](bool laggingPush, bool forceUinput = false) {
+      if (tryX11ForwardedReplacement(deleteLen, addedPart, newLen)) {
+        committedLen_ = newLen;
+        return;
+      }
+      // A forwarded Backspace can remain in the app's key queue while an
+      // IM commit is applied. Defer for lagging snapshots, and on X11
+      // when a valid snapshot remains but native deletion is unavailable.
+      auto deleteViaBackspace = [&](bool deferForwardCommit, bool forceUinput = false) {
         // Chromium-family apps with shell children must keep the anchor
         // even when the shell scan flags them as terminals.
         // X11 native terminals also anchor through uinput even in Surr
@@ -7541,7 +7631,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             SKEY_DEBUG() << "Surr: deferred BS-forward '" << addedPart << "'";
             scheduleDeferredCommit(addedPart, stablePrefix,
                                    kX11BsForwardDeferredUsec);
-          } else if (laggingPush) {
+          } else if (deferForwardCommit) {
             // Apps whose surrounding pushes LAG behind the commits
             // (Telegram on Qt: every tone key saw "surrounding cache
             // stale" — the push still showed the text from before the
@@ -7556,7 +7646,9 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             // Wayland with the flatpak Telegram ("được rồi đấy" →
             // "được rồi day").  Defer so the BS land first: fixed 10ms
             // on X11, adaptive on Wayland (same as the browser path).
-            SKEY_DEBUG() << "Surr: deferred BS-forward (lagging push) '"
+            // Losing the native API with a matching X11 snapshot has the
+            // same ordering risk: snapshot freshness does not drain keys.
+            SKEY_DEBUG() << "Surr: deferred BS-forward (async surrounding) '"
                          << addedPart << "'";
             scheduleDeferredCommit(addedPart, stablePrefix,
                                    isWayland() ? 0
@@ -7593,21 +7685,12 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           !firefoxDocsUinput &&
           !engine_->isSurrDeleteBrokenApp(appProgram())) {
         const auto &surrounding = ic_->surroundingText();
-        // Wayland apps with no usable snapshot (invalid, or empty-but-
-        // "valid" — apps that lose their surrounding reporting after a
-        // native replace, areca-settings pushes text='') ride the uinput
-        // transport instead of the blind native delete.  Placed before
-        // the staleButWayland gate: a stale cache on Wayland would
-        // otherwise route the never-reporting app into the native
-        // delete.  The armed verification supplies mid-transaction
-        // evidence and repairs the word if the uinput BS themselves
-        // failed.
         if (isWayland() &&
             (!surrounding.isValid() || surrounding.text().empty()) &&
             !isChromiumCached() && !isFirefoxOrSnap()) {
           SKEY_DEBUG() << "Surr: surrounding invalid at replace, "
                           "uinput BS transport";
-          deleteViaBackspace(/*laggingPush=*/false, /*forceUinput=*/true);
+          deleteViaBackspace(/*deferForwardCommit=*/false, /*forceUinput=*/true);
           armSurrNativePostVerify(oldComposed, addedPart, newComposed,
                                   deleteLen, newLen);
           return;
@@ -7657,7 +7740,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           }
           // Valid-but-unusable surrounding = the app pushes asynchronously
           // and the push has not caught up with our commits yet.
-          deleteViaBackspace(/*laggingPush=*/surrounding.isValid());
+          deleteViaBackspace(/*deferForwardCommit=*/surrounding.isValid());
         } else {
           // Delete one character at a time.  Chrome has been observed to
           // drop multi-char delete_surrounding_text requests (the commit
@@ -7736,7 +7819,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
                      << " oldSuffixMatches="
                      << (surrounding.isValid() &&
                          surroundingCacheEndsWith(surrounding, oldComposed));
-        deleteViaBackspace(/*laggingPush=*/false);
+        deleteViaBackspace(/*deferForwardCommit=*/!isWayland() && surrounding.isValid());
       }
     } else {
       // deleteLen == 0: no deletion needed, only add new suffix if any
@@ -7977,7 +8060,7 @@ void SKeyState::showModeMenu() {
     auto addressBarMode = engine_->config().chromiumAddressBarMode.value();
     const bool nativeEnabled = engine_->config().enableNative.value();
     std::string autoLabel = "1. Auto (";
-    autoLabel += gnomeOmniboxCaret() ? "Select" : outputModeName(effectiveMode());
+    autoLabel += autoSelectAddressBar() ? "Select" : outputModeName(effectiveMode());
     autoLabel += ")";
     candList->append(std::make_unique<AddressBarModeCandidateWord>(
         engine_, this, autoLabel, SKeyChromiumAddressBarMode::Auto));

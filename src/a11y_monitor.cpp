@@ -944,9 +944,19 @@ void A11yMonitor::waitForSnapshotUpdate(uint64_t timeoutUsec,
 }
 
 void A11yMonitor::start() {
-    if (running_.load()) return;
+    // Publish startup before launching the worker: config reloads may call
+    // start again before threadFunc has reached its first instruction.
+    if (running_.exchange(true)) return;
+    // A failed/disconnected worker clears running_, but remains joinable.
+    // Assigning a new std::thread over it would call std::terminate.
+    if (thread_.joinable()) thread_.join();
     stopRequested_.store(false);
-    thread_ = std::thread(&A11yMonitor::threadFunc, this);
+    try {
+        thread_ = std::thread(&A11yMonitor::threadFunc, this);
+    } catch (...) {
+        running_.store(false);
+        throw;
+    }
 }
 
 void A11yMonitor::stop() {
@@ -957,7 +967,6 @@ void A11yMonitor::stop() {
 }
 
 void A11yMonitor::threadFunc() {
-    running_.store(true);
     g_debugFlag = &debug_;
 
     const std::string address = getAtspiBusAddress();

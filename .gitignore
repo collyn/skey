@@ -82,6 +82,15 @@ __pycache__/
 *.pyd
 .pytest_cache/
 
+# Tests
+test_*
+*_test.*
+*.test.*
+*.spec.*
+test/
+tests/
+__tests__/
+
 Testing/
 
 # GitNexus

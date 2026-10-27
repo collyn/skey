@@ -76,6 +76,7 @@ private:
     void finishUinputSettle(int retries, int postMs);
     void scheduleUinputSettle(uint64_t delay, int retries, int postMs);
     void replaySettledKeys();
+    void scheduleUinputReplay();
     bool uinputSettling_ = false;
     skey::UinputDeleteAck uinputDeleteAck_;
     bool uinputAckUnavailable_ = false;
@@ -97,7 +98,7 @@ private:
     SKeyOutputMode effectiveMode() const;
     bool inChromiumAddressBar() const;
     bool isX11Tabby() const;
-    bool useOrderedX11Replay() const;
+    bool useOrderedUinputReplay() const;
     bool forwardUserBackspace() const;
     bool isAutofillCertain() const;
     bool useSurroundingText() const;
@@ -124,11 +125,19 @@ private:
     /// GNOME Wayland + the omnibox's 1px-beam caret — the shift-select
     /// replacement target (see the consume path).
     bool gnomeOmniboxCaret() const;
+    bool gnomeRelayOmnibox() const;
+    /// Auto prefers Select in GNOME omniboxes on both X11 and Wayland.
+    bool autoSelectAddressBar() const;
     /// Address-bar mode controls also cover Mutter's anonymous relay target.
     bool addressBarModesAvailable() const;
     /// Select-and-overtype transport active: Auto-on-GNOME or the
     /// explicit "Select" address-bar mode (omnibox-shaped caret).
     bool selectTransportActive() const;
+    bool useX11ForwardedReplacement() const;
+    bool tryX11ForwardedReplacement(int deleteLen, const std::string &text,
+                                    int finalLen);
+    bool x11ForwardedReplacement_ = false;
+    int forwardedFocusRetries_ = 0;
     /// Shift+Left select-and-overtype replacement (self-contained).
     /// Returns true when it took over the replace.
     bool tryShiftSelectReplace(int deleteLen, const std::string &addPart,
@@ -687,9 +696,6 @@ private:
     int terminalCachedVerdict_ = -1; // -1 = unset
     bool chromiumHadBareCaps_ = false;
 
-    // Apps proven to drop the native delete_surrounding_text while their
-    // commits land (areca-settings/SDL) — once marked, every replacement
-    // skips the native delete entirely (sticky, engine-level by program).
     std::set<std::string> surrDeleteBrokenApps_;
 
     // AT-SPI2 accessibility monitor for address bar detection
