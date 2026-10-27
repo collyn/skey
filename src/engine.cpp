@@ -131,6 +131,8 @@ private:
 
 namespace fcitx {
 
+static constexpr uint64_t kX11OmniboxForwardQuietUsec = 25000;
+
 // Timing tunables for uinput backspace → commit coordination (microseconds)
 //
 // Adaptive delay via EWMA (exponentially weighted moving average) of
@@ -454,6 +456,11 @@ bool SKeyState::tryX11ForwardedReplacement(int deleteLen,
   // the IM channel, instead of waiting for kernel echoes.
   x11ForwardedReplacement_ = true;
   forwardedFocusRetries_ = 0;
+  // Chrome posts forwarded Backspaces to its event queue. Its IM commit
+  // can overtake that queue, including between autocomplete focus cycles.
+  forwardedOmniboxQuietUntil_ = !select && inChromiumAddressBar()
+      ? now(CLOCK_MONOTONIC) + std::max<uint64_t>(kX11OmniboxForwardQuietUsec, deleteLen * 8000ULL)
+      : 0;
   uinputShiftSelect_ = false;
   uinputDeleteAck_.reset();
   uinputDeletedWord_.clear();
@@ -620,7 +627,9 @@ SKeyState::EditRoute SKeyState::editRoute(bool injectedOnly) const {
   const char *waylandDisplay = getenv("WAYLAND_DISPLAY");
   if (waylandDisplay && *waylandDisplay) return keep("xwayland-input");
   if (!gnomeDesktop()) return keep("desktop-policy");
-  if (mode != SKeyOutputMode::Native && mode != SKeyOutputMode::Uinput)
+  if (mode != SKeyOutputMode::Native && mode != SKeyOutputMode::Uinput &&
+      !(mode == SKeyOutputMode::SurroundingText &&
+        skey::isChromiumBrowser(appProgram())))
     return keep("mode-does-not-forward");
 
   const std::string_view frontend(ic_->frontend());
@@ -645,8 +654,9 @@ SKeyState::EditRoute SKeyState::editRoute(bool injectedOnly) const {
   }
   if (isOfficeSuiteApp(program) || isX11Tabby())
     return keep("application-specific-editing");
-  if (inChromiumAddressBar()) return keep("chromium-omnibox");
-  if (selectTransportActive() && !inFirefoxAddressBar())
+  const bool chromiumAddressBar = inChromiumAddressBar();
+  const bool select = selectTransportActive();
+  if (select && !chromiumAddressBar && !inFirefoxAddressBar())
     return keep("select-needs-injector");
   const auto *monitor = engine_->a11yMonitor();
   if (skey::isChromiumBrowser(program) && monitor &&
@@ -3171,10 +3181,15 @@ void SKeyState::activate() {
   // Fresh focus: no tentative word state carries over.
   surrResetTentative_ = false;
 
+  if (x11ForwardedReplacement_ && forwardedOmniboxQuietUntil_) {
+    forwardedOmniboxQuietUntil_ = std::max(forwardedOmniboxQuietUntil_,
+                                          now(CLOCK_MONOTONIC) + kX11OmniboxForwardQuietUsec);
+  }
   // Reactivate after spurious cycle: cancel the genuine-loss timer.
   if (addrBarExpectCycle_) {
     SKEY_DEBUG() << "Activate: spurious cycle, cancel loss timer";
     addrBarCycleTimer_.reset();
+    uinputCycleTimer_.reset();
   } else if (uinputCycleTimer_) {
     // X11 Chromium mid-replacement churn: the reactivation arrived within
     // the 500ms window — cancel the genuine-loss timer so the in-flight
@@ -4039,6 +4054,15 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
     scheduleUinputSettle(2000, retries, postMs);
     return;
   }
+  if (x11ForwardedReplacement_ && forwardedOmniboxQuietUntil_) {
+    const auto stamp = now(CLOCK_MONOTONIC);
+    if (stamp < forwardedOmniboxQuietUntil_) {
+      SKEY_DEBUG() << "AddrBar: forwarded Backspaces still settling, wait "
+                   << (forwardedOmniboxQuietUntil_ - stamp) / 1000 << "ms";
+      scheduleUinputSettle(forwardedOmniboxQuietUntil_ - stamp, retries, postMs);
+      return;
+    }
+  }
   if (checkCellSelection()) return; // never commit the previous Sheets cell
   auto *blindMon = engine_->a11yMonitor();
   const bool blindBrowser = (isChromiumCached() || isFirefoxOrSnap()) &&
@@ -4120,6 +4144,7 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
   }
   const bool forwarded = x11ForwardedReplacement_;
   x11ForwardedReplacement_ = false;
+  forwardedOmniboxQuietUntil_ = 0;
   std::string text = std::move(pendingUinputCommit_);
   pendingUinputCommit_.clear();
   uinputCommitTimer_.reset();
@@ -4418,7 +4443,7 @@ void SKeyState::deactivate() {
   // Chromium address bar: Chrome sends spurious Reset→Deactivate→
   // Activate cycles. Skip ALL state cleanup if we're expecting a cycle.
   // If no reactivate within 500ms, this is a genuine focus loss → clear flag.
-  if (addrBarExpectCycle_) {
+  if (addrBarExpectCycle_ && !x11ForwardedReplacement_) {
     SKEY_DEBUG() << "Deactivate: expecting cycle, skip all cleanup";
     addrBarCycleTimer_ = engine_->instance()->eventLoop().addTimeEvent(
         CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 500000, 0,
@@ -4796,6 +4821,7 @@ bool SKeyState::checkCellSelection() {
 
 void SKeyState::resetForCellChange() {
   x11ForwardedReplacement_ = false;
+  forwardedOmniboxQuietUntil_ = 0;
   // The first word after a cell change travels the commit channel: raw
   // forwarded keys can drop while the browser's cell editor is still
   // opening after the click.
@@ -5397,7 +5423,13 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       return; // pass raw BS through to Chrome
     }
     if (useSurroundingText()) {
-      if (useUinputMode()) {
+      const auto &surrounding = ic_->surroundingText();
+      const bool forwardedFallback = useX11ForwardedReplacement() &&
+          (!useNativeSurroundingApi() || !surrounding.isValid() ||
+           !surroundingCacheEndsWith(surrounding, viet_.getComposed()));
+      if (useUinputMode() || forwardedFallback) {
+        // Preserve original user Backspaces when the native API is unusable.
+        // Re-injecting them can let the next IM commit overtake deletion.
         // A replacement in flight cannot tell user BS apart from
         // injected-BS loopbacks — cancel the pending commit (the screen
         // keeps whatever deletions already arrived) and handle this BS
@@ -6839,10 +6871,9 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
   const bool hadFirstWord = addrBarHadFirstWord_;
   const bool didFullReplace = addrBarDidFullReplace_;
   const bool keepState = addrBarKeepState_;
-  // Use uinput BS + adaptive EWMA timer delay before D-Bus commitString.
-  // uinput BS goes through kernel → Chrome processes it as a real keystroke
-  // (omnibox update, autocomplete dismissal).  The EWMA-based delay adapts
-  // to Chrome's actual processing speed — faster machines get lower latency.
+  // Plan autocomplete-safe deletions before choosing the edit channel.
+  // Supported GNOME X11 clients forward edits; other clients retain the
+  // injector and its loopback-based settle.
   //
   // Platform-specific autocomplete handling:
   // - X11: Chrome does NOT send CapabilityFlag::Url.  SurroundingText may be
@@ -7131,6 +7162,18 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
       addrBarTriggerKeyTime_ = triggerKeyTime;
       addrBarGuardArmedUsec_ = now(CLOCK_MONOTONIC);
     }
+    if (useX11ForwardedReplacement()) {
+      if (dismissAutofill) {
+        ic_->forwardKey(Key(FcitxKey_Escape));
+        ic_->forwardKey(Key(FcitxKey_Escape), true);
+      }
+      if (tryX11ForwardedReplacement(totalBs, commitText,
+              static_cast<int>(utf8::length(fullComposed)), oldComposed,
+              fullComposed)) {
+        addrBarSawBsInWord_ = false;
+        return;
+      }
+    }
     // Sync BS handler uses this to restore committedLen_ after BS
     // pass-through decrements it (same as general uinput path).
     uinputPendingFinalLen_ = static_cast<int>(utf8::length(fullComposed));
@@ -7201,8 +7244,8 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
 void SKeyState::flushAddrBarReplacement() {
   // If a uinput replacement is in flight (BS sent, waiting to commit),
   // flush it synchronously so the next key operates on the correct state.
-  if (uinputDeleting_ && !pendingUinputCommit_.empty() &&
-      expectedUinputBackspaces_ == 0) {
+  if (uinputDeleting_ && !x11ForwardedReplacement_ &&
+      !pendingUinputCommit_.empty() && expectedUinputBackspaces_ == 0) {
     uinputCommitTimer_.reset();
     uinputDeleting_ = false;
     uinputSettling_ = false;
@@ -7633,11 +7676,6 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
     SKEY_DEBUG() << "Surr: replace '" << oldComposed << "' -> '" << newComposed
                  << "' (delete suffix x" << deleteLen << ")";
     if (deleteLen > 0) {
-      if (tryX11ForwardedReplacement(deleteLen, addedPart, newLen,
-                                     oldComposed, newComposed)) {
-        committedLen_ = newLen;
-        return;
-      }
       // A forwarded Backspace can remain in the app's key queue while an
       // IM commit is applied. Defer for lagging snapshots, and on X11
       // when a valid snapshot remains but native deletion is unavailable.
@@ -7665,11 +7703,8 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             // Apps proven to drop the native delete ride the uinput
             // transport for every replacement (sticky, engine-level).
             engine_->isSurrDeleteBrokenApp(appProgram());
-        SKEY_DEBUG() << "Surr: BS x" << deleteLen
-                     << (usesUinputBs ? " (uinput)" : " (forward)");
-        // Chromium address bar: use uinput BS + buffering for both
-        // Uinput and SurroundingText modes, avoiding D-Bus forwardKey
-        // focus-change issues.
+        // Chromium address bar plans autocomplete dismissal before
+        // dispatching Backspaces through its selected edit channel.
         if (inChromiumAddressBar()) {
           committedLen_ = newLen;
           scheduleAddrBarReplacement(
@@ -7677,6 +7712,15 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
               0, 0, newComposed, false, oldComposed);
           return;
         }
+        // Choose forwarded edits only after the native surrounding API
+        // was unavailable or unusable. Omnibox edits retain their planner.
+        if (tryX11ForwardedReplacement(deleteLen, addedPart, newLen,
+                                       oldComposed, newComposed)) {
+          committedLen_ = newLen;
+          return;
+        }
+        SKEY_DEBUG() << "Surr: BS x" << deleteLen
+                     << (usesUinputBs ? " (uinput)" : " (forward)");
         // X11 terminals: the X server serializes key delivery and the
         // terminal processes keys synchronously, so the uinput sync-anchor
         // round trip (RT 13–42ms + sleep observed in sterm) is pure
@@ -7786,12 +7830,12 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         }
       };
 
-      // Chromium address bar: use uinput BS + adaptive timer
-      // (scheduleAddrBarReplacement) instead of the native surrounding-text
+      // Chromium address bar: plan autocomplete-safe Backspaces through
+      // scheduleAddrBarReplacement instead of the native surrounding-text
       // API.  Chrome's autocomplete can modify text between delete and
       // commit, causing corruption when deleteSurroundingText races with
-      // omnibox updates.  The uinput BS approach lets Chrome process the
-      // deletion as real keystrokes before we commit the replacement.
+      // omnibox updates. The scheduler preserves autocomplete handling
+      // for both forwarded and injected Backspaces.
       // Keep the X11 Firefox Uinput workaround for Docs-suite editors,
       // whose renderer can drop native deletes. Do not extend it to every
       // Firefox/Snap entry: the address bar supplies matching surrounding

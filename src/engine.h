@@ -156,6 +156,7 @@ private:
                                     const std::string &newWord, bool select = false);
     bool x11ForwardedReplacement_ = false;
     int forwardedFocusRetries_ = 0;
+    uint64_t forwardedOmniboxQuietUntil_ = 0;
     /// Shift+Left select-and-overtype replacement (self-contained).
     /// Returns true when it took over the replace.
     bool tryShiftSelectReplace(int deleteLen, const std::string &addPart,
