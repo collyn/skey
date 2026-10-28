@@ -107,7 +107,8 @@ xem [hướng dẫn NixOS đầy đủ](packaging/nixos/README.md). Có thể ki
 trước khi rebuild bằng:
 
 ```bash
-nix build github:collyn/skey#fcitx5-skey
+nix --extra-experimental-features 'nix-command flakes' \
+  build github:collyn/skey#fcitx5-skey
 ```
 
 ## Sử dụng
