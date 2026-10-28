@@ -2787,6 +2787,74 @@ struct EnginePerformanceTest {
               "append routing must preserve composition and length");
     }
 
+    static void retroactiveWordHistory(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager());
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::SurroundingText);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "skey-test";
+        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ =
+            state.cachedIsTerminalApp_ = 0;
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::SurroundingText;
+
+        state.viet_.setRawInput("chaof");
+        state.committedLen_ = 4;
+        state.saveLastWord(true);
+        state.viet_.reset();
+        state.committedLen_ = 0;
+
+        state.viet_.setRawInput("cacs");
+        state.committedLen_ = 3;
+        state.saveLastWord(true);
+        state.viet_.reset();
+        state.committedLen_ = 0;
+        check(state.retroHistory_.size() == 2,
+              "retro history keeps more than the last committed word");
+
+        bool reclaimed = state.reclaimLastWord();
+        check(reclaimed && state.viet_.getRawInput() == "cacs",
+              "reclaim restores the newest previous raw word");
+        check(state.retroHistory_.size() == 1,
+              "reclaim consumes only the newest history record");
+
+        // Simulate the corrected word being committed again, then reclaim
+        // once more.  The older word must remain available for the next
+        // Backspace + tone-key cycle.
+        state.viet_.reset();
+        state.committedLen_ = 0;
+        state.viet_.setRawInput("cacsj");
+        state.committedLen_ = 3;
+        state.saveLastWord(true);
+        state.viet_.reset();
+        state.committedLen_ = 0;
+        check(state.reclaimLastWord() && state.viet_.getRawInput() == "cacsj",
+              "corrected word is the next reclaim candidate");
+        state.viet_.reset();
+        state.committedLen_ = 0;
+        check(state.reclaimLastWord() && state.viet_.getRawInput() == "chaof",
+              "history supports reclaiming the preceding word in order");
+
+        // A key that does not alter the reclaimed word must put the exact
+        // record back; otherwise a later tone key would target a polluted
+        // raw string containing that failed key.
+        state.viet_.reset();
+        state.committedLen_ = 0;
+        state.viet_.setRawInput("banj");
+        state.committedLen_ = 3;
+        state.saveLastWord(true);
+        state.viet_.reset();
+        state.committedLen_ = 0;
+        check(state.reclaimLastWord(), "reclaim accepts a final history word");
+        state.viet_.processKey('q');
+        state.restoreReclaimedWord();
+        check(!state.retroHistory_.empty() &&
+                  state.retroHistory_.back().raw == "banj",
+              "failed reclaim transform restores the original raw record");
+    }
+
     static void electronBackspace(Instance &instance) {
         SKeyEngine engine(&instance, false);
         FocusGroup group("wayland:test", instance.inputContextManager());
@@ -3350,6 +3418,19 @@ int main(int argc, char **argv) {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::addressBarSelectAnchor(instance);
         std::cout << "X11 Select replacement: " << checks << " checks passed\n";
+        return 0;
+    }
+
+    // Keep the focused retroactive-editing regression ahead of the large
+    // integration matrix so it remains visible if an unrelated baseline
+    // check stops the full performance test early.
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::retroactiveWordHistory(instance);
+    }
+    if (std::getenv("SKEY_TEST_RETRO_ONLY")) {
+        std::cout << "Retroactive word history: " << checks
+                  << " checks passed\n";
         return 0;
     }
 
