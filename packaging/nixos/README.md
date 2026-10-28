@@ -165,5 +165,6 @@ Trên máy không có nix, có thể validate syntax + eval bằng container:
 docker run --rm -v "$PWD":/src -w /src nixos/nix \
   nix-instantiate --parse packaging/nixos/default.nix packaging/nixos/module.nix flake.nix
 docker run --rm -v "$PWD":/src -w /src nixos/nix \
-  nix build .#fcitx5-skey --no-link
+nix --extra-experimental-features 'nix-command flakes' \
+  build .#fcitx5-skey --no-link
 ```
