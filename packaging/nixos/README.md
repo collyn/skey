@@ -7,64 +7,40 @@
 | `default.nix` | Package derivation (dùng được không cần flake) |
 | `module.nix` | `services.fcitx5-skey` — module uinput và quyền uaccess |
 
-## Cách dùng (flake)
+## Cài đặt nhanh
+
+Thêm vào `/etc/nixos/configuration.nix`:
 
 ```nix
-# flake.nix của bạn
-{
-  inputs.skey = {
-    url = "github:collyn/skey";
-    # Dùng chung nixpkgs với hệ thống — không tải nixpkgs thứ hai
-    # (~45 MB tarball + ~300 MB giải nén).
-    inputs.nixpkgs.follows = "nixpkgs";
+{ config, pkgs, ... }:
+let
+  skey = pkgs.callPackage (builtins.fetchTarball
+    "https://github.com/collyn/skey/archive/refs/heads/main.tar.gz"
+    + "/packaging/nixos/default.nix") {};
+in {
+  hardware.uinput.enable = true;
+  services.udev.packages = [ skey ];
+  i18n.inputMethod = {
+    enable = true;
+    type = "fcitx5";
+    fcitx5.addons = [ skey ];
   };
-
-  outputs = { nixpkgs, skey, ... }: {
-    nixosConfigurations.hostname = nixpkgs.lib.nixosSystem {
-      modules = [
-        skey.nixosModules.default
-        { config, ... }: {
-          i18n.inputMethod = {
-            enable = true;
-            type = "fcitx5";
-            # Tham chiếu qua module (không phải pkgs trực tiếp) để
-            # services.fcitx5-skey.devVersion (kênh Dev) áp dụng cho cả
-            # addon và cấu hình quyền thiết bị.
-            fcitx5.addons = [ config.services.fcitx5-skey.package ];
-          };
-          services.fcitx5-skey = {
-            enable = true;
-          };
-        }
-      ];
-    };
-  };
+  # Hiện biểu tượng Fcitx5/SKey trên top panel GNOME.
+  services.desktopManager.gnome.sessionPath = [ pkgs.gnomeExtensions.appindicator ];
 }
 ```
 
-`fcitx5.addons` làm cho wrapper `fcitx5-with-addons` set `FCITX_ADDON_DIRS`
-và `XDG_DATA_DIRS` trỏ vào package — đây là cách fcitx5 tìm thấy `skey.so`,
-`skey.conf` và `skey-im.conf` trong nix store (read-only).
+Áp dụng:
 
-Module `services.fcitx5-skey` xử lý những việc mà trên Fedora/Debian do
-`%post` của RPM/DEB làm:
+```bash
+sudo nixos-rebuild switch --no-flake
+fcitx5 -r -d
+```
 
-- `hardware.uinput.enable = true` — nạp module uinput.
-- `services.udev.packages` — cài `70-skey-uinput.rules` trước `73-seat-late.rules`;
-  logind cấp ACL cho user của local seat đang active. Không thêm user vào group `input`.
-- Đưa settings GUI và các helper vào PATH. Uinput chạy trong fcitx5, không cần service.
-
-Option `services.fcitx5-skey.users` cũ vẫn được chấp nhận và phát cảnh báo deprecation;
-không còn cần khai báo danh sách user. Khi switch từ cấu hình cũ, NixOS dừng các unit
-đã bị bỏ khỏi hệ thống. Sau rollback, rebuild generation cũ rồi restart fcitx5.
-
-Các biến môi trường (`GTK_IM_MODULE`, `QT_IM_MODULE`, …) do module
-`i18n.inputMethod` của NixOS quản lý — package không còn ship
-`profile.d/fcitx5-skey.sh` (đã bỏ từ 0.7.x; skey-setup ghi đúng 1 file
-user-level theo ngữ cảnh session).
-
-Sau `nixos-rebuild switch`, chạy `fcitx5 -r -d` (hoặc logout/login), rồi
-bật SKey trong `fcitx5-configtool`.
+Nếu `/etc/nixos` không có `flake.nix`, bỏ `--no-flake`. Mở
+`fcitx5-configtool` để thêm SKey vào nhóm bộ gõ.
+Đăng xuất rồi đăng nhập lại sau lần cài đầu tiên để GNOME nạp AppIndicator
+và tự khởi chạy Fcitx5.
 
 ## Cập nhật lên bản mới (từ GitHub)
 
@@ -74,7 +50,7 @@ bật SKey trong `fcitx5-configtool`.
 # flake.lock.  --extra-experimental-features cho máy chưa bật
 # nix-command/flakes trong /etc/nix/nix.conf.
 sudo nix --extra-experimental-features 'nix-command flakes' flake update
-sudo nixos-rebuild switch --flake /etc/nixos
+sudo nixos-rebuild switch --flake /etc/nixos#hostname
 
 # Kiểm tra quyền của user trên local seat đang active:
 getfacl /dev/uinput
