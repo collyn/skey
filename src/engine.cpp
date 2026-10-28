@@ -131,6 +131,9 @@ private:
 
 namespace fcitx {
 
+static bool processHasGeckoMarker(pid_t pid);
+static bool processHasChromiumMarkers(pid_t pid);
+
 // Autocomplete can recreate the input context more than 25ms after a
 // forwarded edit. Keep a quiet window beyond those delayed focus events.
 static constexpr uint64_t kX11OmniboxForwardQuietUsec = 50000;
@@ -365,6 +368,16 @@ bool SKeyState::gnomeOmniboxCaret() const {
          caret.width() <= 2 && caret.height() >= 14 && caret.height() <= 28;
 }
 
+bool SKeyState::gnomeRelayBrowserUI(bool gecko) const {
+  if (!isWayland() || !(gnomeDesktop() || appProgram() == "gnome-shell"))
+    return false;
+  auto *monitor = engine_->a11yMonitor();
+  if (!monitor || !monitor->isFocusSnapshotFresh(5000000)) return false;
+  const int pid = monitor->focusProcessId();
+  if (pid <= 1 || !monitor->isBrowserUIFocused()) return false;
+  return gecko ? processHasGeckoMarker(pid) : processHasChromiumMarkers(pid);
+}
+
 bool SKeyState::addressBarModesAvailable() const {
   // Keep GNOME's existing replacement routing intact: only its mode
   // controls need to recognize the relay's caret signature as well.
@@ -375,7 +388,14 @@ bool SKeyState::gnomeRelayOmnibox() const {
   // Mutter may omit the application name (Ubuntu 24.04). Keep this
   // workaround scoped to anonymous/GNOME relay contexts with a thin caret.
   const auto program = appProgram();
-  return (program.empty() || program == "gnome-shell") && gnomeOmniboxCaret();
+  // A browser UI verdict is required when AT-SPI is available.  The old
+  // caret-only fallback classified every thin-caret web field as omnibox
+  // after Mutter relayed the context as gnome-shell.
+  if (!(program.empty() || program == "gnome-shell")) return false;
+  if (gnomeRelayBrowserUI(false) || gnomeRelayBrowserUI(true)) return true;
+  auto *monitor = engine_->a11yMonitor();
+  if (monitor && monitor->isFocusSnapshotFresh(5000000)) return false;
+  return gnomeOmniboxCaret();
 }
 
 bool SKeyState::autoSelectAddressBar() const {
@@ -2236,9 +2256,10 @@ bool SKeyState::x11AddressBarCaret() const {
 }
 
 bool SKeyState::inFirefoxAddressBar() const {
-  if (!isFirefoxBrowserCached()) return false;
+  const bool relayFirefox = gnomeRelayBrowserUI(true);
+  if (!isFirefoxBrowserCached() && !relayFirefox) return false;
   if (ic_->capabilityFlags().test(CapabilityFlag::Url)) return true;
-  if (isWayland()) return false;
+  if (isWayland()) return relayFirefox;
   auto *monitor = engine_->a11yMonitor();
   if (monitor && a11yFocusRelevant() &&
       monitor->isWebContentFocused()) return false;
@@ -2251,7 +2272,8 @@ bool SKeyState::inFirefoxAddressBar() const {
 bool SKeyState::inChromiumAddressBar() const {
   // All detection paths, including Url capability and the X11 grace latch,
   // require a browser. Chromium runtime markers also match Electron apps.
-  if (!isChromiumBrowser(appProgram())) {
+  const bool relayChromium = gnomeRelayBrowserUI(false);
+  if (!isChromiumBrowser(appProgram()) && !relayChromium) {
     addrBarUiVerdictAtUsec_ = 0;
     return false;
   }
@@ -2261,7 +2283,7 @@ bool SKeyState::inChromiumAddressBar() const {
   // FullReplace heuristics) is Chrome-specific — corrupts Firefox's URL
   // bar ("mất chữ đằng trước", 2026-09-15).  Require a real Chromium
   // browser; Firefox's URL bar goes through the normal paths.
-  if (ic_->capabilityFlags().test(CapabilityFlag::Url)) {
+  if (ic_->capabilityFlags().test(CapabilityFlag::Url) || relayChromium) {
     return true;
   }
   if (skey::isVivaldiBrowser(appProgram())) {
@@ -8365,7 +8387,14 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
                      << " oldSuffixMatches="
                      << (surrounding.isValid() &&
                          surroundingCacheEndsWith(surrounding, oldComposed));
-        deleteViaBackspace(/*deferForwardCommit=*/!isWayland() && surrounding.isValid());
+        // A Wayland fallback still has two independent protocol queues:
+        // forwarded Backspace and commitString.  Telegram/Qt can advertise
+        // surrounding text while its native delete API is unavailable, so
+        // an immediate commit races the forwarded delete and drops tones
+        // ("chào" -> "chao").  Defer until the compositor has drained the
+        // forwarded edit; the timer is adaptive and only used on this
+        // fallback path.
+        deleteViaBackspace(/*deferForwardCommit=*/true);
       }
     } else {
       // deleteLen == 0: no deletion needed, only add new suffix if any

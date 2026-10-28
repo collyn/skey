@@ -62,7 +62,53 @@ Cài thêm frontend GTK/Qt của Fcitx5 phù hợp với ứng dụng của bạ
 
 ### NixOS
 
-Dùng flake và module `services.fcitx5-skey` theo [hướng dẫn NixOS](packaging/nixos/README.md).
+SKey có flake và module NixOS tích hợp sẵn. Thêm input vào flake của hệ thống
+và bật module cùng Fcitx5:
+
+```nix
+{
+  inputs.skey = {
+    url = "github:collyn/skey";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  outputs = { nixpkgs, skey, ... }: {
+    nixosConfigurations.hostname = nixpkgs.lib.nixosSystem {
+      modules = [
+        skey.nixosModules.default
+        ({ config, ... }: {
+          services.fcitx5-skey.enable = true;
+          i18n.inputMethod = {
+            enable = true;
+            type = "fcitx5";
+            # Dùng package từ module để kênh Stable/Dev đồng bộ.
+            fcitx5.addons = [ config.services.fcitx5-skey.package ];
+          };
+        })
+      ];
+    };
+  };
+}
+```
+
+Áp dụng cấu hình:
+
+```bash
+sudo nixos-rebuild switch --flake /etc/nixos
+fcitx5 -r -d
+```
+
+Module tự bật `hardware.uinput`, cài udev rule cấp quyền cho `/dev/uinput`,
+đưa addon/settings GUI vào hệ thống và không cần chạy `skey-setup`. Trên KDE
+Wayland chọn **Fcitx 5** trong System Settings → Virtual Keyboard.
+
+Để build package riêng hoặc xem tùy chọn `services.fcitx5-skey.devVersion`,
+xem [hướng dẫn NixOS đầy đủ](packaging/nixos/README.md). Có thể kiểm tra package
+trước khi rebuild bằng:
+
+```bash
+nix build github:collyn/skey#fcitx5-skey
+```
 
 ## Sử dụng
 
