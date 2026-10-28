@@ -153,7 +153,7 @@ private:
     /// replacement target (see the consume path).
     bool gnomeOmniboxCaret() const;
     bool gnomeRelayOmnibox() const;
-    /// Auto prefers Select in GNOME omniboxes on both X11 and Wayland.
+    /// Auto uses Select in detected browser address bars on X11 and Wayland.
     bool autoSelectAddressBar() const;
     /// Address-bar mode controls also cover Mutter's anonymous relay target.
     bool addressBarModesAvailable() const;

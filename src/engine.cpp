@@ -131,7 +131,9 @@ private:
 
 namespace fcitx {
 
-static constexpr uint64_t kX11OmniboxForwardQuietUsec = 25000;
+// Autocomplete can recreate the input context more than 25ms after a
+// forwarded edit. Keep a quiet window beyond those delayed focus events.
+static constexpr uint64_t kX11OmniboxForwardQuietUsec = 50000;
 
 // Timing tunables for uinput backspace → commit coordination (microseconds)
 //
@@ -377,17 +379,12 @@ bool SKeyState::gnomeRelayOmnibox() const {
 }
 
 bool SKeyState::autoSelectAddressBar() const {
-  return gnomeRelayOmnibox() ||
-         (isWayland() && gnomeOmniboxCaret() &&
-          ic_->capabilityFlags().test(CapabilityFlag::Url) &&
-          (skey::isChromiumBrowser(appProgram()) || isFirefoxBrowserCached())) ||
-         (!isWayland() && isNativeX11() &&
-          (inChromiumAddressBar() || inFirefoxAddressBar()));
+  return addressBarModesAvailable();
 }
 
-// Select-and-overtype is preferred by X11 browser Auto or explicitly selected.
-// X11 uses the existing browser/omnibox detector; GNOME Wayland keeps
-// the relay's caret signature because its accessibility snapshot lags.
+// Auto uses Select wherever the shared browser address-bar detector matches,
+// including GNOME's anonymous Wayland relay. Explicit modes keep their own
+// transport, and ordinary page editors retain the application policy.
 bool SKeyState::selectTransportActive() const {
   if (addressBarModesAvailable()) {
     const auto mode = engine_->config().chromiumAddressBarMode.value();
@@ -475,7 +472,7 @@ bool SKeyState::tryX11ForwardedReplacement(int deleteLen,
   // Chrome posts forwarded Backspaces to its event queue. Its IM commit
   // can overtake that queue, including between autocomplete focus cycles.
   forwardedOmniboxQuietUntil_ = !select && inChromiumAddressBar()
-      ? now(CLOCK_MONOTONIC) + std::max<uint64_t>(kX11OmniboxForwardQuietUsec, deleteLen * 8000ULL)
+      ? now(CLOCK_MONOTONIC) + std::max<uint64_t>(kX11OmniboxForwardQuietUsec, deleteLen * 25000ULL)
       : 0;
   uinputShiftSelect_ = false;
   uinputDeleteAck_.reset();
@@ -2399,7 +2396,7 @@ SKeyOutputMode SKeyState::effectiveMode() const {
   if (addressBarModesAvailable()) {
     switch (engine_->config().chromiumAddressBarMode.value()) {
     case SKeyChromiumAddressBarMode::Auto:
-      // GNOME Auto uses Select on top of Uinput on both display protocols.
+      // Auto uses the same Select transport as an explicit address-bar selection.
       if (autoSelectAddressBar()) {
         cachedMode_ = isNativeX11() ? SKeyOutputMode::Native : SKeyOutputMode::Uinput;
         modeCacheValid_ = true;
@@ -3372,10 +3369,12 @@ void SKeyState::activate() {
   nativeUnavailable_ = false;
   expireAddrBarCycle();
   uinputAckUnavailable_ = false;
-  // Fresh focus: the browser's editor may not have entered its IM context
-  // yet — appends travel the raw-key channel, which always delivers,
-  // until the app's first surrounding push proves the editor entered.
-  editorEntered_ = false;
+  // Own-output focus cycles keep the same editor and pending key queue.
+  // Losing this evidence routes the next append back through raw keys,
+  // which can overtake the replacement commit in Chromium's omnibox.
+  // A genuine activation still starts on the raw-key channel.
+  if (!(addrBarExpectCycle_ && !isWayland() && inChromiumAddressBar() &&
+        useX11ForwardedReplacement())) editorEntered_ = false;
   // Re-sync input method from config (handles config changes at runtime)
   auto &cfg = engine_->config();
   skey::InputMethod im = skey::InputMethod::Telex;
