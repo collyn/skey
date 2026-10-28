@@ -99,6 +99,7 @@ stdenv.mkDerivation (finalAttrs: {
   ];
 
   cmakeFlags = [
+    "-DBUILD_TESTING=OFF"
     "-DSKEY_ENGINE_SOURCE_DIR=${skeyEngineSrc}"
     "-DSKEY_ENGINE_PREBUILT_LIB=${
       if skeyEngineLib == null

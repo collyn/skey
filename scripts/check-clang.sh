@@ -5,6 +5,7 @@ cd "$(dirname "$0")/.."
 build_dir="${SKEY_CLANG_BUILD_DIR:-build-clang}"
 cmake -S . -B "$build_dir" \
     -DCMAKE_BUILD_TYPE=Debug \
+    -DBUILD_TESTING=ON \
     -DCMAKE_C_COMPILER="${CC:-clang}" \
     -DCMAKE_CXX_COMPILER="${CXX:-clang++}" \
     -DCMAKE_CXX_FLAGS=-Werror \

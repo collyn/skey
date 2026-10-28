@@ -37,6 +37,7 @@ rm -f "${PKG_DIR}.deb"
 echo "--> Configuring project with CMake..."
 cmake -B build-deb -S . \
     -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_TESTING=OFF \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DSKEY_APP_VERSION="${PKG_VERSION}" \
     -DSKEY_DEV_BUILD="${SKEY_DEV_BUILD:-0}"
@@ -76,7 +77,7 @@ install -m 755 debian/postrm "$PKG_DIR/DEBIAN/postrm"
 
 # Build the .deb package
 echo "--> Packaging as .deb..."
-dpkg-deb --build "$PKG_DIR"
+dpkg-deb --root-owner-group --build "$PKG_DIR"
 
 # Clean up
 echo "--> Cleaning up staging directory and build-deb..."

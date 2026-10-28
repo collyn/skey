@@ -80,14 +80,12 @@ mkdir -p "$CARGO_HOME"
 # rpmbuild's %files check would reject — it compares literal paths and
 # does not resolve the /lib → /usr/lib symlink.
 %cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+    -DBUILD_TESTING=OFF \
     -DSKEY_UDEV_RULES_DIR=%{_prefix}/lib/udev/rules.d
 %cmake_build
 
 %install
 DESTDIR=%{buildroot} %cmake_install
-
-%check
-%ctest
 
 %post
 # Icon cache update (always — icons may have changed)
