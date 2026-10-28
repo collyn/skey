@@ -8378,14 +8378,21 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           if (!addedPart.empty()) {
             if (isWayland() && (isChromiumCached() || isFirefoxOrSnap())) {
               SKEY_DEBUG() << "Surr: deferred commit '" << addedPart << "'";
+              // Chrome and Firefox can acknowledge the surrounding-text
+              // transaction while silently dropping deleteSurroundingText.
+              // Keep a post-commit verifier for both browser families;
+              // otherwise the stale suffix remains and the new tone is
+              // appended ("da" -> "dađã"). Firefox also retains the
+              // pre-commit retry below for its coalesced delete requests.
+              if (isChromiumCached() || isFirefoxOrSnap()) {
+                armSurrNativePostVerify(oldComposed, addedPart, newComposed,
+                                        deleteLen, newLen);
+              }
               // Pass the deletion state so the commit-time verification
               // can re-issue dropped deletes (Firefox/Docs applies only
               // one of two consecutive delete_surrounding_text calls).
-              // Chromium excluded: its surrounding pushes cannot be
-              // trusted to ack deletes (chatgpt.com on Fedora kept
-              // serving the stale pre-delete text — the repair then
-              // over-deleted "chà" → "ào" and blocked 60ms per tone key,
-              // 2026-09-15).
+              // Chromium still uses post-commit verification above rather
+              // than reissuing deletes against a possibly stale snapshot.
               scheduleDeferredCommit(addedPart, stablePrefix,
                                      kNativeDeleteDeferredUsec,
                                      isFirefoxOrSnap() ? deleteLen : 0,
