@@ -25,6 +25,7 @@
 #include "app_delay_key.h"
 #include "surrounding_cursor.h"
 #include "uinput_delete_ack.h"
+#include "input_field_policy.h"
 #include "native_injector.h"
 #include "uinput_injector.h"
 #include <deque>
@@ -76,9 +77,14 @@ private:
     void finishUinputSettle(int retries, int postMs);
     void scheduleUinputSettle(uint64_t delay, int retries, int postMs);
     void replaySettledKeys();
+    void scheduleUinputReplay();
     bool uinputSettling_ = false;
     skey::UinputDeleteAck uinputDeleteAck_;
     bool uinputAckUnavailable_ = false;
+    // The app's pushes were too slow for the ack once — stop arming it for
+    // a while, then retry (GNOME's compositor is slower than KDE's; a
+    // permanent flag would leave every later replacement unverified).
+    uint64_t uinputAckUnavailableDeadlineUsec_ = 0;
     uint64_t uinputSettleStartedAt_ = 0;
     bool replayingSettledKeys_ = false;
     struct SettledKey { Key key; bool release; int time; };
@@ -92,8 +98,11 @@ private:
     friend class AddressBarModeCandidateWord;
     SKeyOutputMode effectiveMode() const;
     bool inChromiumAddressBar() const;
+    bool inFirefoxAddressBar() const;
+    bool x11AddressBarCaret() const;
+    bool isFirefoxBrowserCached() const;
     bool isX11Tabby() const;
-    bool useOrderedX11Replay() const;
+    bool useOrderedUinputReplay() const;
     bool forwardUserBackspace() const;
     bool isAutofillCertain() const;
     bool useSurroundingText() const;
@@ -105,9 +114,27 @@ private:
     /// API anyway and lets the runtime validation downgrade.
     bool waylandNativeSurroundingProbe() const;
     bool isWayland() const;
+    bool isNativeX11() const;
+    bool nativeModeEnabled() const;
     const struct UinputTiming& uinputTiming() const;
     bool useUinputMode() const;
     bool useNativeMode() const;
+    enum class EditChannel { FcitxForward, Uinput, Native };
+    struct EditRoute {
+        EditChannel channel;
+        const char *reason;
+        const char *name() const {
+            switch (channel) {
+            case EditChannel::FcitxForward: return "fcitx-forward";
+            case EditChannel::Native: return "native";
+            case EditChannel::Uinput: return "uinput";
+            }
+            return "uinput";
+        }
+    };
+    skey::InputField inputField() const;
+    bool useX11CompositionCommits() const;
+    EditRoute editRoute(bool injectedOnly = false) const;
     bool useNativeBackspaceTransport() const;
     bool nativeFailed_ = false;
     std::string nativeStatus_;
@@ -116,7 +143,52 @@ private:
     /// focus snapshot is fresh and the pid's comm matches appProgram().
     /// -1 otherwise.  Lets detectors read /proc/<pid>/... directly
     /// instead of scanning the whole process table.
-    int a11yAppPid() const;
+    int a11yAppPid(uint64_t maxAgeUsec = 5000000) const;
+    bool a11yFocusRelevant(uint64_t maxAgeUsec = 5000000) const;
+    mutable uint64_t a11yOwnerGeneration_ = 0;
+    mutable int a11yOwnerPid_ = -1;
+    mutable std::string a11yOwnerProgram_;
+    mutable bool a11yOwnerMatches_ = false;
+    /// GNOME Wayland + the omnibox's 1px-beam caret — the shift-select
+    /// replacement target (see the consume path).
+    bool gnomeOmniboxCaret() const;
+    bool gnomeRelayBrowserUI(bool gecko) const;
+    bool gnomeRelayOmnibox() const;
+    /// Auto uses Select in detected browser address bars on X11 and Wayland.
+    bool autoSelectAddressBar() const;
+    /// Address-bar mode controls also cover Mutter's anonymous relay target.
+    bool addressBarModesAvailable() const;
+    /// Select-and-overtype transport active: Auto-on-GNOME or the
+    /// explicit "Select" address-bar mode (omnibox-shaped caret).
+    bool selectTransportActive() const;
+    bool useX11ForwardedReplacement() const;
+    bool tryX11ForwardedReplacement(int deleteLen, const std::string &text,
+                                    int finalLen, const std::string &oldWord,
+                                    const std::string &newWord, bool select = false);
+    bool handleXimHandback(KeyEvent &event);
+    struct XimKeyRecord {
+        Key key;
+        int time;
+        bool release;
+        bool accepted;
+        uint64_t expires;
+    };
+    std::deque<XimKeyRecord> ximKeys_, ximEdits_;
+    uint32_t ximInputTime_ = 0, ximForwardTime_ = 0;
+    std::unique_ptr<EventSourceTime> ximDispatchTimer_;
+    Key ximEditKey_;
+    int ximEditCount_ = 0, ximPostMs_ = -1;
+    uint64_t ximSettleDelay_ = 0;
+    void dispatchXimEdits();
+    bool x11ForwardedReplacement_ = false;
+    int forwardedFocusRetries_ = 0;
+    uint64_t forwardedOmniboxQuietUntil_ = 0;
+    /// Shift+Left select-and-overtype replacement (self-contained).
+    /// Returns true when it took over the replace.
+    bool tryShiftSelectReplace(int deleteLen, const std::string &addPart,
+                               const std::string &oldComposed,
+                               const std::string &newComposed,
+                               KeyEvent &keyEvent);
     /// Terminal detection: static name list plus a /proc shell-descendant
     /// scan for terminals not on the list.  Cached per IC.
     bool isTerminalAppCached() const;
@@ -252,6 +324,9 @@ private:
     uint64_t cellSelectionSerial_ = 0;
     SheetsCellSnapshot sheetsCellSnapshot_;
     bool checkCellSelection();
+    // Blind-a11y surrounding-based field-change detection; shared by
+    // checkCellSelection() and surroundingTextChanged().
+    bool checkBlindFieldChange();
     // Shared reset body for cell-change detection (a11y path and the
     // blind caret-jump fallback).  Clears the in-flight word and all
     // pending uinput/deferred commit machinery.
@@ -260,6 +335,13 @@ private:
     // -1 = no baseline yet (fresh focus/IC).
     int lastKeyCaretX_ = -1;
     int lastKeyCaretY_ = -1;
+    // Surrounding text as of the previous key.  The blind-a11y fallback in
+    // checkCellSelection() only fires when the app reports DIFFERENT,
+    // non-empty text at cursor 0 — proof the caret moved to another field.
+    // Cleared in reset() so a fresh focus never compares against a foreign
+    // field's snapshot.
+    std::string lastKeySurrText_;
+    bool lastKeySurrValid_ = false;
     // CLOCK_MONOTONIC timestamp of the most recent activate() — the
     // first word after a focus switch gets extra settle headroom
     // (kFirstWordSettleUsec) because the renderer is still settling.
@@ -270,12 +352,20 @@ private:
     // keystrokes; keep the last true verdict for a short grace instead of
     // flipping inChromiumAddressBar() to false mid-word.
     mutable uint64_t addrBarUiVerdictAtUsec_ = 0;
+    mutable uint64_t addrBarUiVerdictGeneration_ = 0;
     // Minimum caret X observed at word starts this session — the
     // omnibox's left text edge.  A word starting near it means the bar
     // was empty; further right means text exists before the cursor.
     int addrBarLeftEdgeCaretX_ = -1;
+    // Known characters before the composing word; -1 after untracked edits.
+    int addrBarPrefixChars_ = -1;
+    bool addrBarPendingFullDelete_ = false;
+    bool ownsPtyMaster() const;
+    mutable std::string cachedPtyProgram_;
+    mutable bool cachedPtyMaster_ = false;
     mutable int cachedIsTerminalApp_ = -1; // tristate: name list + shell scan
     mutable int cachedIsFirefoxOrSnap_ = -1;
+    mutable int cachedIsFirefoxBrowser_ = -1;
     mutable int cachedIsWebKitGtk_ = -1;
     mutable std::string cachedWebKitProgram_;
     // Sticky Uinput for Chromium-family apps that initially report bare caps
@@ -323,20 +413,72 @@ private:
     std::string pendingFlushSuffix_;
     skey::UinputInjector::Owner uinputOwner_;
     skey::UinputInjector::Ticket uinputRequest_;
+    EditChannel requestChannel_ = EditChannel::Uinput;
+    bool uinputLateSelect_ = false;
+    bool nativeUnavailable_ = false;
+    bool legacyNativePending_ = false;
     std::unique_ptr<EventSourceTime> uinputRequestTimer_;
     std::string uinputStatus_;
 #ifdef SKEY_TESTING
-    // Request capture only; tests never open the desktop's uinput device.
+    // Request capture only; tests never inject keys into the desktop.
     std::function<bool(int, uint32_t, uint32_t)> uinputTestSend_;
     bool uinputTestReady_ = true;
+    std::function<bool(int, uint32_t, uint32_t)> nativeTestSend_;
+    std::function<skey::NativeInjector::Ticket(int, bool, unsigned)> nativeTestSubmit_;
+    std::function<skey::NativeInjector::Ticket(int, unsigned)> nativeTestSelect_;
 #endif
     // Uinput replacement state
     bool uinputDeleting_ = false;
+    /// Replacement in flight uses the Shift+Left select-and-overtype
+    /// protocol (GNOME omnibox): Left loopbacks are tracked instead of BS.
+    bool uinputShiftSelect_ = false;
+    // Surr-mode native-delete post-commit verification: armed after a
+    // Wayland replacement whose native delete rode in blind — the app's
+    // own pushes can prove the delete was dropped (see
+    // surrNativeRepairIfDropped).
+    bool surrNativePostVerify_ = false;
+    std::string surrNativeDeletedWord_;
+    std::string surrNativeCommittedText_;
+    std::string surrNativeNewComposed_;
+    int surrNativeDeletedLen_ = 0;
+    int surrNativePostFinalLen_ = 0;
+    uint64_t surrNativePostVerifyDeadlineUsec_ = 0;
+    void armSurrNativePostVerify(const std::string &oldComposed,
+                                 const std::string &addedPart,
+                                 const std::string &newComposed,
+                                 int deleteLen, int newLen);
+    // Verdict: 0 = no evidence; 1 = drop proven (handled); 2 = the push is
+    // still mid-transaction (the old word intact) — the keyEvent caller
+    // must skip its desync reset on this.
+    int surrNativeRepairIfDropped(const fcitx::SurroundingText &surr,
+                                  bool enforceDeadline, bool repairAllowed);
     std::unique_ptr<EventSourceTime> uinputCommitTimer_;
     std::unique_ptr<EventSourceTime> uinputSafetyTimer_;
     int expectedUinputBackspaces_ = 0;
     int seenUinputBackspaces_ = 0;
     int uinputPendingFinalLen_ = 0; // expected committedLen_ after BS+commit
+    // The composed word the in-flight Uinput replacement should delete —
+    // kept for the blind-mode miss repair (see finishUinputSettle).
+    std::string uinputDeletedWord_;
+    int uinputDeletedLen_ = 0;
+    // Miss-repair rounds for the current transaction.  Each round requires
+    // fresh miss evidence (a push still containing the word), so a lagging
+    // app cannot be over-deleted; the cap bounds the dropdown fight.
+    int uinputRepairCount_ = 0;
+    // False until the app's first surrounding push after a focus/cell
+    // change — the push proves the editor entered its IM context.  Until
+    // then the appends use the raw-key channel, which always delivers.
+    bool editorEntered_ = false;
+    // Post-commit verification (blind mode): after an unconfirmed deletion
+    // commit, watch for the app's push of the result — the old word intact
+    // with the committed text right after it proves the deletion failed.
+    bool uinputPostVerify_ = false;
+    // One-shot gate for the post-commit repair (no-verify variant): a
+    // transaction gets at most one repair round.
+    bool uinputPostVerifyDone_ = false;
+    std::string uinputCommittedText_;
+    int uinputPostFinalLen_ = 0;
+    uint64_t uinputPostVerifyDeadlineUsec_ = 0;
     // BS we injected via uinput but have not yet seen loop back through
     // fcitx5.  Late loopbacks (beyond the safety window) are swallowed
     // instead of being mistaken for fresh user backspaces.
@@ -473,7 +615,7 @@ class SKeyEngine : public InputMethodEngineV2 {
 public:
     // Standalone test hosts can omit desktop/configuration side effects.
     SKeyEngine(Instance *instance, bool initializeDesktop = true);
-    ~SKeyEngine() override = default;
+    ~SKeyEngine() override;
 
     void keyEvent(const InputMethodEntry &entry,
                   KeyEvent &keyEvent) override;
@@ -500,6 +642,9 @@ public:
     Instance *instance() { return instance_; }
     void setOutputMode(SKeyOutputMode mode);
     void setChromiumAddressBarMode(SKeyChromiumAddressBarMode mode);
+    /// Sticky per-program "native delete is dropped" flag (Surr mode).
+    bool isSurrDeleteBrokenApp(const std::string &prog) const;
+    void markSurrDeleteBrokenApp(const std::string &prog);
     void setInputMethod(SKeyInputMethod method);
     void saveAppMode(const std::string &app, SKeyOutputMode mode);
     void saveAppExcluded(const std::string &app, bool excluded);
@@ -609,6 +754,8 @@ private:
     std::string terminalCachedProgram_;
     int terminalCachedVerdict_ = -1; // -1 = unset
     bool chromiumHadBareCaps_ = false;
+
+    std::set<std::string> surrDeleteBrokenApps_;
 
     // AT-SPI2 accessibility monitor for address bar detection
     std::unique_ptr<A11yMonitor> a11yMonitor_;

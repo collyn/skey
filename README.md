@@ -62,7 +62,53 @@ Cài thêm frontend GTK/Qt của Fcitx5 phù hợp với ứng dụng của bạ
 
 ### NixOS
 
-Dùng flake và module `services.fcitx5-skey` theo [hướng dẫn NixOS](packaging/nixos/README.md).
+SKey có flake và module NixOS tích hợp sẵn. Thêm input vào flake của hệ thống
+và bật module cùng Fcitx5:
+
+```nix
+{
+  inputs.skey = {
+    url = "github:collyn/skey";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  outputs = { nixpkgs, skey, ... }: {
+    nixosConfigurations.hostname = nixpkgs.lib.nixosSystem {
+      modules = [
+        skey.nixosModules.default
+        ({ config, ... }: {
+          services.fcitx5-skey.enable = true;
+          i18n.inputMethod = {
+            enable = true;
+            type = "fcitx5";
+            # Dùng package từ module để kênh Stable/Dev đồng bộ.
+            fcitx5.addons = [ config.services.fcitx5-skey.package ];
+          };
+        })
+      ];
+    };
+  };
+}
+```
+
+Áp dụng cấu hình:
+
+```bash
+sudo nixos-rebuild switch --flake /etc/nixos
+fcitx5 -r -d
+```
+
+Module tự bật `hardware.uinput`, cài udev rule cấp quyền cho `/dev/uinput`,
+đưa addon/settings GUI vào hệ thống và không cần chạy `skey-setup`. Trên KDE
+Wayland chọn **Fcitx 5** trong System Settings → Virtual Keyboard.
+
+Để build package riêng hoặc xem tùy chọn `services.fcitx5-skey.devVersion`,
+xem [hướng dẫn NixOS đầy đủ](packaging/nixos/README.md). Có thể kiểm tra package
+trước khi rebuild bằng:
+
+```bash
+nix build github:collyn/skey#fcitx5-skey
+```
 
 ## Sử dụng
 
@@ -84,20 +130,38 @@ Bật **Ghi log debug** trong cài đặt để theo dõi bằng `tail -f /tmp/s
 
 Cần CMake ≥ 3.16, ECM, trình biên dịch C++17, Rust/Cargo, pkg-config, Fcitx5 development headers, D-Bus, XCB, X11 và XTest. Qt6 (Widgets/Core/Network/DBus) cùng gettext dùng cho giao diện cài đặt; libei ≥ 1.0 và libportal ≥ 0.7.1 bật backend Native trên Wayland.
 
-Ví dụ dependencies trên Ubuntu/Debian (cần cài thêm Rust/Cargo):
+Ví dụ dependencies trên Ubuntu/Debian. Cài thêm Rust/Cargo stable bằng [rustup](https://rustup.rs/) nếu máy chưa có:
 
 ```bash
-sudo apt install build-essential git cmake extra-cmake-modules pkg-config \
+sudo apt update
+sudo apt install build-essential git cmake extra-cmake-modules pkg-config fcitx5 \
   libfcitx5core-dev libfcitx5utils-dev libdbus-1-dev libxcb1-dev \
-  libx11-dev libxtst-dev libei-dev libportal-dev qt6-base-dev gettext librsvg2-bin
+  libx11-dev libxtst-dev libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev \
+  qt6-base-dev libqt6svg6 gettext librsvg2-bin
 ```
+
+`libxtst-dev` cung cấp XTest (`xtst.pc`); đây là dependency build bắt buộc, kể cả khi chạy desktop Wayland. Có thể kiểm tra các thư viện backend trước khi build:
+
+```bash
+pkg-config --modversion dbus-1 xcb x11 xtst
+```
+
+Để bật thêm Native qua libei/portal trên Wayland, cài các gói sau trên Ubuntu 24.04+ hoặc Debian 13+:
+
+```bash
+sudo apt install libei-dev libportal-dev
+pkg-config --atleast-version=1.0 libei-1.0
+pkg-config --atleast-version=0.7.1 libportal
+```
+
+Nếu distro chưa cung cấp đủ phiên bản, có thể bỏ các gói libei/libportal; CMake sẽ tắt backend này, còn XTest trên X11 vẫn build bình thường. `libqt6svg6-dev` là tùy chọn nếu muốn liên kết Qt SVG trực tiếp; `librsvg2-bin` tạo icon PNG dự phòng khi build.
 
 ```bash
 git clone --depth=1 --single-branch https://github.com/collyn/skey.git
 cd skey
-cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_TESTING=OFF
 cmake --build build -j"$(nproc)"
-ctest --test-dir build --output-on-failure
 sudo cmake --install build
 skey-setup
 ```
@@ -106,7 +170,7 @@ Cài package hoặc cài source trực tiếp vào `/usr`/`/usr/local` tự dừ
 
 CMake tự tải phiên bản skey-engine được ghim trong dự án; bước build cần mạng để lấy engine và các crate. Để dùng engine cục bộ, thêm `-DSKEY_ENGINE_SOURCE_DIR=/path/to/skey-engine` khi cấu hình CMake.
 
-Đóng gói `.deb`: `./build.sh`. Hướng dẫn kiểm thử và kiểm tra bằng Clang: [scripts/TESTING.md](scripts/TESTING.md).
+Đóng gói `.deb`: `./build.sh` (cần thêm `dpkg-dev`). Muốn build và chạy test, cấu hình riêng với `-DBUILD_TESTING=ON`; xem [hướng dẫn kiểm thử và kiểm tra bằng Clang](scripts/TESTING.md).
 
 ## Mã nguồn & giấy phép
 

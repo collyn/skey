@@ -38,6 +38,17 @@ std::string convertCharset(const std::string &utf8, Charset cs) {
     uint8_t *raw = skey_charset_encode(utf8.c_str(), csId, &outLen);
     if (!raw) return utf8;
 
+    // Unicode NFD is returned by the engine as UTF-8 bytes containing
+    // combining marks.  Keep those bytes intact; wrapping each one as a
+    // Latin-1 codepoint would turn valid UTF-8 into mojibake.
+    if (cs == Charset::UnicodeDecomposed) {
+        std::string result(reinterpret_cast<const char *>(raw), outLen);
+        skey_charset_free_buf(raw);
+        return result;
+    }
+
+    // Legacy charset results are raw bytes.  Wrap each byte as a Latin-1
+    // codepoint so commitText() still receives valid UTF-8.
     std::string result;
     result.reserve(outLen * 2);
     for (size_t i = 0; i < outLen; i++) {

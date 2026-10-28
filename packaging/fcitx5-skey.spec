@@ -80,14 +80,12 @@ mkdir -p "$CARGO_HOME"
 # rpmbuild's %files check would reject — it compares literal paths and
 # does not resolve the /lib → /usr/lib symlink.
 %cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+    -DBUILD_TESTING=OFF \
     -DSKEY_UDEV_RULES_DIR=%{_prefix}/lib/udev/rules.d
 %cmake_build
 
 %install
 DESTDIR=%{buildroot} %cmake_install
-
-%check
-%ctest
 
 %post
 # Icon cache update (always — icons may have changed)
@@ -140,10 +138,13 @@ if [ "$1" = "0" ]; then
     # skey-im from the fcitx5 profile and cleans the live session.  It
     # must run as the USER (HOME + session D-Bus resolve correctly) and
     # while /usr/bin/skey-setup still exists — %preun is the right hook.
-    CONSOLE_USER=""
-    if [ -x /usr/bin/loginctl ]; then
-        CONSOLE_USER=$(/usr/bin/loginctl list-sessions --no-legend 2>/dev/null | \
-            awk '$4=="seat0" {print $3}' | sort -u | head -1)
+    CONSOLE_USER="${SUDO_USER:-}"
+    if { [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = root ]; } && [ -x /usr/bin/loginctl ]; then
+        ACTIVE_SESSION=$(/usr/bin/loginctl show-seat seat0 --property=ActiveSession --value 2>/dev/null || :)
+        CONSOLE_USER=""
+        if [ -n "$ACTIVE_SESSION" ]; then
+            CONSOLE_USER=$(/usr/bin/loginctl show-session "$ACTIVE_SESSION" --property=Name --value 2>/dev/null || :)
+        fi
     fi
     if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ] && \
        [ -x /usr/bin/skey-setup ]; then

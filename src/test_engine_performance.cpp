@@ -15,6 +15,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <thread>
 
 static void check(bool value, const char *message);
 
@@ -181,7 +182,8 @@ struct EnginePerformanceTest {
             return send(fd, request, sizeof(request), MSG_NOSIGNAL) == sizeof(request);
         };
     }
-    static void omniboxSurrounding(Instance &instance, bool native, bool wayland) {
+    static void omniboxSurrounding(Instance &instance, bool native, bool wayland,
+                                   bool nativeSuccess = false) {
         class Editor : public TestInput {
         public:
             using TestInput::TestInput;
@@ -200,6 +202,9 @@ struct EnginePerformanceTest {
         SKeyEngine engine(&instance, false);
         engine.config_.outputMode.setValue(SKeyOutputMode::Auto);
         engine.config_.chromiumAddressBarMode.setValue(SKeyChromiumAddressBarMode::SurroundingText);
+        if (nativeSuccess)
+            engine.config_.chromiumAddressBarMode.setValue(SKeyChromiumAddressBarMode::Native);
+        engine.config_.enableNative.setValue(native);
         engine.config_.replaceUinputWithNative.setValue(native);
         FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
         Editor input(instance.inputContextManager(), "google-chrome");
@@ -212,17 +217,24 @@ struct EnginePerformanceTest {
         state.cachedIsChromium_ = 1;
         state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = state.cachedIsWebKitGtk_ = 0;
         state.cachedWebKitProgram_ = "google-chrome";
-        check(state.effectiveMode() == SKeyOutputMode::SurroundingText,
-              "omnibox override preserves Surrounding Text output");
+        check(state.effectiveMode() == (nativeSuccess ? SKeyOutputMode::Native : SKeyOutputMode::SurroundingText),
+              "omnibox override preserves the requested output mode");
         check(state.useNativeBackspaceTransport() == native,
               "omnibox Surrounding Text honors replacement transport preference");
         int sockets[2];
         check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
               "isolate omnibox transport without desktop injection");
         captureUinput(state, sockets[0]);
-        state.viet_.setRawInput(native ? "chaf" : "cha");
+        if (nativeSuccess) {
+            state.nativeTestSend_ = std::move(state.uinputTestSend_);
+            state.uinputTestSend_ = [](int, uint32_t, uint32_t) {
+                check(false, "X11 Native must not fall back to Uinput");
+                return false;
+            };
+        }
+        state.viet_.setRawInput(native && !nativeSuccess ? "chaf" : "cha");
         state.committedLen_ = 3;
-        if (native) {
+        if (native && !nativeSuccess) {
             // An unstarted native injector rejects deterministically. It
             // must neither fall back to the Uinput request capture nor
             // schedule a timeout that commits over unchanged text.
@@ -420,6 +432,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome";
         state.cachedIsChromium_ = 1;
+        engine.config_.enableNative.setValue(true);
         for (bool replace : {false, true}) {
             engine.config_.replaceUinputWithNative.setValue(replace);
             for (bool address : {false, true}) {
@@ -432,7 +445,9 @@ struct EnginePerformanceTest {
                       "saved Uinput config resolves to selected transport");
                 state.showModeMenu();
                 auto list = input.inputPanel().candidateList();
-                check(list && list->size() == (replace ? 5 : 6), "replacement menu removes duplicate transport slot");
+                check(list && list->size() ==
+                          (address ? (replace ? 6 : 7) : (replace ? 5 : 6)),
+                      "replacement menu keeps the Select slot and the disable action");
                 check(list->candidate(list->size() - 1).text().toString().find("0. ") == 0,
                       "both menus expose their disable action as zero");
                 check(list->candidate(1).text().toString() == (replace ? "2. Native" : "2. Uinput"),
@@ -460,6 +475,446 @@ struct EnginePerformanceTest {
                         check(state.appExcluded_ == (zero == FcitxKey_0), "zero toggles application exclusion");
                     }
                 }
+            }
+        }
+        engine.config_.enableNative.setValue(false);
+        engine.config_.replaceUinputWithNative.setValue(false);
+    }
+
+    static void configureGnomeOmnibox(SKeyEngine &engine, bool native) {
+        engine.config_.enableNative.setValue(native);
+        engine.config_.chromiumAddressBarMode.setValue(
+            native ? SKeyChromiumAddressBarMode::Native : SKeyChromiumAddressBarMode::Uinput);
+    }
+
+    static void captureGnomeTransport(SKeyState &state, int fd, bool native) {
+        captureUinput(state, fd);
+        check(state.useNativeBackspaceTransport() == native,
+              "GNOME omnibox selects the requested replacement transport");
+        if (native) {
+            state.nativeTestSend_ = std::move(state.uinputTestSend_);
+            state.uinputTestSend_ = [](int, uint32_t, uint32_t) {
+                check(false, "Native must not fall back to Uinput");
+                return false;
+            };
+        }
+    }
+
+    static void gnomeOmniboxReplacement(Instance &instance, bool native = false) {
+        class Omnibox : public TestInput {
+        public:
+            using TestInput::TestInput;
+            std::string text;
+            size_t typedBytes = 0;
+            bool selected = false;
+            void backspace() {
+                if (selected) { text.resize(typedBytes); selected = false; }
+                else if (!text.empty())
+                    text.resize(utf8::ncharByteLength(text.begin(), utf8::length(text) - 1));
+            }
+        protected:
+            void commitStringImpl(const std::string &value) override {
+                TestInput::commitStringImpl(value);
+                text += value;
+            }
+            void forwardKeyImpl(const ForwardKeyEvent &event) override {
+                TestInput::forwardKeyImpl(event);
+                if (!event.isRelease()) text += Key::keySymToUTF8(event.rawKey().sym());
+            }
+        };
+        for (const std::string &prefix : {std::string{}, std::string("tìm ")})
+            for (bool selected : {false, true})
+                for (bool reversed : {false, true}) {
+                    SKeyEngine engine(&instance, false);
+                    configureGnomeOmnibox(engine, native);
+                    FocusGroup group("wayland:test", instance.inputContextManager());
+                    Omnibox input(instance.inputContextManager(), "gnome-shell");
+                    input.setFocusGroup(&group);
+                    input.setCursorRect(Rect(344, 86, 345, 104));
+                    input.setCapabilityFlags(CapabilityFlag::Preedit); // real relay caps=0x12, no Url
+                    input.text = prefix + "cha" + (selected ? "example" : "");
+                    input.typedBytes = prefix.size() + 3;
+                    input.selected = selected;
+                    const unsigned start = utf8::length(prefix) + 3;
+                    const unsigned end = utf8::length(input.text);
+                    input.surroundingText().setText(input.text, reversed ? end : start, reversed ? start : end);
+                    auto &state = *input.propertyFor(&engine.factory_);
+                    state.cachedProgram_ = "gnome-shell";
+                    state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+                    state.viet_.setRawInput("cha");
+                    state.committedLen_ = 3;
+                    int sockets[2];
+                    check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+                          "isolate GNOME omnibox Backspace transport");
+                    captureGnomeTransport(state, sockets[0], native);
+                    KeyEvent tone(&input, Key(FcitxKey_f));
+                    state.keyEvent(tone);
+                    uint32_t request[4] = {};
+                    check(recv(sockets[1], request, sizeof(request), 0) == sizeof(request), "GNOME replacement sends a replacement");
+                    check(request[0] == (selected ? 3u : 2u) && request[1] == 0 && request[3] == 5000,
+                          "GNOME replacement dismisses only active autofill and paces Backspaces");
+                    check(!state.uinputShiftSelect_, "explicit replacement mode stays on Backspace transport");
+                    if (reversed) {
+                        KeyEvent append(&input, Key(FcitxKey_o));
+                        state.keyEvent(append);
+                        check(append.accepted(), "fast append waits for GNOME replacement");
+                    }
+                    for (uint32_t i = 0; i < request[0]; ++i) {
+                        KeyEvent deletion(&input, Key(FcitxKey_BackSpace));
+                        state.keyEvent(deletion);
+                        check(deletion.accepted() == (i + 1 == request[0]), "only the final GNOME Backspace is the anchor");
+                        if (!deletion.accepted()) input.backspace();
+                    }
+                    state.finishUinputSettle(0, 0);
+                    if (reversed) {
+                        check(state.settledKeys_.empty() && state.bufferedUinputKeys_.empty(),
+                              "GNOME replacement drains the queued append exactly once");
+                    } else {
+                        KeyEvent append(&input, Key(FcitxKey_o));
+                        state.keyEvent(append);
+                        if (!append.accepted()) input.text += "o";
+                    }
+                    check(input.text == prefix + "chào", "GNOME replacement produces chào without leftover a or lost prefix");
+                    state.resetForCellChange();
+                    close(sockets[1]);
+                }
+        // A stale unrelated snapshot, a wide web-editor caret, or a
+        // non-relay program must not receive the GNOME-only extra BS.
+        for (int scenario = 0; scenario < 3; ++scenario) {
+            SKeyEngine engine(&instance, false);
+            configureGnomeOmnibox(engine, native);
+            engine.config_.outputMode.setValue(native ? SKeyOutputMode::Native : SKeyOutputMode::Uinput);
+            const std::string program = scenario == 2 ? "code" : "gnome-shell";
+            FocusGroup group("wayland:test", instance.inputContextManager());
+            TestInput input(instance.inputContextManager(), program);
+            input.setFocusGroup(&group);
+            input.setCursorRect(Rect(344, 86, scenario == 1 ? 424 : 345, 104));
+            input.setCapabilityFlags(CapabilityFlag::Preedit);
+            input.surroundingText().setText(scenario == 0 ? "chxexample" : "chaexample", 3, 10);
+            auto &state = *input.propertyFor(&engine.factory_);
+            state.cachedProgram_ = program;
+            state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+            state.viet_.setRawInput("cha");
+            state.committedLen_ = 3;
+            int sockets[2];
+            check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0, "isolate negative GNOME cases");
+            captureGnomeTransport(state, sockets[0], native);
+            KeyEvent tone(&input, Key(FcitxKey_f));
+            state.keyEvent(tone);
+            uint32_t request[4] = {};
+            check(recv(sockets[1], request, sizeof(request), 0) == sizeof(request) && request[0] == 2,
+                  "unrelated snapshots and non-target fields retain exact deletion count");
+            check(request[3] == (scenario == 0 ? 5000u : 1000u), "non-relay and wide fields retain existing pace");
+            state.resetForCellChange();
+            close(sockets[1]);
+        }
+    }
+
+    static void gnomeOmniboxAppendAfterTimeout(Instance &instance, bool native = false) {
+        class Omnibox : public TestInput {
+        public:
+            using TestInput::TestInput;
+            std::string text, pending;
+            int droppedRaw = 0;
+            void raw(const Key &key) {
+                // The relay can deliver a physical/replayed key before the
+                // pending IM commit has reached Chrome, where it disappears.
+                if (!pending.empty()) ++droppedRaw;
+                else text += Key::keySymToUTF8(key.sym());
+            }
+            void flush() {
+                text += pending;
+                pending.clear();
+            }
+        protected:
+            void commitStringImpl(const std::string &value) override {
+                TestInput::commitStringImpl(value);
+                pending += value;
+            }
+            void forwardKeyImpl(const ForwardKeyEvent &event) override {
+                TestInput::forwardKeyImpl(event);
+                if (!event.isRelease()) raw(event.rawKey());
+            }
+        };
+        for (const std::string &prefix : {std::string("chào "), std::string("chào các ")})
+            for (bool queued : {false, true}) {
+                SKeyEngine engine(&instance, false);
+                configureGnomeOmnibox(engine, native);
+                FocusGroup group("wayland:test", instance.inputContextManager());
+                Omnibox input(instance.inputContextManager(), "gnome-shell");
+                input.setFocusGroup(&group);
+                input.setCursorRect(Rect(320, 86, 321, 104));
+                input.setCapabilityFlags(CapabilityFlag::Preedit);
+                input.text = prefix + "ca";
+                const unsigned cursor = utf8::length(input.text);
+                input.surroundingText().setText(input.text, cursor, cursor);
+                auto &state = *input.propertyFor(&engine.factory_);
+                state.cachedProgram_ = "gnome-shell";
+                state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+                state.viet_.setRawInput("ca");
+                state.committedLen_ = 2;
+                int sockets[2];
+                check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+                      "isolate GNOME subsequent-word replacement");
+                captureGnomeTransport(state, sockets[0], native);
+                KeyEvent tone(&input, Key(FcitxKey_s));
+                state.keyEvent(tone);
+                uint32_t request[4] = {};
+                check(recv(sockets[1], request, sizeof(request), 0) == sizeof(request) && request[0] == 2,
+                      "second-word tone uses one deletion and an anchor");
+                for (uint32_t i = 0; i < request[0]; ++i) {
+                    KeyEvent deletion(&input, Key(FcitxKey_BackSpace));
+                    state.keyEvent(deletion);
+                    if (!deletion.accepted()) input.text.pop_back(); // ASCII a
+                }
+                if (queued) {
+                    KeyEvent append(&input, Key(FcitxKey_c));
+                    state.keyEvent(append);
+                    check(append.accepted(), "final c queues while GNOME waits for deletion");
+                }
+                // Advance the unconfirmed deadline deterministically while
+                // leaving the surrounding snapshot one edit behind, as in
+                // the reported GNOME trace (cursor=anchor=7).
+                check(state.uinputDeleteAck_.start(prefix + "ca", cursor, cursor, "ca", 1,
+                          now(CLOCK_MONOTONIC) - 200000, 150000), "simulate expired GNOME deletion acknowledgement");
+                state.finishUinputSettle(0, 0);
+                if (!queued) {
+                    KeyEvent append(&input, Key(FcitxKey_c));
+                    state.keyEvent(append);
+                    if (!append.accepted()) input.raw(append.key());
+                }
+                input.flush();
+                check(input.text == prefix + "các" && input.droppedRaw == 0,
+                      "GNOME replacement preserves the final c after an unconfirmed tone replacement");
+                check(input.commits == std::vector<std::string>{"á", "c"},
+                      "GNOME replacement and append use one ordered commit channel");
+                state.resetForCellChange();
+                close(sockets[1]);
+            }
+    }
+
+    static void gnomeOmniboxEditing(Instance &instance, bool native = false) {
+        class Editor : public TestInput {
+        public:
+            using TestInput::TestInput;
+            std::string text;
+            unsigned cursor = 0, anchor = 0;
+            size_t byte(unsigned pos) const {
+                return utf8::ncharByteLength(text.begin(), pos);
+            }
+            void insert(const std::string &value) {
+                const unsigned begin = std::min(cursor, anchor), end = std::max(cursor, anchor);
+                text.replace(byte(begin), byte(end) - byte(begin), value);
+                cursor = anchor = begin + utf8::length(value);
+            }
+            void raw(const Key &key) {
+                const auto sym = key.sym();
+                if (key.states().test(KeyState::Ctrl)) {
+                    if (sym == FcitxKey_a || sym == FcitxKey_l) {
+                        anchor = 0;
+                        cursor = utf8::length(text);
+                    }
+                    return;
+                }
+                if (sym == FcitxKey_BackSpace || sym == FcitxKey_Delete) {
+                    if (cursor != anchor) insert("");
+                    else if (sym == FcitxKey_BackSpace && cursor > 0) {
+                        anchor = cursor - 1;
+                        insert("");
+                    } else if (sym == FcitxKey_Delete && cursor < utf8::length(text)) {
+                        anchor = cursor + 1;
+                        insert("");
+                    }
+                } else insert(Key::keySymToUTF8(sym));
+            }
+            void publish() {
+                surroundingText().setText(text, cursor, anchor);
+                updateSurroundingText();
+            }
+        protected:
+            void commitStringImpl(const std::string &value) override {
+                TestInput::commitStringImpl(value);
+                insert(value);
+            }
+            void forwardKeyImpl(const ForwardKeyEvent &event) override {
+                TestInput::forwardKeyImpl(event);
+                if (!event.isRelease()) raw(event.rawKey());
+            }
+        };
+        enum class Edit {
+            OverwriteSelection,
+            ClearWithBackspace,
+            DeleteMultipleWords,
+            DeleteAll,
+            ClearWithDelete,
+            ClearAddressBar,
+            DeleteLastLetter,
+            RepeatEdits,
+        };
+        for (const auto scenario : {Edit::OverwriteSelection, Edit::ClearWithBackspace,
+                                    Edit::DeleteMultipleWords, Edit::DeleteAll,
+                                    Edit::ClearWithDelete, Edit::ClearAddressBar,
+                                    Edit::DeleteLastLetter, Edit::RepeatEdits}) {
+            SKeyEngine engine(&instance, false);
+            configureGnomeOmnibox(engine, native);
+            // These cases test editing, not the acknowledgement deadline;
+            // the preceding regression covers stale snapshots and timeouts.
+            engine.config_.autoDelay.setValue(false);
+            FocusGroup group("wayland:test", instance.inputContextManager());
+            Editor input(instance.inputContextManager(), "gnome-shell");
+            input.setFocusGroup(&group);
+            input.setCursorRect(Rect(320, 86, 321, 104));
+            input.setCapabilityFlags(CapabilityFlag::Preedit);
+            auto &state = *input.propertyFor(&engine.factory_);
+            state.cachedProgram_ = "gnome-shell";
+            state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+            int sockets[2];
+            check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+                  "isolate GNOME edit/retype session");
+            captureGnomeTransport(state, sockets[0], native);
+            input.publish();
+            auto press = [&](Key key, bool publish = true) {
+                KeyEvent event(&input, key);
+                state.keyEvent(event);
+                if (!event.accepted()) input.raw(key);
+                uint32_t request[4];
+                while (recv(sockets[1], request, sizeof(request), 0) == sizeof(request)) {
+                    for (uint32_t i = 0; i < request[0]; ++i) {
+                        KeyEvent deletion(&input, Key(FcitxKey_BackSpace));
+                        state.keyEvent(deletion);
+                        if (!deletion.accepted()) input.raw(deletion.key());
+                    }
+                    state.finishUinputSettle(0, 0);
+                }
+                if (publish) input.publish();
+            };
+            auto type = [&](const std::string &keys) {
+                for (unsigned char ch : keys) press(Key(static_cast<KeySym>(ch)));
+            };
+            auto expect = [&](const std::string &text) {
+                if (input.text != text)
+                    std::cerr << "GNOME edit scenario=" << static_cast<int>(scenario) << " actual='" << input.text
+                              << "' expected='" << text << "'\n";
+                check(input.text == text, "GNOME edit/retype retains exact visible Vietnamese text");
+                check(!state.uinputDeleting_ && state.settledKeys_.empty() && state.bufferedUinputKeys_.empty(),
+                      "GNOME edit/retype drains replacement queues");
+            };
+            type("chafo casc banj");
+            expect("chào các bạn");
+            switch (scenario) {
+            case Edit::OverwriteSelection: // Ctrl+A with a lagging selection snapshot.
+                press(Key(FcitxKey_a, KeyState::Ctrl), false);
+                type("xin chafo");
+                expect("xin chào");
+                break;
+            case Edit::ClearWithBackspace:
+            case Edit::ClearWithDelete:
+            case Edit::ClearAddressBar:
+                press(Key(scenario == Edit::ClearAddressBar ? FcitxKey_l : FcitxKey_a,
+                          KeyState::Ctrl), false);
+                press(Key(scenario == Edit::ClearWithDelete ? FcitxKey_Delete : FcitxKey_BackSpace));
+                expect("");
+                type("chafo casc");
+                expect("chào các");
+                break;
+            case Edit::DeleteMultipleWords:
+                for (int i = 0; i < 7; ++i) press(Key(FcitxKey_BackSpace));
+                expect("chào ");
+                type("casc banj");
+                expect("chào các bạn");
+                break;
+            case Edit::DeleteAll: // Include extra Backspaces on an empty field.
+                for (int i = 0; i < 14; ++i) press(Key(FcitxKey_BackSpace));
+                expect("");
+                type("chafo casc");
+                expect("chào các");
+                break;
+            case Edit::DeleteLastLetter: // Preserve the accented stem.
+                press(Key(FcitxKey_BackSpace));
+                expect("chào các bạ");
+                type("n");
+                expect("chào các bạn");
+                break;
+            case Edit::RepeatEdits: // Reuse the same input context across cycles.
+                for (int i = 0; i < 3; ++i) {
+                    press(Key(FcitxKey_a, KeyState::Ctrl), false);
+                    type("banj");
+                    expect("bạn");
+                    press(Key(FcitxKey_a, KeyState::Ctrl), false);
+                    press(Key(FcitxKey_BackSpace));
+                    expect("");
+                    type("chafo casc");
+                    expect("chào các");
+                }
+                break;
+            }
+            state.resetForCellChange();
+            close(sockets[1]);
+        }
+    }
+
+    static void gnomeAddressBarMenu(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        for (const char *program : {"gnome-shell", "google-chrome"}) {
+            TestInput input(instance.inputContextManager(), program);
+            input.setFocusGroup(&group);
+            // Mutter need not forward Url or SurroundingText capabilities.
+            input.setCapabilityFlags(std::string(program) == "gnome-shell"
+                                         ? CapabilityFlags{}
+                                         : CapabilityFlags(CapabilityFlag::Url));
+            input.setCursorRect(Rect(10, 50, 11, 70));
+            auto &state = *input.propertyFor(&engine.factory_);
+            state.cachedProgram_ = program;
+            engine.config_.outputMode.setValue(SKeyOutputMode::SurroundingText);
+            state.hasAppModeOverride_ = true;
+            state.appModeOverride_ = SKeyOutputMode::SurroundingText;
+            for (bool native : {false, true}) {
+                engine.config_.enableNative.setValue(native);
+                engine.config_.replaceUinputWithNative.setValue(false);
+                engine.config_.chromiumAddressBarMode.setValue(SKeyChromiumAddressBarMode::Auto);
+                state.modeCacheValid_ = false;
+                check(state.addressBarModesAvailable(), "GNOME omnibox exposes address-bar modes");
+                if (std::string(program) == "gnome-shell")
+                    check(!state.inChromiumAddressBar(), "mode controls preserve GNOME replacement routing");
+                check(state.effectiveMode() == SKeyOutputMode::Uinput && state.selectTransportActive(),
+                      "GNOME omnibox Auto selects shift-select over general/per-app modes");
+                state.showModeMenu();
+                check(state.modeMenuForAddressBar_, "GNOME omnibox uses address-bar menu");
+                auto list = input.inputPanel().candidateList();
+                check(list->candidate(0).text().toString() == "1. Auto (Select)",
+                      "GNOME Auto label names the Select transport");
+                const int selectIndex = native ? 5 : 4;
+                check(list->candidate(selectIndex).text().toString() ==
+                          std::to_string(selectIndex + 1) + ". Select",
+                      "GNOME omnibox includes numbered Select option");
+                KeyEvent select(&input, Key(native ? FcitxKey_6 : FcitxKey_5));
+                state.keyEvent(select);
+                check(select.accepted() && !state.modeMenuActive_ &&
+                          engine.config_.chromiumAddressBarMode.value() == SKeyChromiumAddressBarMode::Select,
+                      "GNOME Select shortcut saves address-bar mode");
+                state.modeCacheValid_ = false;
+                check(state.effectiveMode() == SKeyOutputMode::Uinput && state.selectTransportActive(),
+                      "explicit GNOME Select uses uinput shift-select");
+                state.showModeMenu();
+                check(input.inputPanel().candidateList()->cursorIndex() == selectIndex,
+                      "explicit GNOME Select highlights the Select row");
+                state.dismissModeMenu();
+            }
+            for (auto mode : {SKeyChromiumAddressBarMode::Uinput,
+                              SKeyChromiumAddressBarMode::SurroundingText,
+                              SKeyChromiumAddressBarMode::Preedit,
+                              SKeyChromiumAddressBarMode::Native,
+                              SKeyChromiumAddressBarMode::NoVietnamese}) {
+                engine.config_.chromiumAddressBarMode.setValue(mode);
+                check(!state.selectTransportActive(), "explicit GNOME modes do not silently use Select");
+            }
+            if (std::string(program) == "gnome-shell") {
+                input.setCursorRect(Rect(10, 50, 18, 70));
+                check(!state.addressBarModesAvailable(), "wide GNOME caret keeps ordinary app routing");
+                state.showModeMenu();
+                check(!state.modeMenuForAddressBar_, "ordinary GNOME fields keep application menu");
+                state.dismissModeMenu();
             }
         }
     }
@@ -966,6 +1421,431 @@ struct EnginePerformanceTest {
         close(sockets[1]);
     }
 
+    static void blindA11yFieldReset(Instance &instance, bool uinput) {
+        // With the AT-SPI focus snapshot stale and a word in flight, a
+        // surrounding push that reports a DIFFERENT, non-empty text with
+        // cursor == anchor == 0 must reset the composition so the next key
+        // starts a new word instead of replacing text that is no longer at
+        // the caret.  The settled state of the current field — an empty
+        // field reporting "" at cursor 0, or the same text re-pushed after
+        // a click at its start — must never trip the fallback.
+        SKeyEngine engine(&instance, false);
+        engine.config_.outputMode.setValue(uinput ? SKeyOutputMode::Uinput
+                                                  : SKeyOutputMode::SurroundingText);
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();  // freshness 0 = blind
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome-stable");
+        input.setFocusGroup(&group);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome-stable";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedMode_ = uinput ? SKeyOutputMode::Uinput
+                                   : SKeyOutputMode::SurroundingText;
+        state.modeCacheValid_ = true;
+
+        auto seed = [&](const char *word) {
+            state.viet_.reset();
+            state.committedLen_ = 0;
+            for (const char *p = word; *p; ++p) {
+                // keyEvent() copies surrLastKeyUsec_ into surrPrevKeyUsec_ at
+                // entry, so the quiet window must be seeded there.
+                state.surrLastKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+                KeyEvent event(&input, Key(static_cast<KeySym>(*p)));
+                state.keyEvent(event);
+            }
+        };
+        auto push = [&](const std::string &text, unsigned cursor, unsigned anchor) {
+            input.surroundingText().setText(text, cursor, anchor);
+            input.updateSurroundingText();
+        };
+        auto key = [&](FcitxKeySym sym) {
+            state.surrLastKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+            KeyEvent event(&input, Key(sym));
+            state.keyEvent(event);
+        };
+        auto setBase = [&](const std::string &text) {
+            state.lastKeySurrText_ = text;
+            state.lastKeySurrValid_ = true;
+        };
+
+        // Typing a new word into an empty field: the field settles at ""
+        // (cursor 0) and must not look like a field change.
+        push("", 0, 0);
+        seed("cha");
+        check(state.viet_.getRawInput() == "cha",
+              "typing into an empty field does not trip the blind fallback");
+
+        // A late empty-field push after a real word (our own delete-to-empty
+        // catching up) is likewise not a field change.
+        push("chao", 4, 4);
+        seed("cha");
+        push("", 0, 0);
+        key(FcitxKey_d);
+        check(state.viet_.getRawInput() == "chad",
+              "an empty-field push after a real word is not a field change");
+
+        push("chao", 4, 4);
+        seed("cha");
+        push("nội dung ô mới", 0, 0);
+        key(FcitxKey_m);
+        check(state.viet_.getRawInput() == "m" && state.viet_.getComposed() == "m",
+              "blind fallback resets the word when a new field text is reported");
+
+        state.viet_.reset();
+        push("cha", 3, 3);
+        seed("cha");
+        key(FcitxKey_n);
+        check(state.viet_.getRawInput() == "chan",
+              "the same text keeps the word in flight");
+
+        // A push reproducing the composed word is our own commit's report
+        // (the field holds only the word), not a field change.
+        state.viet_.reset();
+        for (char ch : std::string("gox"))
+            state.viet_.processKey(ch);
+        state.lastKeySurrText_ = "";
+        state.lastKeySurrValid_ = true;
+        state.surrPrevKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+        push("gõ", 0, 0);
+        check(!state.checkBlindFieldChange() && state.viet_.getRawInput() == "gox",
+              "a push reproducing the composed word is the same field");
+
+        // FB-composer-style pushes: the app reports the whole text with
+        // cursor 0, growing at the real caret — the snapshot grows at the
+        // front and stays the same field.
+        state.viet_.reset();
+        state.committedLen_ = 0;
+        for (char ch : std::string("t"))
+            state.viet_.processKey(ch);
+        setBase("\n");
+        state.surrPrevKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+        push("t\n", 0, 0);
+        check(!state.checkBlindFieldChange() && state.viet_.getRawInput() == "t",
+              "a commit at the field start grows the text — same field");
+        state.viet_.reset();
+        for (char ch : std::string("th"))
+            state.viet_.processKey(ch);
+        push("tha\n", 0, 0);
+        check(!state.checkBlindFieldChange() && state.viet_.getRawInput() == "th",
+              "a push containing the composed word is the same field");
+
+        // The mid-word replacement transient: the deletion removed a middle
+        // character while both ends stay intact — same field.
+        setBase("tha\n");
+        push("th\n", 0, 0);
+        check(!state.checkBlindFieldChange(),
+              "a middle deletion keeps both ends — same field");
+        setBase("thât\n");
+        push("th\n", 0, 0);
+        check(!state.checkBlindFieldChange(),
+              "a longer middle deletion keeps both ends — same field");
+
+        // The unresolved-program race (empty name at activation) is the
+        // Chromium Wayland case too — the fallback must stay active.
+        {
+            TestInput unnamed(instance.inputContextManager(), "");
+            unnamed.setFocusGroup(&group);
+            auto &st = *unnamed.propertyFor(&engine.factory_);
+            st.cachedProgram_ = "";
+            st.cachedIsChromium_ = 0;
+            st.cachedIsFirefoxOrSnap_ = st.cachedIsTerminalApp_ = 0;
+            st.cachedMode_ = uinput ? SKeyOutputMode::Uinput
+                                    : SKeyOutputMode::SurroundingText;
+            st.modeCacheValid_ = true;
+            for (char ch : std::string("cha"))
+                st.viet_.processKey(ch);
+            st.lastKeySurrText_ = "chao";
+            st.lastKeySurrValid_ = true;
+            st.surrPrevKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+            unnamed.surroundingText().setText("ô mới", 0, 0);
+            unnamed.updateSurroundingText();
+            check(st.viet_.getRawInput().empty() && st.lastKeySurrText_ == "ô mới",
+                  "an unresolved program name still uses the blind fallback");
+        }
+
+        engine.a11yMonitor_->focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
+        seed("cha");
+        push("nội dung ô mới", 0, 0);
+        key(FcitxKey_b);
+        check(state.viet_.getRawInput() == "chab",
+              "a fresh AT-SPI snapshot disables the blind fallback");
+        engine.a11yMonitor_->focusSnapshotUsec_ = 0;
+
+        // Our own deletions strip characters before the caret: a same-field
+        // transient at cursor 0 (word at the field start) leaves the text
+        // after the caret — a suffix of the snapshot — and must not look
+        // like a field change.
+        state.viet_.reset();
+        push("cha", 3, 3);
+        seed("cha");
+        push("ha", 0, 0);
+        check(state.viet_.getRawInput() == "cha" &&
+                  !state.checkCellSelection(),
+              "a suffix text at cursor 0 is our own deletion, not a field change");
+
+        seed("cha");
+        state.surrPrevKeyUsec_ = now(CLOCK_MONOTONIC);
+        state.surrLastKeyUsec_ = now(CLOCK_MONOTONIC);
+        push("ô khác nữa", 0, 0);
+        {
+            KeyEvent event(&input, Key(FcitxKey_c));
+            state.keyEvent(event);
+        }
+        check(state.viet_.getRawInput() == "chac",
+              "an unsettled surrounding push does not trigger the blind fallback");
+
+        state.viet_.reset();
+        state.committedLen_ = 0;
+        state.surrLastKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+        state.uinputPendingFinalLen_ = 7;
+        push("ô khác nữa 2", 0, 0);
+        key(FcitxKey_m);
+        check(state.uinputPendingFinalLen_ == 7 && state.viet_.getRawInput() == "m",
+              "no word in flight leaves the field switch harmless");
+
+        // A click into another field produces no push of its own: the
+        // BS-forward of a stale-cache replacement lands in the new field and
+        // ITS push is the first evidence.  The push fires the reset
+        // immediately (surroundingTextChanged), cancels the deferred
+        // replacement and replays the trigger key as a fresh first letter.
+        if (!uinput) {
+            state.viet_.reset();
+            state.committedLen_ = 2;
+            for (char ch : std::string("gox"))
+                state.viet_.processKey(ch);
+            check(state.viet_.getComposed() == "gõ", "seed completed word");
+            setBase("go");
+            push("go", 2, 2);  // the tone-replace push never arrived
+            input.commits.clear();
+            key(FcitxKey_g);
+            push("ô mới", 0, 0);  // post-BS push of the newly focused field
+            auto stop = instance.eventLoop().addTimeEvent(
+                CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 60000, 1,
+                [&](EventSourceTime *, uint64_t) {
+                    instance.eventLoop().exit();
+                    return true;
+                });
+            instance.eventLoop().exec();
+            check(input.commits.empty() && state.viet_.getRawInput() == "g",
+                  "stale replacement is dropped and the trigger key restarts the word");
+        }
+
+        // Uinput replacements run entirely under the delete machinery; the
+        // new field's first push must still fire the reset mid-replacement
+        // and re-deliver the trigger key.  A pair-transform in an empty
+        // field deletes the WHOLE word, so its transient "" push must not
+        // look like a field change.
+        if (uinput) {
+            state.viet_.reset();
+            state.committedLen_ = 2;
+            for (char ch : std::string("dd"))
+                state.viet_.processKey(ch);
+            check(state.viet_.getComposed() == "đ", "seed pair word");
+            setBase("dd");
+            push("dd", 2, 2);
+            state.surrLastKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+            state.uinputDeleting_ = true;
+            state.pendingUinputCommit_ = "đ";
+            state.uinputPendingFinalLen_ = 1;
+            push("", 0, 0);
+            check(state.viet_.getRawInput() == "dd" &&
+                      state.uinputDeleting_ && state.pendingUinputCommit_ == "đ",
+                  "a pair-transform empty transient is not a field change");
+
+            state.viet_.reset();
+            state.committedLen_ = 4;
+            for (char ch : std::string("goxg"))
+                state.viet_.processKey(ch);
+            setBase("go");
+            push("go", 2, 2);
+            state.surrLastKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+            state.uinputDeleting_ = true;
+            state.pendingUinputCommit_ = "oxg";
+            state.uinputPendingFinalLen_ = 4;
+            push("", 0, 0);  // first push of the newly focused empty cell
+            check(state.viet_.getRawInput() == "g" &&
+                      state.pendingUinputCommit_.empty() &&
+                      !state.uinputDeleting_,
+                  "uinput machinery resets and re-delivers the trigger key on the new field push");
+
+            // Blind-mode miss repair: a fresh unchanged snapshot proves the
+            // first BS was consumed without deleting (autocomplete
+            // dropdown) — the transaction restarts with one BS plus anchor
+            // before committing.
+            {
+                state.viet_.reset();
+                state.committedLen_ = 2;
+                for (char ch : std::string("gox"))
+                    state.viet_.processKey(ch);
+                setBase("go");
+                push("go", 2, 2);
+                state.uinputDeletedWord_ = "go";
+                state.pendingUinputCommit_ = "õ";
+                state.uinputPendingFinalLen_ = 2;
+                state.uinputDeleting_ = true;
+                state.uinputSettling_ = true;
+                state.uinputRepairCount_ = 0;
+                state.uinputDeleteAck_.start("go", 2, 2, "go", 1, now(CLOCK_MONOTONIC));
+                std::this_thread::sleep_for(std::chrono::milliseconds(15));
+                push("go", 2, 2);  // unchanged snapshot after the echo window
+                check(state.uinputDeleteAck_.missed(),
+                      "an unchanged snapshot marks the deletion missed");
+                int sockets[2];
+                check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+                      "isolate blind repair transport");
+                captureUinput(state, sockets[0]);
+                state.finishUinputSettle(0, 0);  // ack deadline, then repair
+                auto drive = instance.eventLoop().addTimeEvent(
+                    CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 120000, 1,
+                    [&](EventSourceTime *, uint64_t) {
+                        uint32_t request[4] = {};
+                        check(recv(sockets[1], request, sizeof(request), MSG_DONTWAIT) == sizeof(request) &&
+                                  request[0] == 2,
+                              "a missed deletion restarts the transaction with one BS plus anchor");
+                        input.commits.clear();
+                        KeyEvent bs1(&input, Key(FcitxKey_BackSpace));
+                        state.keyEvent(bs1);
+                        KeyEvent bs2(&input, Key(FcitxKey_BackSpace));
+                        state.keyEvent(bs2);
+                        return false;
+                    });
+                auto stop = instance.eventLoop().addTimeEvent(
+                    CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 250000, 1,
+                    [&](EventSourceTime *, uint64_t) {
+                        check(input.commits == std::vector<std::string>{"õ"},
+                              "the repair commits after the restarted deletion");
+                        instance.eventLoop().exit();
+                        return true;
+                    });
+                instance.eventLoop().exec();
+                state.uinputTestSend_ = {};
+                close(sockets[1]);
+                state.uinputSettling_ = false;
+                state.uinputDeleting_ = false;
+                state.pendingUinputCommit_.clear();
+            }
+
+            // A late pre-BS echo can re-deliver the unchanged snapshot —
+            // once the real post-delete state arrives, the miss must be
+            // discarded and the commit proceed without a repair BS.
+            {
+                state.viet_.reset();
+                state.committedLen_ = 2;
+                for (char ch : std::string("gox"))
+                    state.viet_.processKey(ch);
+                setBase("go");
+                push("go", 2, 2);
+                state.uinputDeletedWord_ = "go";
+                state.pendingUinputCommit_ = "õ";
+                state.uinputPendingFinalLen_ = 2;
+                state.uinputDeleting_ = true;
+                state.uinputSettling_ = true;
+                state.uinputRepairCount_ = 0;
+                state.uinputDeleteAck_.start("go", 2, 2, "go", 1, now(CLOCK_MONOTONIC));
+                std::this_thread::sleep_for(std::chrono::milliseconds(15));
+                push("go", 2, 2);  // the echo arrives after the echo window
+                check(state.uinputDeleteAck_.missed(),
+                      "the echo marks a miss before any acknowledgement");
+                push("g", 1, 1);   // the real post-delete state arrives
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));  // past the ack guard
+                int sockets[2];
+                check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+                      "isolate echo-miss transport");
+                captureUinput(state, sockets[0]);
+                input.commits.clear();
+                state.finishUinputSettle(0, 0);  // synchronous — the ack guard is past
+                uint32_t request[4] = {};
+                check(recv(sockets[1], request, sizeof(request), MSG_DONTWAIT) < 0 &&
+                          errno == EAGAIN,
+                      "an echo miss commits without a repair BS");
+                check(input.commits == std::vector<std::string>{"õ"},
+                      "the echo-miss path still commits");
+                state.uinputTestSend_ = {};
+                close(sockets[1]);
+                state.uinputSettling_ = false;
+                state.uinputDeleting_ = false;
+                state.pendingUinputCommit_.clear();
+            }
+
+            // Autofill selection: the caret/anchor enclose the suggestion,
+            // and the dropdown dismissal can leave the word's tail intact
+            // ("google.com" selected → "go").  A fresh snapshot still
+            // containing the word must trigger the same repair.
+            {
+                state.viet_.reset();
+                state.committedLen_ = 2;
+                for (char ch : std::string("gox"))
+                    state.viet_.processKey(ch);
+                setBase("google.com");
+                push("google.com", 2, 10);
+                state.uinputDeletedWord_ = "go";
+                state.pendingUinputCommit_ = "õ";
+                state.uinputPendingFinalLen_ = 2;
+                state.uinputDeleting_ = true;
+                state.uinputSettling_ = true;
+                state.uinputRepairCount_ = 0;
+                state.uinputDeleteAck_.start("google.com", 2, 10, "go", 1,
+                                             now(CLOCK_MONOTONIC) - 100000);
+                std::this_thread::sleep_for(std::chrono::milliseconds(15));
+                push("go", 2, 2);  // the suggestion vanished, the tail intact
+                check(state.uinputDeleteAck_.missed(),
+                      "a fresh snapshot still containing the word marks a miss");
+                int sockets[2];
+                check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+                      "isolate selection-miss transport");
+                captureUinput(state, sockets[0]);
+                state.finishUinputSettle(0, 0);  // synchronous — the deadline is past
+                uint32_t request[4] = {};
+                check(recv(sockets[1], request, sizeof(request), MSG_DONTWAIT) == sizeof(request) &&
+                          request[0] == 2,
+                      "a selection-consumed deletion restarts with one BS plus anchor");
+                state.uinputTestSend_ = {};
+                close(sockets[1]);
+                state.uinputSettling_ = false;
+                state.uinputDeleting_ = false;
+                state.pendingUinputCommit_.clear();
+            }
+
+            // Post-commit verification: the app's push of the result ending
+            // with the intact word plus the committed text proves the
+            // deletion failed silently — restart the transaction.
+            {
+                state.viet_.reset();
+                state.committedLen_ = 2;
+                for (char ch : std::string("gox"))
+                    state.viet_.processKey(ch);
+                setBase("go");
+                state.surrPrevKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+                state.uinputDeletedWord_ = "go";
+                state.uinputDeletedLen_ = 1;
+                state.uinputPostVerify_ = true;
+                state.uinputCommittedText_ = "õ";
+                state.uinputPostFinalLen_ = 2;
+                state.uinputPostVerifyDeadlineUsec_ = now(CLOCK_MONOTONIC) + 600000;
+                int sockets[2];
+                check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+                      "isolate post-verify transport");
+                captureUinput(state, sockets[0]);
+                push("goõ", 2, 2);  // the silent-dropdown result
+                uint32_t request[4] = {};
+                check(recv(sockets[1], request, sizeof(request), MSG_DONTWAIT) == sizeof(request) &&
+                          request[0] == 3 &&
+                          state.pendingUinputCommit_ == "õ",
+                      "a silent deletion failure repairs after the committed push");
+                state.uinputTestSend_ = {};
+                close(sockets[1]);
+                state.uinputPostVerify_ = false;
+                state.uinputDeleting_ = false;
+                state.pendingUinputCommit_.clear();
+                state.expectedUinputBackspaces_ = 0;
+                state.seenUinputBackspaces_ = 0;
+            }
+        }
+
+        state.resetForCellChange();
+    }
+
     static void chromiumCompositionCommit(Instance &instance, bool wayland,
                                           bool preeditCap, bool url,
                                           const char *program, bool replacement, int sheets = 0,
@@ -1049,6 +1929,10 @@ struct EnginePerformanceTest {
         const std::string word = "t" + suffix;
         SKeyEngine engine(&instance, false);
         engine.config_.autoDelay.setValue(true);
+        // Exercise the regular 80ms acknowledgement deadline. Blind-mode
+        // repair has its own shorter deadline and separate regression cases.
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+        engine.a11yMonitor_->focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
         const bool wayland = !firefox && !chromiumX11;
         FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
         TimedInput input(instance.inputContextManager(), program);
@@ -1165,13 +2049,14 @@ struct EnginePerformanceTest {
             const auto earliest = ackDelayMs >= 0 ? acknowledgedAt + skey::UinputDeleteAck::guardUsec
                                                  : sentAt + skey::UinputDeleteAck::timeoutUsec;
             check(input.committedAt >= earliest, "never commit before acknowledgement guard or bounded timeout");
-            check(state.uinputAckUnavailable_ == (ackDelayMs < 0),
-                  "only missing/unusable acknowledgements disable further waits for this focus");
+            check(state.uinputAckUnavailable_ == (ackDelayMs < 0 && !wayland),
+                  "X11 backs off missing acknowledgements; Wayland keeps family verification armed");
             if (ackDelayMs < 0) {
                 input.surroundingText().setText("xin tư!", 6, 6);
                 input.updateSurroundingText();
                 state.sendBackspaceUinput(2, 0, "tư");
-                check(!state.uinputDeleteAck_.active(), "silent input must not pay 80ms on every replacement");
+                check(state.uinputDeleteAck_.active() == wayland,
+                      "missing acknowledgements back off on X11 and remain armed for Wayland browsers");
             }
         }
         state.uinputTestSend_ = {};
@@ -1184,11 +2069,11 @@ struct EnginePerformanceTest {
                                  bool sheets = false, bool omnibox = false) {
         SKeyEngine engine(&instance, false);
         engine.config_.autoDelay.setValue(autoDelay);
-        if (sheets) {
-            engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
-            engine.a11yMonitor_->sheetsEditorFocused_ = true;
-            engine.a11yMonitor_->focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
-        }
+        // Test the normal scope independently of the blind-browser repair
+        // policy, which deliberately arms acknowledgement without a11y.
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+        engine.a11yMonitor_->sheetsEditorFocused_ = sheets;
+        engine.a11yMonitor_->focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
         FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
         TestInput input(instance.inputContextManager(), program);
         input.setFocusGroup(&group);
@@ -1209,8 +2094,13 @@ struct EnginePerformanceTest {
               "create scope-test transport");
         captureUinput(state, sockets[0]);
         state.sendBackspaceUinput(2, 0, "tư");
+        if (state.uinputDeleteAck_.active() != expected)
+            std::cerr << "Ack scope: program=" << program << " wayland=" << wayland
+                      << " autoDelay=" << autoDelay << " overrideMs=" << overrideMs
+                      << " url=" << url << " sheets=" << sheets << " omnibox=" << omnibox
+                      << " expected=" << expected << " actual=" << state.uinputDeleteAck_.active() << '\n';
         check(state.uinputDeleteAck_.active() == expected,
-              "ack timing is limited to automatic browser page replacements");
+              "ack timing respects X11 browser-page scope and Wayland family verification");
         if (expected) {
             engine.appDelayOverrides_[skey::appDelayKey(program, wayland)].preCommitMs = 7;
             state.uinputDeleting_ = true;
@@ -1421,6 +2311,56 @@ struct EnginePerformanceTest {
         state.resetForCellChange();
         state.uinputTestSend_ = {};
         close(sockets[1]);
+    }
+
+    static void addressBarSelectAnchor(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome-stable");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::Preedit);
+        input.setCursorRect(Rect(194, 53, 195, 73));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome-stable";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.modeCacheValid_ = true;
+        state.viet_.setRawInput("chaf");
+        state.committedLen_ = state.uinputPendingFinalLen_ = 3;
+        state.pendingUinputCommit_ = "à";
+        state.uinputDeleting_ = state.uinputShiftSelect_ = true;
+        state.expectedUinputBackspaces_ = 1;
+        state.armAddrBarCycle();
+        KeyEvent next(&input, Key(FcitxKey_o), false, 1200);
+        state.keyEvent(next);
+        check(next.accepted() && state.settledKeys_.size() == 1,
+              "physical keys wait for the Select replacement");
+        auto pass = [&](Key key, bool release) {
+            KeyEvent event(&input, key, release);
+            state.keyEvent(event);
+            check(!event.accepted() && state.settledKeys_.size() == 1,
+                  "Select modifier and selection events must bypass the X11 replay queue");
+        };
+        pass(Key(FcitxKey_Shift_L), false);
+        pass(Key(FcitxKey_Left, KeyState::Shift), false);
+        check(state.seenUinputBackspaces_ == 1,
+              "Shift+Left must reach the selection counter before timeout");
+        pass(Key(FcitxKey_Left, KeyState::Shift), true);
+        pass(Key(FcitxKey_Shift_L), true);
+        KeyEvent anchor(&input, Key(FcitxKey_Left));
+        state.keyEvent(anchor);
+        check(anchor.accepted() && state.uinputSettling_ &&
+                  state.expectedUinputBackspaces_ == 0 && state.settledKeys_.size() == 1,
+              "Select anchor is consumed and starts commit settling without entering the replay queue");
+        state.finishUinputSettle(0, 0);
+        check(input.commits == std::vector<std::string>{"à"},
+              "Select commits the replacement once after its anchor");
+        state.settledReplayTimer_.reset();
+        state.replaySettledKeys();
+        check(input.commits == std::vector<std::string>{"à", "o"} &&
+                  state.viet_.getComposed() == "chào",
+              "the queued o follows the replacement to form chào");
     }
 
     static void addressBarSettleAcrossFocus(Instance &instance) {
@@ -2039,6 +2979,130 @@ struct EnginePerformanceTest {
               "unresponsive native delete must have bounded retries and one commit");
     }
 
+    // Wayland Surr-mode app that advertises SurroundingText but DROPS the
+    // native delete_surrounding_text while commits land
+    // Variants: neverPush (no surrounding pushes at all), mergedPush (the
+    // replacement commit pushes with the next key already appended —
+    // "goô" + "x"), emptyPush (pushes text='' after a replacement commit).
+    // The first replace rides the native delete, the push proves the drop,
+    // the word is repaired via uinput (or the app marked when no repair
+    // evidence exists) and later replacements skip the native delete.
+    static void surrNativeDroppedDelete(Instance &instance, bool neverPush,
+                                        bool mergedPush = false,
+                                        bool emptyPush = false) {
+        class DropDeleteEditor : public TestInput {
+        public:
+            using TestInput::TestInput;
+            std::string text;
+            int droppedDeletes = 0;
+        protected:
+            void commitStringImpl(const std::string &value) override {
+                TestInput::commitStringImpl(value);
+                text += value;
+                if (!neverPush_) {
+                    std::string pushed = text;
+                    if (value.size() > 1 && mergedPush_) pushed += "x";
+                    if (value.size() > 1 && emptyPush_) pushed.clear();
+                    const size_t pushedLen = utf8::length(pushed);
+                    surroundingText().setText(pushed, pushedLen, pushedLen);
+                }
+            }
+            void deleteSurroundingTextImpl(int, unsigned size) override {
+                droppedDeletes += static_cast<int>(size); // dropped on purpose
+            }
+        public:
+            bool neverPush_ = false;
+            bool mergedPush_ = false;
+            bool emptyPush_ = false;
+        };
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        DropDeleteEditor input(instance.inputContextManager(), "areca-settings");
+        input.neverPush_ = neverPush;
+        input.mergedPush_ = mergedPush;
+        input.emptyPush_ = emptyPush;
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlags(0x72));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "areca-settings";
+        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.modeCacheValid_ = true;
+        state.cachedMode_ = SKeyOutputMode::SurroundingText;
+        int sockets[2];
+        check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+              "isolate the replacement transport without desktop injection");
+        captureUinput(state, sockets[0]);
+
+        auto type = [&](fcitx::KeySym sym) {
+            KeyEvent kev(&input, Key(sym));
+            state.keyEvent(kev);
+        };
+        type(FcitxKey_g); // "g"
+        type(FcitxKey_o); // "go"
+        type(FcitxKey_o); // Telex: replace "go" -> "gô"
+        if (neverPush) {
+            check(input.droppedDeletes == 0,
+                  "an app that never pushes surrounding must not ride the blind native delete");
+        } else {
+            check(input.droppedDeletes == 1 && input.text == "goô",
+                  "the dropped native delete leaves the old word + committed suffix");
+        }
+        // The app's async push (dropDelete variants only) — arrives after
+        // the verification was armed, like a real lagging push.  The
+        // handle must be HELD: addTimeEvent returns a unique_ptr and
+        // discarding it kills the timer.
+        std::unique_ptr<EventSourceTime> pushTimer;
+        if (!neverPush) {
+            pushTimer = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+                now(CLOCK_MONOTONIC) + 2000, 1,
+                [&input](EventSourceTime *, uint64_t) { input.updateSurroundingText(); return true; });
+        }
+        // Feed the injected BS loopbacks (real deletions + sync anchor)
+        // and settle the replacement.
+        auto feed = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+            now(CLOCK_MONOTONIC) + 5000, 1, [&](EventSourceTime *, uint64_t) {
+                uint32_t request[4];
+                if (recv(sockets[1], request, sizeof(request), 0) == sizeof(request)) {
+                    for (uint32_t i = 0; i < request[0]; ++i) {
+                        KeyEvent bs(&input, Key(FcitxKey_BackSpace));
+                        state.keyEvent(bs);
+                        if (i + 1 < request[0]) {
+                            check(!bs.accepted(), "real deletion passes to the app");
+                            size_t last = input.text.size() - 1;
+                            while (last > 0 &&
+                                   (static_cast<unsigned char>(input.text[last]) & 0xc0) == 0x80)
+                                --last;
+                            input.text.erase(last);
+                        } else {
+                            check(bs.accepted(), "sync anchor is consumed");
+                        }
+                    }
+                    state.finishUinputSettle(0, 0);
+                }
+                return true;
+            });
+        auto stop = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+            now(CLOCK_MONOTONIC) + 80000, 1,
+            [&](EventSourceTime *, uint64_t) { instance.eventLoop().exit(); return true; });
+        instance.eventLoop().exec();
+        if (neverPush) {
+            check(input.text == "gô" && !state.uinputDeleting_, "word ends as composed");
+            check(input.droppedDeletes == 0 && !engine.isSurrDeleteBrokenApp("areca-settings"),
+                  "preemptive uinput transport leaves the app unmarked and uncorrupted");
+        } else if (mergedPush || emptyPush) {
+            check(engine.isSurrDeleteBrokenApp("areca-settings"),
+                  "the merged/empty push still proves the drop and marks the app");
+            check(input.droppedDeletes == 1 && input.text == "goô",
+                  "no repair into the merged/empty evidence — the word stays broken once");
+        } else {
+            check(input.text == "gô" && !state.uinputDeleting_, "word ends as composed");
+            check(engine.isSurrDeleteBrokenApp("areca-settings"),
+                  "the proven drop marks the app delete-broken");
+            check(input.commits == std::vector<std::string>{"g", "o", "ô", "ô"},
+                  "the repair re-commits the suffix over the uinput deletion");
+        }
+    }
+
     static void run(Instance &instance, bool wayland) {
         SKeyEngine engine(&instance, false);
         FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
@@ -2171,6 +3235,14 @@ static void policies() {
     check(!ack.acknowledged(), "selected text is not deletion acknowledgement");
     ack.observe(true, "đ", 1, 1, start + 3000);
     check(ack.acknowledged(), "exact multi-delete result acknowledges");
+    check(ack.start("🙂đây!tail", 4, 9, "đây", 2, start),
+          "UTF-8 prefix and autocomplete selection are trackable");
+    ack.observe(true, "🙂đ!tail", 2, 7, start + 1000);
+    check(ack.acknowledged(), "multi-character deletion preserves UTF-8 prefix and selected tail");
+    check(ack.start("a🙂ớz", 3, 3, "🙂ớ", 2, start),
+          "mixed four-byte and three-byte characters are trackable");
+    ack.observe(true, "az", 1, 1, start + 1000);
+    check(ack.acknowledged(), "deletion removes whole UTF-8 characters before the caret");
     ack.observe(false, "đ", 1, 1, start + 4000);
     check(!ack.acknowledged(), "new invalid snapshot revokes earlier acknowledgement");
     check(ack.nextCheckDelay(start + 4000) == ack.timeoutUsec - 4000,
@@ -2238,6 +3310,53 @@ int main(int argc, char **argv) {
     // active-window origin or DPI. Live X11 geometry is tested separately.
     unsetenv("DISPLAY");
     unsetenv("WAYLAND_DISPLAY");
+
+    if (std::getenv("SKEY_TEST_GNOME_NATIVE_ONLY")) {
+        setenv("XDG_CURRENT_DESKTOP", "GNOME", 1);
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::gnomeOmniboxReplacement(instance, true);
+        fcitx::EnginePerformanceTest::gnomeOmniboxAppendAfterTimeout(instance, true);
+        fcitx::EnginePerformanceTest::gnomeOmniboxEditing(instance, true);
+        std::cout << "GNOME omnibox Native: " << checks << " checks passed\n";
+        return 0;
+    }
+
+    if (std::getenv("SKEY_TEST_GNOME_UINPUT_ONLY")) {
+        setenv("XDG_CURRENT_DESKTOP", "GNOME", 1);
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::gnomeOmniboxReplacement(instance);
+        fcitx::EnginePerformanceTest::gnomeOmniboxAppendAfterTimeout(instance);
+        std::cout << "GNOME omnibox Uinput: " << checks << " checks passed\n";
+        return 0;
+    }
+
+    if (std::getenv("SKEY_TEST_GNOME_EDIT_ONLY")) {
+        setenv("XDG_CURRENT_DESKTOP", "GNOME", 1);
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::gnomeOmniboxEditing(instance);
+        std::cout << "GNOME omnibox editing: " << checks << " checks passed\n";
+        return 0;
+    }
+
+    if (std::getenv("SKEY_TEST_GNOME_MENU_ONLY")) {
+        setenv("XDG_CURRENT_DESKTOP", "GNOME", 1);
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::gnomeAddressBarMenu(instance);
+        std::cout << "GNOME address-bar menu: " << checks << " checks passed\n";
+        return 0;
+    }
+
+    if (std::getenv("SKEY_TEST_X11_SELECT_ONLY")) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::addressBarSelectAnchor(instance);
+        std::cout << "X11 Select replacement: " << checks << " checks passed\n";
+        return 0;
+    }
+
+    for (bool uinput : {false, true}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::blindA11yFieldReset(instance, uinput);
+    }
     for (bool settling : {false, true}) {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::uinputPendingTransport(instance, settling);
@@ -2249,6 +3368,24 @@ int main(int argc, char **argv) {
     {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::replacementMenus(instance);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::surrNativeDroppedDelete(instance, false);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::surrNativeDroppedDelete(instance, true);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::surrNativeDroppedDelete(instance, false,
+                                                              true);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::surrNativeDroppedDelete(instance, false,
+                                                              false, true);
     }
     for (auto mode : {fcitx::SKeyOutputMode::Uinput, fcitx::SKeyOutputMode::Native}) {
         fcitx::Instance instance(argc, argv);
@@ -2290,6 +3427,10 @@ int main(int argc, char **argv) {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::omniboxSurrounding(instance, native, false);
     }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::omniboxSurrounding(instance, true, false, true);
+    }
     if (std::getenv("SKEY_TEST_X11_OMNIBOX_ONLY")) {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::addressBarSuffixReplacement(instance);
@@ -2330,6 +3471,10 @@ int main(int argc, char **argv) {
     {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::x11BrowserFirstSettle(instance);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::addressBarSelectAnchor(instance);
     }
     for (const auto &suffix : {"c", " ", "ư", "ự"})
         for (bool wayland : {false, true}) {
@@ -2376,10 +3521,12 @@ int main(int argc, char **argv) {
         fcitx::EnginePerformanceTest::chromiumAckScope(instance, false, "code", true, -1, false, false);
         fcitx::EnginePerformanceTest::chromiumAckScope(instance, false, "google-chrome", true, -1, false, false, true);
         fcitx::EnginePerformanceTest::chromiumAckScope(instance, false, "google-chrome", true, -1, false, false, false, true);
-        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", false, -1, false, false);
-        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", true, 7, false, false);
-        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", true, -1, true, false);
-        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "antigravity-ide", true, -1, false, false);
+        // Wayland verifies Chromium-family deletes even with manual timing
+        // or Url hints; the commit stage still honors a manual delay.
+        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", false, -1, false, true);
+        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", true, 7, false, true);
+        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "google-chrome", true, -1, true, true);
+        fcitx::EnginePerformanceTest::chromiumAckScope(instance, true, "antigravity-ide", true, -1, false, true);
     }
     for (bool wayland : {false, true})
         for (bool cap : {false, true})
@@ -2505,6 +3652,10 @@ int main(int argc, char **argv) {
     {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::boundedRepair(instance);
+    }
+    for (bool uinput : {false, true}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::blindA11yFieldReset(instance, uinput);
     }
     std::cout << "Engine performance: " << checks << " checks passed\n";
 }

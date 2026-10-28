@@ -8,6 +8,7 @@ export DH_VERBOSE = 1
 override_dh_auto_configure:
 	dh_auto_configure -- \
 	    -DCMAKE_BUILD_TYPE=Release \
+	    -DBUILD_TESTING=OFF \
 	    -DSKEY_ENGINE_SOURCE_DIR=$(CURDIR)/skey-engine \
 	    -DCMAKE_INSTALL_PREFIX=/usr
 

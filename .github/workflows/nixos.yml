@@ -1,0 +1,91 @@
+name: NixOS Packaging
+
+# Builds the Nix package and assembles a full NixOS system with the module
+# enabled.  Catches the issue #43 class of bugs (engine tag bump → stale
+# fetch hashes in packaging/nixos/default.nix) before they reach users.
+#
+# Deps all come from cache.nixos.org (engine lib is prebuilt), so this stays
+# fast; only skey itself is compiled locally.
+
+on:
+  # Auto-run only on tag pushes (same triggers as build-packages.yml);
+  # main/dev commits are checked manually via workflow_dispatch.
+  push:
+    tags:
+      - 'v*'
+      - '[0-9]*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Package build: prebuilt engine, no Rust toolchain ───────────────────
+  build-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+
+      - name: Build fcitx5-skey
+        run: nix build .#fcitx5-skey --no-link
+
+      - name: Build updateScript (hash refresher)
+        run: nix build .#fcitx5-skey.updateScript --no-link
+
+  # ── Full NixOS system assembly with services.fcitx5-skey enabled ─────────
+  # Catches module breakage: overlay resolution, systemd unit overrides
+  # (setfacl), udev rules guard, fcitx5-with-addons wrapper.
+  test-nixos-module:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+
+      - name: Write NixOS test configuration
+        run: |
+          mkdir -p /tmp/skey-nixos-test
+          cat > /tmp/skey-nixos-test/flake.nix <<EOF
+          {
+            description = "CI test for skey nixosModules.default";
+            inputs = {
+              skey.url = "path:$GITHUB_WORKSPACE";
+              # Follow skey's nixpkgs so both share one copy of nixpkgs
+              # (an input with follows must not also have a url).
+              nixpkgs.follows = "skey/nixpkgs";
+            };
+            outputs = { nixpkgs, skey, ... }: {
+              nixosConfigurations.test = nixpkgs.lib.nixosSystem {
+                system = "x86_64-linux";
+                modules = [
+                  skey.nixosModules.default
+                  {
+                    i18n.inputMethod = {
+                      enable = true;
+                      type = "fcitx5";
+                      fcitx5.addons = [ skey.packages.x86_64-linux.fcitx5-skey ];
+                    };
+                    services.fcitx5-skey.enable = true;
+                    system.stateVersion = "25.05";
+                    # Bare eval config — silence nixosSystem assertions only.
+                    fileSystems."/" = { device = "/dev/sda2"; fsType = "ext4"; };
+                    boot.loader.grub.devices = [ "/dev/sda2" ];
+                  }
+                ];
+              };
+            };
+          }
+          EOF
+
+      - name: Build NixOS toplevel
+        run: nix build path:/tmp/skey-nixos-test#nixosConfigurations.test.config.system.build.toplevel --no-link

@@ -130,6 +130,19 @@ std::string x11FocusedWmClass() {
   return wmClassOf(conn, focus, 0);
 }
 
+std::optional<uint32_t> x11FocusedWindowId() {
+  auto *conn = x11Connection();
+  if (!conn) return std::nullopt;
+  auto cookie = xcb_get_input_focus(conn);
+  auto *reply = xcb_get_input_focus_reply(conn, cookie, nullptr);
+  if (!reply) return std::nullopt;
+  const auto window = reply->focus;
+  free(reply);
+  if (window == XCB_NONE || window == XCB_INPUT_FOCUS_POINTER_ROOT)
+    return std::nullopt;
+  return window;
+}
+
 double x11DisplayDpi() {
   static const double cached = []() -> double {
     xcb_connection_t *conn = x11Connection();

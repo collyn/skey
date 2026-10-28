@@ -20,13 +20,14 @@ FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyOutputMode, N_("Uinput"),
 
 // Output mode used only in Chromium-family browser address bars.
 enum class SKeyChromiumAddressBarMode {
-    Auto, Uinput, SurroundingText, Preedit, Native, NoVietnamese
+    Auto, Uinput, SurroundingText, Preedit, Native, Select, NoVietnamese
 };
 FCITX_CONFIG_ENUM_NAME_WITH_I18N(SKeyChromiumAddressBarMode, N_("Auto"),
                                  N_("Uinput"),
                                  N_("Surrounding Text"),
                                  N_("Preedit"),
                                  N_("Native"),
+                                 N_("Select"),
                                  N_("No Vietnamese"));
 
 // Character set / encoding — IDs match skey-engine VietCharset enum
@@ -56,8 +57,9 @@ FCITX_CONFIGURATION(
     // Keep the on-disk key for compatibility with existing installations.
     Option<bool> replaceUinputWithNative{this, "PreferLibeiAuto",
                                  _("Thay thế Uinput bằng Native"), false};
+    // Native X11/XTest needs no opt-in; retain this key for the Wayland portal.
     Option<bool> enableNative{this, "EnableNative",
-                               _("Bật chế độ Native (XTest/Libei)"), false};
+                               _("Bật Native trên Wayland"), false};
     Option<bool> freeMarking{this, "FreeMarking", _("Đánh dấu tự do"), false};
     Option<bool> autoRestore{this, "AutoRestore",
                              _("Tự động khôi phục"), true};

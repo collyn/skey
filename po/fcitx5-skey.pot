@@ -6,9 +6,9 @@
 #, fuzzy
 msgid ""
 msgstr ""
-"Project-Id-Version: fcitx5-skey 0.8.12\n"
+"Project-Id-Version: fcitx5-skey 0.9.1\n"
 "Report-Msgid-Bugs-To: https://github.com/collyn/skey/issues\n"
-"POT-Creation-Date: 2026-10-21 17:05+0700\n"
+"POT-Creation-Date: 2026-10-23 22:46+0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -324,7 +324,7 @@ msgstr ""
 msgid "Kiểu gõ:"
 msgstr ""
 
-#: src/settings/general_tab.cpp:43 src/settings/general_tab.cpp:259
+#: src/settings/general_tab.cpp:43 src/settings/general_tab.cpp:260
 #: src/settings/mode_choices.h:17
 msgid "Native (XTest/Libei)"
 msgstr ""
@@ -441,10 +441,12 @@ msgstr ""
 #: src/settings/general_tab.cpp:167
 msgid ""
 "SKey cần cây trợ năng (A11y) của trình duyệt để theo dõi con trỏ — cần cho "
-"Google Sheets (đổi ô), thanh địa chỉ và các ô nhập trên web. Khi bật, mỗi "
-"lần khởi động SKey sẽ kích hoạt khóa gsettings \"toolkit-accessibility\" "
-"(toàn hệ thống) để Chrome/Chromium dựng cây trợ năng — trình duyệt chỉ đọc "
-"khóa này lúc khởi động. Tắt nếu bạn tự quản lý trợ năng của hệ thống."
+"Google Sheets (đổi ô), thanh địa chỉ và các ô nhập trên web. Khi bật, SKey "
+"kết nối bus AT-SPI và mỗi lần khởi động sẽ kích hoạt khóa gsettings "
+"\"toolkit-accessibility\" (toàn hệ thống) để Chrome/Chromium dựng cây trợ "
+"năng — trình duyệt chỉ đọc khóa này lúc khởi động. Khi tắt, SKey không dùng "
+"A11y mà chuyển sang nhận biết đổi ô dự phòng bằng surrounding text (kém "
+"chính xác hơn ở Sheets)."
 msgstr ""
 
 #: src/settings/hotkey_edit.cpp:32

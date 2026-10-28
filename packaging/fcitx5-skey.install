@@ -17,10 +17,22 @@ pre_remove() {
     # while /usr/bin/skey-setup still exists — pre_remove is the hook.
     if [ -z "$1" ] && command -v loginctl >/dev/null 2>&1 && \
        command -v skey-setup >/dev/null 2>&1; then
-        CONSOLE_USER=$(loginctl list-sessions --no-legend 2>/dev/null | \
-            awk '$4=="seat0" {print $3}' | sort -u | head -1)
+        CONSOLE_USER="${SUDO_USER:-}"
+        if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = root ]; then
+            ACTIVE_SESSION=$(loginctl show-seat seat0 --property=ActiveSession --value 2>/dev/null || :)
+            CONSOLE_USER=""
+            if [ -n "$ACTIVE_SESSION" ]; then
+                CONSOLE_USER=$(loginctl show-session "$ACTIVE_SESSION" --property=Name --value 2>/dev/null || :)
+            fi
+        fi
         if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
-            su -s /bin/bash "$CONSOLE_USER" -c "skey-setup -u" >/dev/null 2>&1 || :
+            if command -v systemd-run >/dev/null 2>&1 && \
+               systemd-run --user --machine="${CONSOLE_USER}@.host" --wait --pipe true 2>/dev/null; then
+                systemd-run --user --machine="${CONSOLE_USER}@.host" --wait --pipe \
+                    -p KillMode=none /usr/bin/skey-setup -u 2>/dev/null || :
+            else
+                su -s /bin/bash "$CONSOLE_USER" -c "skey-setup -u" >/dev/null 2>&1 || :
+            fi
         fi
     fi
     /usr/bin/skey-uinput-access remove || return $?

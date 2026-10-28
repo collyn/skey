@@ -139,9 +139,9 @@ void GeneralTab::setupUI() {
       "Khi bật, Native thay thế Uinput trong Auto và trong menu chọn mode."));
   checkLayout->addWidget(replaceUinputWithNativeCheck_, 4, 1);
   enableNativeCheck_ =
-      new QCheckBox(T("Bật chế độ Native"), checkFrame);
+      new QCheckBox(T("Bật Native trên Wayland"), checkFrame);
   enableNativeCheck_->setToolTip(T(
-      "Cho phép dùng Native. Trên Wayland, Native có thể mở hộp thoại xin quyền từ portal."));
+      "Cho phép Native mở hộp thoại xin quyền portal trên Wayland. X11 dùng XTest mà không cần bật tùy chọn này."));
   checkLayout->addWidget(enableNativeCheck_, 3, 1);
   checkLayout->addWidget(debugCheck_, 5, 1);
   connect(replaceUinputWithNativeCheck_, &QCheckBox::toggled, this,
@@ -149,9 +149,9 @@ void GeneralTab::setupUI() {
   connect(enableNativeCheck_, &QCheckBox::toggled, this,
           [this](bool) { syncNativeModeChoice(); });
 
-  // A11y checkbox + info icon: SKey needs the browsers' a11y trees; the
-  // checkbox toggles whether SKey auto-enables the system-wide
-  // toolkit-accessibility key at startup (default: on).
+  // A11y checkbox + info icon: master switch for the AT-SPI monitor —
+  // off = no bus connection, cell-change detection falls back to
+  // surrounding text (default: on).
   auto *a11yBox = new QWidget(checkFrame);
   auto *a11yBoxLayout = new QHBoxLayout(a11yBox);
   a11yBoxLayout->setContentsMargins(0, 0, 0, 0);
@@ -166,10 +166,11 @@ void GeneralTab::setupUI() {
   const QString a11yHelp = T(
       "SKey cần cây trợ năng (A11y) của trình duyệt để theo dõi con trỏ — "
       "cần cho Google Sheets (đổi ô), thanh địa chỉ và các ô nhập trên web. "
-      "Khi bật, mỗi lần khởi động SKey sẽ kích hoạt khóa gsettings "
-      "\"toolkit-accessibility\" (toàn hệ thống) để Chrome/Chromium dựng cây "
-      "trợ năng — trình duyệt chỉ đọc khóa này lúc khởi động. Tắt nếu bạn tự "
-      "quản lý trợ năng của hệ thống.");
+      "Khi bật, SKey kết nối bus AT-SPI và mỗi lần khởi động sẽ kích hoạt "
+      "khóa gsettings \"toolkit-accessibility\" (toàn hệ thống) để "
+      "Chrome/Chromium dựng cây trợ năng — trình duyệt chỉ đọc khóa này lúc "
+      "khởi động. Khi tắt, SKey không dùng A11y mà chuyển sang nhận biết đổi "
+      "ô dự phòng bằng surrounding text (kém chính xác hơn ở Sheets).");
   a11yCheck_->setToolTip(a11yHelp);
   a11yInfoButton->setToolTip(a11yHelp);
   connect(a11yInfoButton, &QToolButton::clicked, this,
@@ -207,8 +208,12 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
   };
 
   setCombo(inputMethodCombo_, cfg.inputMethod);
-  replaceUinputWithNativeCheck_->setChecked(cfg.replaceUinputWithNative);
-  enableNativeCheck_->setChecked(cfg.enableNative);
+  {
+    const QSignalBlocker replaceBlocker(replaceUinputWithNativeCheck_);
+    const QSignalBlocker nativeBlocker(enableNativeCheck_);
+    replaceUinputWithNativeCheck_->setChecked(cfg.replaceUinputWithNative);
+    enableNativeCheck_->setChecked(cfg.enableNative);
+  }
   syncNativeReplacementChoice();
   setCombo(outputModeCombo_, cfg.replaceUinputWithNative && cfg.outputMode == "Uinput" ? "Native" : cfg.outputMode);
   setCombo(charsetCombo_, cfg.charset);
@@ -233,7 +238,7 @@ void GeneralTab::syncNativeReplacementChoice() {
 }
 
 void GeneralTab::syncNativeModeChoice() {
-  const bool enabled = enableNativeCheck_->isChecked();
+  const bool enabled = nativeX11Session() || enableNativeCheck_->isChecked();
   replaceUinputWithNativeCheck_->setVisible(enabled);
   checkLayout_->removeWidget(replaceUinputWithNativeCheck_);
   if (enabled)

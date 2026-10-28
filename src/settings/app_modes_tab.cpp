@@ -96,6 +96,7 @@ void AppModesTab::setupUI() {
     addrBarModeCombo_->addItem("Surrounding Text", "Surrounding Text");
     addrBarModeCombo_->addItem("Preedit", "Preedit");
     addrBarModeCombo_->addItem("Native", "Native");
+    addrBarModeCombo_->addItem("Select", "Select");
     addrBarModeCombo_->addItem(T("Không gõ tiếng Việt"),
                                "No Vietnamese");
     addrBarRow->addWidget(addrBarModeCombo_);
