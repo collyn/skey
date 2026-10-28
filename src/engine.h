@@ -356,6 +356,9 @@ private:
     // omnibox's left text edge.  A word starting near it means the bar
     // was empty; further right means text exists before the cursor.
     int addrBarLeftEdgeCaretX_ = -1;
+    // Known characters before the composing word; -1 after untracked edits.
+    int addrBarPrefixChars_ = -1;
+    bool addrBarPendingFullDelete_ = false;
     bool ownsPtyMaster() const;
     mutable std::string cachedPtyProgram_;
     mutable bool cachedPtyMaster_ = false;

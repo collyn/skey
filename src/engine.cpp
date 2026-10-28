@@ -381,11 +381,11 @@ bool SKeyState::autoSelectAddressBar() const {
          (isWayland() && gnomeOmniboxCaret() &&
           ic_->capabilityFlags().test(CapabilityFlag::Url) &&
           (skey::isChromiumBrowser(appProgram()) || isFirefoxBrowserCached())) ||
-         (!isWayland() && gnomeDesktop() &&
+         (!isWayland() && isNativeX11() &&
           (inChromiumAddressBar() || inFirefoxAddressBar()));
 }
 
-// Select-and-overtype is preferred by GNOME Auto or explicitly selected.
+// Select-and-overtype is preferred by X11 browser Auto or explicitly selected.
 // X11 uses the existing browser/omnibox detector; GNOME Wayland keeps
 // the relay's caret signature because its accessibility snapshot lags.
 bool SKeyState::selectTransportActive() const {
@@ -754,9 +754,11 @@ SKeyState::EditRoute SKeyState::editRoute(bool injectedOnly) const {
   if (isWayland()) return keep("wayland-input");
   if (!isNativeX11()) return keep("xwayland-input");
   const auto support = skey::forwardedKeySupport(inputField());
-  // PTY control commits depend on the client protocol, not the desktop.
-  // Other forwarded-edit routes retain their existing desktop policy.
-  if (!gnomeDesktop() && std::string_view(support.reason) != "terminal-commit-forward")
+  // Ordered D-Bus clients serialize edits through the IM protocol on X11.
+  // Other frontends retain their existing desktop policy.
+  if (!gnomeDesktop() &&
+      std::string_view(support.reason) != "dbus-ordered-forward-key" &&
+      std::string_view(support.reason) != "terminal-commit-forward")
     return keep("desktop-policy");
   const std::string_view frontend(ic_->frontend());
   if (mode != SKeyOutputMode::Native && mode != SKeyOutputMode::Uinput &&
@@ -3467,6 +3469,7 @@ void SKeyState::activate() {
       addrBarContentUnknown_ = !leftBarEmpty;
       addrBarWordStartCaretX_ = -1;
       addrBarLeftEdgeCaretX_ = -1;
+      addrBarPrefixChars_ = -1;
       addrBarHadFirstWord_ = false;
       addrBarDidFullReplace_ = false;
       addrBarKeepState_ = false;
@@ -3836,6 +3839,7 @@ bool SKeyState::deferUinputTimer(EventSourceTime *source) {
 }
 
 void SKeyState::cancelUinputRequest() {
+  addrBarPendingFullDelete_ = false;
   ximDispatchTimer_.reset();
   ximEditCount_ = 0;
   if (legacyNativePending_) engine_->native_.cancel();
@@ -4406,6 +4410,8 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
     }
   }
   const bool forwarded = x11ForwardedReplacement_;
+  if (forwarded && addrBarPendingFullDelete_) addrBarPrefixChars_ = 0;
+  addrBarPendingFullDelete_ = false;
   x11ForwardedReplacement_ = false;
   forwardedOmniboxQuietUntil_ = 0;
   std::string text = std::move(pendingUinputCommit_);
@@ -4496,6 +4502,11 @@ void SKeyState::replaySettledKeys() {
     const bool hadQueuedReplay = !settledKeys_.empty();
     KeyEvent event(ic_, saved.key, saved.release, saved.time);
     keyEvent(event);
+    if (!saved.release && inChromiumAddressBar()) {
+      // A replayed Backspace can clear the word model. Its ensuing Chrome
+      // focus cycle must not discard the rest of the physical-key queue.
+      armAddrBarCycle();
+    }
     if (!event.accepted()) {
       // Raw keys and commits travel through different queues. Keep
       // printable replay on one commit channel, including GNOME word
@@ -4517,12 +4528,13 @@ void SKeyState::replaySettledKeys() {
       }
     }
     if (!saved.release && !uinputDeleting_ && !settledReplayTimer_ &&
-        !useX11ForwardedReplacement() &&
+        (!useX11ForwardedReplacement() || inChromiumAddressBar()) &&
         (hadQueuedReplay || useX11CompositionCommits())) {
       // Let the frontend dispatch this commit before a queued transform
       // injects new kernel backspaces. A blocking sleep cannot do that.
       settledReplayTimer_ = engine_->instance()->eventLoop().addTimeEvent(
-          CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 20000, 1,
+          CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) +
+              (useX11ForwardedReplacement() ? 1000 : 20000), 1,
           [this](EventSourceTime *, uint64_t) {
             settledReplayTimer_.reset();
             replaySettledKeys();
@@ -5098,6 +5110,8 @@ bool SKeyState::checkCellSelection() {
 }
 
 void SKeyState::resetForCellChange() {
+  addrBarPrefixChars_ = -1;
+  addrBarPendingFullDelete_ = false;
   ximKeys_.clear();
   x11ForwardedReplacement_ = false;
   forwardedOmniboxQuietUntil_ = 0;
@@ -5637,6 +5651,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       addrBarClearedByCtrlKey_ = ctrlClearsBar;
       if (ctrlClearsBar) {
         addrBarContentUnknown_ = false;
+        addrBarPrefixChars_ = 0;
         addrBarHadSpace_ = false;
         committedLen_ = -1;
       } else {
@@ -5646,10 +5661,16 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         // empty bar: the first-word X11 fallback would otherwise issue the
         // extra full-replacement backspace and delete part of the prefix.
         addrBarContentUnknown_ = true;
+        addrBarPrefixChars_ = -1;
         committedLen_ = 0;
       }
     }
     return;
+  }
+
+  if (key.check(FcitxKey_BackSpace) && viet_.getRawInput().empty() &&
+      addrBarPrefixChars_ >= 0) {
+    addrBarPrefixChars_ = std::max(0, addrBarPrefixChars_ - 1);
   }
 
   // Handle Backspace while composing
@@ -5662,6 +5683,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       // eat the BS) — arm the a11y desync guard for the next keys.
       addrBarSawBsInWord_ = true;
       if (addrBarDidFullReplace_) {
+        if (addrBarPrefixChars_ >= 0)
+          addrBarPrefixChars_ += std::max(0, static_cast<int>(utf8::length(viet_.getComposed())) - 1);
         addrBarDidFullReplace_ = false;
         addrBarKeepState_ = false;
         viet_.reset();
@@ -6272,12 +6295,15 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
   // Handle Space
   if (key.check(FcitxKey_space)) {
+    if (addrBarPrefixChars_ >= 0 && inChromiumAddressBar())
+      addrBarPrefixChars_ += static_cast<int>(utf8::length(viet_.getComposed())) + 1;
     if (!viet_.getRawInput().empty()) {
       // ── Macro / Gõ tắt check ──
       if (engine_->config().enableMacro.value()) {
         std::string rawInput = viet_.getRawInput();
         std::string macroVal = engine_->lookupMacro(rawInput);
         if (!macroVal.empty()) {
+          addrBarPrefixChars_ = -1;
           // Capitalize first letter if raw input started with uppercase
           if (engine_->config().capitalizeMacro.value() && !rawInput.empty() &&
               std::isupper(static_cast<unsigned char>(rawInput[0]))) {
@@ -6310,6 +6336,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         viet_.autoRestore();
         std::string postRestore = viet_.getComposed();
         if (preRestore != postRestore && useSurroundingText()) {
+          addrBarPrefixChars_ = -1;
           autoRestored = true;
           SKEY_DEBUG() << "AutoRestore: '" << preRestore << "' -> '"
                        << postRestore << "'";
@@ -6509,6 +6536,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   }
 
   if (key.check(FcitxKey_Delete) && inChromiumAddressBar()) {
+    addrBarPrefixChars_ = -1;
     addrBarHadFirstWord_ = false;
     addrBarDidFullReplace_ = false;
     addrBarKeepState_ = false;
@@ -6528,12 +6556,14 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         (ch == '[' || ch == ']') && engine_->config().bracketUO.value() &&
         engine_->config().inputMethod.value() == SKeyInputMethod::Telex;
 
+    if (!isLetter && !isVNIModifier && !isBracketKey) addrBarPrefixChars_ = -1;
     if (isLetter || isVNIModifier || isBracketKey) {
       // Retroactive tone editing (Unikey-style): if the user has
       // backspaced into the previous word and types a tone modifier
       // key (s/f/r/x/j for Telex, 1-5/0 for VNI), reclaim the last
       // word so the tone can be changed.
       bool didReclaim = false;
+      if (reclaimReady_) addrBarPrefixChars_ = -1;
       if (viet_.getRawInput().empty() && !lastRawInput_.empty() &&
           reclaimReady_ && useSurroundingText()) {
         auto im = engine_->config().inputMethod.value();
@@ -6824,11 +6854,12 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 // and pace them so Chrome processes the replacement first,
                 // including when replaying a buffered key. The relay's stale
                 // selection snapshot cannot guard this path.
-                if ((selectTransportActive() || gnomeRelayOmnibox()) &&
+                if ((selectTransportActive() || gnomeRelayOmnibox() ||
+                     (inChromiumAddressBar() && useX11ForwardedReplacement())) &&
                     editorEntered_) {
                   keyEvent.filterAndAccept();
                   SKEY_DEBUG() << "Uinput: commit append '" << keyUtf8
-                               << "' [gnome-omnibox]";
+                               << "' [ordered-omnibox]";
                   commitText(keyUtf8);
                   return;
                 }
@@ -7182,6 +7213,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // Escape is exempt: it only dismisses the autocomplete dropdown.
   if (sym != FcitxKey_Escape) {
     addrBarClearedByCtrlKey_ = false;
+    addrBarPrefixChars_ = -1;
   }
 }
 
@@ -7223,6 +7255,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
     int totalBs = bs;
     std::string commitText = text;
     bool dismissAutofill = false;
+    bool wholeFirstWord = false;
 
     if (!isWayland()) {
       // ── X11: AT-SPI2 word-at-start check, heuristic fallback ──
@@ -7255,6 +7288,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
         a11yDecided = true;
       }
       if (wordAtStart) {
+        wholeFirstWord = true;
         // The +1 BS dismisses Chrome's inline autofill (a selection
         // extending past the typed word).  When the snapshot explicitly
         // shows a collapsed caret (no selection), skip it — each omnibox
@@ -7318,19 +7352,23 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
         const bool exactWordAtStart = currentText.isValid() &&
             currentText.cursor() == static_cast<unsigned>(oldComposedLen) &&
             currentText.text().compare(0, oldComposed.size(), oldComposed) == 0;
-        const bool trustedOmnibox = exactWordAtStart || ic_->capabilityFlags().test(CapabilityFlag::Url) ||
+        const bool recoveredEmptyPrefix = !currentText.isValid() && addrBarSawBsInWord_ &&
+            addrBarPrefixChars_ == 0;
+        const bool trustedOmnibox = exactWordAtStart || recoveredEmptyPrefix || ic_->capabilityFlags().test(CapabilityFlag::Url) ||
             addrBarClearedByCtrlKey_ ||
             (a11yFocusRelevant() && mon->isBrowserUIFocused());
         if (trustedOmnibox && !addrBarHadFirstWord_ && oldComposedLen > 0 &&
             !fullComposed.empty()) {
           bool hasTextBefore = false;
-          if (addrBarClearedByCtrlKey_) {
-            // Ctrl+A/U/L cleared the bar immediately before this word —
-            // nothing exists before the cursor.  Skip the evidence
+          if (addrBarClearedByCtrlKey_ || recoveredEmptyPrefix) {
+            // A clear shortcut or our tracked deletions prove that no
+            // text precedes this word.  Skip the evidence
             // chain: the pre-typing caret sat at the END of the old
             // selection, so word-start X is far right of the left edge
             // and the edge check would wrongly block FullReplace.
             addrBarClearedByCtrlKey_ = false; // one-shot
+          } else if (addrBarPrefixChars_ > 0) {
+            hasTextBefore = true;
           } else {
             const auto &surrounding = ic_->surroundingText();
             if (surrounding.isValid()) {
@@ -7369,6 +7407,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
             }
           }
           if (!hasTextBefore) {
+            wholeFirstWord = true;
             totalBs = oldComposedLen + 1;
             commitText = fullComposed;
             {
@@ -7505,6 +7544,7 @@ void SKeyState::scheduleAddrBarReplacement(int bs, const std::string &text,
       addrBarGuardArmedUsec_ = now(CLOCK_MONOTONIC);
     }
     if (useX11ForwardedReplacement()) {
+      addrBarPendingFullDelete_ = wholeFirstWord && !dismissAutofill;
       if (dismissAutofill) {
         ic_->forwardKey(Key(FcitxKey_Escape));
         ic_->forwardKey(Key(FcitxKey_Escape), true);
