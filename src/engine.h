@@ -152,6 +152,7 @@ private:
     /// GNOME Wayland + the omnibox's 1px-beam caret — the shift-select
     /// replacement target (see the consume path).
     bool gnomeOmniboxCaret() const;
+    bool waylandBrowserAddressBarCaret() const;
     bool gnomeRelayBrowserUI(bool gecko) const;
     bool gnomeRelayOmnibox() const;
     /// Auto uses Select in detected browser address bars on X11 and Wayland.

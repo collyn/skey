@@ -368,6 +368,25 @@ bool SKeyState::gnomeOmniboxCaret() const {
          caret.width() <= 2 && caret.height() >= 14 && caret.height() <= 28;
 }
 
+// Firefox and some Chromium Wayland frontends do not consistently publish
+// the Url capability for the address field.  Their native omnibox caret is a
+// thin beam near the top of the browser window, while page editors on the
+// affected systems are lower down.  Use this only as a fallback, and reject
+// it when a fresh AT-SPI snapshot explicitly identifies web content.
+bool SKeyState::waylandBrowserAddressBarCaret() const {
+  if (!isWayland() || !(isFirefoxBrowserCached() ||
+                        skey::isChromiumBrowser(appProgram())))
+    return false;
+  const auto &caret = ic_->cursorRect();
+  if (caret.width() > 2 || caret.height() < 14 || caret.height() > 48 ||
+      caret.top() < 0 || caret.top() > caret.height() * 8)
+    return false;
+  auto *monitor = engine_->a11yMonitor();
+  if (monitor && a11yFocusRelevant(500000) && monitor->isWebContentFocused())
+    return false;
+  return true;
+}
+
 bool SKeyState::gnomeRelayBrowserUI(bool gecko) const {
   if (!isWayland() || !(gnomeDesktop() || appProgram() == "gnome-shell"))
     return false;
@@ -2259,7 +2278,7 @@ bool SKeyState::inFirefoxAddressBar() const {
   const bool relayFirefox = gnomeRelayBrowserUI(true);
   if (!isFirefoxBrowserCached() && !relayFirefox) return false;
   if (ic_->capabilityFlags().test(CapabilityFlag::Url)) return true;
-  if (isWayland()) return relayFirefox;
+  if (isWayland()) return relayFirefox || waylandBrowserAddressBarCaret();
   auto *monitor = engine_->a11yMonitor();
   if (monitor && a11yFocusRelevant() &&
       monitor->isWebContentFocused()) return false;
@@ -2283,7 +2302,8 @@ bool SKeyState::inChromiumAddressBar() const {
   // FullReplace heuristics) is Chrome-specific — corrupts Firefox's URL
   // bar ("mất chữ đằng trước", 2026-09-15).  Require a real Chromium
   // browser; Firefox's URL bar goes through the normal paths.
-  if (ic_->capabilityFlags().test(CapabilityFlag::Url) || relayChromium) {
+  if (ic_->capabilityFlags().test(CapabilityFlag::Url) || relayChromium ||
+      waylandBrowserAddressBarCaret()) {
     return true;
   }
   if (skey::isVivaldiBrowser(appProgram())) {
@@ -4943,7 +4963,18 @@ void SKeyState::reset() {
   if (!hasDeferredCommitPending()) {
     committedLen_ = 0;
   }
-  modeCacheValid_ = false;
+  // Firefox/Gecko on Wayland emits an informational reset immediately after
+  // an input context is created, before the first key reaches the engine.
+  // Re-running Auto here can observe the previous focus's capability/a11y
+  // state and switch the first word from the activation route (usually
+  // Uinput/Select) to Surrounding Text.  Keep the activation decision for
+  // this short, empty-focus window; later resets still invalidate normally.
+  const bool preserveInitialFirefoxMode =
+      isWayland() && isFirefoxOrSnap() && viet_.getRawInput().empty() &&
+      lastActivateUsec_ > 0 &&
+      now(CLOCK_MONOTONIC) - lastActivateUsec_ < 500000;
+  if (!preserveInitialFirefoxMode)
+    modeCacheValid_ = false;
   // The caret baseline belongs to the previous focus — a fresh focus must
   // not compare against a foreign rect (blind cell-change fallback).
   lastKeyCaretX_ = -1;
