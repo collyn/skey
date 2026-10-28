@@ -10,6 +10,12 @@
 namespace skey {
 inline std::string browserProgramName(const std::string &program) {
     std::string name = program;
+    // Some Xwayland/Chromium frontends expose the executable and its launch
+    // flags as one program string (for example
+    // `msedge --ozone-platform=x11 --gtk-version=4`).  Classification and
+    // per-browser markers must use argv[0], never the command-line tail.
+    const auto whitespace = name.find_first_of(" \t\r\n");
+    if (whitespace != std::string::npos) name.resize(whitespace);
     std::transform(name.begin(), name.end(), name.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     const auto slash = name.find_last_of('/');
@@ -49,6 +55,7 @@ inline bool isChromiumBrowser(const std::string &program) {
         "google-chrome-unstable", "chromium", "chromium-browser",
         "brave", "brave-browser", "brave-browser-beta", "brave-browser-nightly",
         "vivaldi", "vivaldi-stable", "vivaldi-snapshot",
+        "msedge", "msedge-beta", "msedge-dev", "msedge-canary",
         "microsoft-edge", "microsoft-edge-stable", "microsoft-edge-beta",
         "microsoft-edge-dev", "opera", "opera-beta", "opera-developer",
         "com.google.chrome", "com.google.chrome.beta", "com.google.chrome.dev",
