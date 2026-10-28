@@ -139,9 +139,9 @@ void GeneralTab::setupUI() {
       "Khi bật, Native thay thế Uinput trong Auto và trong menu chọn mode."));
   checkLayout->addWidget(replaceUinputWithNativeCheck_, 4, 1);
   enableNativeCheck_ =
-      new QCheckBox(T("Bật chế độ Native"), checkFrame);
+      new QCheckBox(T("Bật Native trên Wayland"), checkFrame);
   enableNativeCheck_->setToolTip(T(
-      "Cho phép dùng Native. Trên Wayland, Native có thể mở hộp thoại xin quyền từ portal."));
+      "Cho phép Native mở hộp thoại xin quyền portal trên Wayland. X11 dùng XTest mà không cần bật tùy chọn này."));
   checkLayout->addWidget(enableNativeCheck_, 3, 1);
   checkLayout->addWidget(debugCheck_, 5, 1);
   connect(replaceUinputWithNativeCheck_, &QCheckBox::toggled, this,
@@ -208,8 +208,12 @@ void GeneralTab::loadFromConfig(const SKeyConfig &cfg) {
   };
 
   setCombo(inputMethodCombo_, cfg.inputMethod);
-  replaceUinputWithNativeCheck_->setChecked(cfg.replaceUinputWithNative);
-  enableNativeCheck_->setChecked(cfg.enableNative);
+  {
+    const QSignalBlocker replaceBlocker(replaceUinputWithNativeCheck_);
+    const QSignalBlocker nativeBlocker(enableNativeCheck_);
+    replaceUinputWithNativeCheck_->setChecked(cfg.replaceUinputWithNative);
+    enableNativeCheck_->setChecked(cfg.enableNative);
+  }
   syncNativeReplacementChoice();
   setCombo(outputModeCombo_, cfg.replaceUinputWithNative && cfg.outputMode == "Uinput" ? "Native" : cfg.outputMode);
   setCombo(charsetCombo_, cfg.charset);
@@ -234,7 +238,7 @@ void GeneralTab::syncNativeReplacementChoice() {
 }
 
 void GeneralTab::syncNativeModeChoice() {
-  const bool enabled = enableNativeCheck_->isChecked();
+  const bool enabled = nativeX11Session() || enableNativeCheck_->isChecked();
   replaceUinputWithNativeCheck_->setVisible(enabled);
   checkLayout_->removeWidget(replaceUinputWithNativeCheck_);
   if (enabled)

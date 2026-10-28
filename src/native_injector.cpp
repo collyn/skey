@@ -1,5 +1,9 @@
 #include "native_injector.h"
 #include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <chrono>
+#include <X11/XKBlib.h>
 #include <mutex>
 #include <thread>
 #include <algorithm>
@@ -22,14 +26,171 @@
 #endif
 
 namespace skey {
+namespace {
+class XTestTransport final : public NativeInjector::Transport {
+    Display *display = nullptr;
+public:
+    bool open(std::string &error) override {
+        display = XOpenDisplay(nullptr);
+        if (!display) { error = "cannot open X11 display"; return false; }
+        int event, code, major, minor;
+        if (!XTestQueryExtension(display, &event, &code, &major, &minor)) {
+            error = "XTest extension unavailable"; close(); return false;
+        }
+        return true;
+    }
+    unsigned keycode(unsigned long symbol) override { return XKeysymToKeycode(display, symbol); }
+    bool modifiers(unsigned &mask) override {
+        XkbStateRec state{};
+        if (XkbGetState(display, XkbUseCoreKbd, &state) != Success) return false;
+        mask = state.mods; return true;
+    }
+    bool key(unsigned code, bool down) override { return XTestFakeKeyEvent(display, code, down, 0); }
+    bool focusWindow(uint64_t &window) override {
+        Window focus = None;
+        int revert = 0;
+        if (!XGetInputFocus(display, &focus, &revert)) return false;
+        window = focus;
+        // PointerRoot follows the pointer and is not a stable batch target.
+        return focus != None && focus != PointerRoot;
+    }
+    bool flush() override { XFlush(display); return true; }
+    void close() override { if (display) XCloseDisplay(display); display = nullptr; }
+};
+}
+
 struct NativeInjector::Impl {
     std::atomic<bool> ready{false}, stop{false};
     std::atomic<unsigned> generation{0};
     mutable std::mutex mutex;
     std::string message = "not started";
     std::thread worker;
-    Display *x11Display = nullptr;
-    std::mutex x11Mutex;
+    std::unique_ptr<Transport> transport;
+    bool injectedTransport = false;
+    std::atomic<bool> x11{false};
+    std::mutex queueMutex;
+    std::condition_variable changed;
+    struct Work {
+        Owner owner;
+        int count;
+        bool escape, select;
+        unsigned pace;
+        uint64_t expectedWindow;
+        Ticket ticket;
+        std::atomic<bool> cancelled{false};
+    };
+    std::deque<std::shared_ptr<Work>> queue;
+    std::shared_ptr<Work> active;
+    uint64_t nextId = 1;
+    Ticket submit(Owner owner, int count, bool escape, bool select, unsigned pace,
+                  uint64_t expectedWindow = 0) {
+        if (!x11 || !ready || count < 0 || count > 64) return {};
+        std::lock_guard<std::mutex> lock(queueMutex);
+        if (stop || queue.size() >= 64) return {};
+        auto work = std::make_shared<Work>();
+        work->owner = owner; work->count = count; work->escape = escape;
+        work->select = select; work->pace = std::min(pace, 100000u);
+        work->expectedWindow = expectedWindow;
+        work->ticket = std::make_shared<Request>(); work->ticket->id = nextId++;
+        queue.push_back(work); changed.notify_all(); return work->ticket;
+    }
+    void cancelX(Owner owner, bool all = false) {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        for (auto it = queue.begin(); it != queue.end();) {
+            if (all || (*it)->owner == owner) {
+                (*it)->ticket->state = State::Cancelled; it = queue.erase(it);
+            } else ++it;
+        }
+        if (active && (all || active->owner == owner)) active->cancelled = true;
+        changed.notify_all();
+    }
+    void runX() {
+        std::string error;
+        if (!transport->open(error)) { status(error); transport->close(); return; }
+        status("ready (XTest)"); ready = true;
+        for (;;) {
+            std::shared_ptr<Work> work;
+            {
+                std::unique_lock<std::mutex> lock(queueMutex);
+                changed.wait(lock, [&] { return stop || !queue.empty(); });
+                if (stop) break;
+                work = queue.front(); queue.pop_front(); active = work;
+                work->ticket->state = State::Running;
+            }
+            const auto cancelled = [&] { return stop || work->cancelled.load(); };
+            unsigned held = 0;
+            bool shiftHeld = false;
+            uint64_t targetWindow = work->expectedWindow;
+            const bool hasTarget = targetWindow || transport->focusWindow(targetWindow);
+            const auto focusSafe = [&] {
+                uint64_t currentWindow = 0;
+                return hasTarget && transport->focusWindow(currentWindow) &&
+                    currentWindow == targetWindow;
+            };
+            const unsigned shift = transport->keycode(XK_Shift_L);
+            const unsigned key = transport->keycode(work->select ? XK_Left : XK_BackSpace);
+            const unsigned escape = transport->keycode(XK_Escape);
+            const auto modifiersSafe = [&] {
+                unsigned mask = 0;
+                return transport->modifiers(mask) &&
+                    !(mask & ~(LockMask | Mod2Mask | (shiftHeld ? ShiftMask : 0)));
+            };
+            const auto emit = [&](unsigned code, bool down) {
+                // An attempted transport write may have reached the server even
+                // when it reports failure; never replay such a request.
+                ++work->ticket->emittedEvents;
+                return transport->key(code, down) && transport->flush();
+            };
+            const auto tap = [&](unsigned code) {
+                if (cancelled() || !modifiersSafe() || !focusSafe()) return false;
+                held = code;
+                if (!emit(code, true)) return false;
+                if (!emit(code, false)) return false;
+                held = 0; return true;
+            };
+            const auto pause = [&] {
+                std::unique_lock<std::mutex> lock(queueMutex);
+                changed.wait_for(lock, std::chrono::microseconds(work->pace), cancelled);
+                lock.unlock();
+                return !cancelled() && focusSafe();
+            };
+            bool ok = !cancelled() && key && (!work->escape || escape) &&
+                (!work->select || shift) && modifiersSafe() && focusSafe();
+            if (ok && work->select) {
+                shiftHeld = true;
+                ok = emit(shift, true);
+            }
+            if (ok && work->escape) ok = tap(escape) && pause();
+            const int taps = work->count;
+            for (int i = 0; ok && i < taps; ++i) {
+                ok = tap(key);
+                if (ok && i + 1 < taps) ok = pause();
+            }
+            if (work->select && shiftHeld) {
+                const bool released = emit(shift, false);
+                if (released) shiftHeld = false;
+                ok = released && ok;
+                // The engine consumes this unshifted Left as the anchor.
+                // Release Shift first so replayed input cannot observe it held.
+                if (ok) ok = tap(key);
+            }
+            // Release only keys this batch attempted to press. Initial held
+            // Shift was rejected; concurrent physical input is not atomic in X11.
+            if (held) ok = emit(held, false) && ok;
+            if (shiftHeld) ok = emit(shift, false) && ok;
+            if (!ok && !cancelled()) {
+                status("XTest request " + std::to_string(work->ticket->id) +
+                    " failed (focus, keymap, modifier, or transport); attempted events=" +
+                    std::to_string(work->ticket->emittedEvents.load()));
+            }
+            work->ticket->state = cancelled() ? State::Cancelled :
+                (ok ? State::Complete : State::Failed);
+            {
+                std::lock_guard<std::mutex> lock(queueMutex); active.reset();
+            }
+        }
+        ready = false; cancelX(0, true); transport->close();
+    }
     void status(const std::string &s) { std::lock_guard<std::mutex> lock(mutex); message = s; }
 #ifdef SKEY_HAVE_LIBEI
     int wakeFd = -1;
@@ -235,44 +396,40 @@ struct NativeInjector::Impl {
 #endif
 };
 NativeInjector::NativeInjector() : impl_(std::make_unique<Impl>()) {}
+NativeInjector::NativeInjector(std::unique_ptr<Transport> transport) : NativeInjector() {
+    impl_->transport = std::move(transport); impl_->injectedTransport = true;
+}
 NativeInjector::~NativeInjector() {
     impl_->stop = true;
+    impl_->cancelX(0, true);
 #ifdef SKEY_HAVE_LIBEI
     impl_->wake();
 #endif
     if (impl_->worker.joinable()) impl_->worker.join();
-    if (impl_->x11Display) {
-        XCloseDisplay(impl_->x11Display);
-        impl_->x11Display = nullptr;
-    }
 #ifdef SKEY_HAVE_LIBEI
     if (impl_->wakeFd >= 0) close(impl_->wakeFd);
 #endif
 }
 void NativeInjector::start() {
-    if (impl_->x11Display) return;
+    if (impl_->worker.joinable()) return;
     const char *session = std::getenv("XDG_SESSION_TYPE");
     const char *display = std::getenv("DISPLAY");
     const char *waylandDisplay = std::getenv("WAYLAND_DISPLAY");
-    const bool x11 = (session && std::string(session) == "x11") ||
-                     ((!waylandDisplay || !*waylandDisplay) && display && *display);
-    if (x11) {
-        XInitThreads();
-        impl_->x11Display = XOpenDisplay(nullptr);
-        if (!impl_->x11Display) {
-            impl_->status("cannot open X11 display");
-            return;
+    // Match the engine/settings policy even with inherited or contradictory
+    // session variables: a Wayland display always excludes native X11.
+    const bool x11 = display && *display &&
+                     !(waylandDisplay && *waylandDisplay) &&
+                     !(session && std::string(session) == "wayland");
+    if (x11 || impl_->injectedTransport) {
+        // Initialize before this backend starts using Xlib on its worker.
+        // Fcitx's native X11 backend uses XCB, not this connection.
+        if (!impl_->injectedTransport && !XInitThreads()) {
+            impl_->status("cannot initialize Xlib threads"); return;
         }
-        int eventBase = 0, errorBase = 0, major = 0, minor = 0;
-        if (!XTestQueryExtension(impl_->x11Display, &eventBase, &errorBase,
-                                 &major, &minor)) {
-            XCloseDisplay(impl_->x11Display);
-            impl_->x11Display = nullptr;
-            impl_->status("XTest extension unavailable");
-            return;
-        }
-        impl_->ready = true;
-        impl_->status("ready (XTest)");
+        impl_->x11 = true;
+        if (!impl_->transport) impl_->transport = std::make_unique<XTestTransport>();
+        impl_->status("connecting to XTest");
+        impl_->worker = std::thread([this] { impl_->runX(); });
         return;
     }
 #ifdef SKEY_HAVE_LIBEI
@@ -314,28 +471,18 @@ bool NativeInjector::ready() const { return impl_->ready; }
 std::string NativeInjector::status() const {
     std::lock_guard<std::mutex> lock(impl_->mutex); return impl_->message;
 }
-void NativeInjector::cancel() { ++impl_->generation; }
+void NativeInjector::cancel() { ++impl_->generation; impl_->cancelX(0, true); }
+void NativeInjector::cancel(Owner owner) { impl_->cancelX(owner); }
+NativeInjector::Ticket NativeInjector::submitBackspaces(Owner owner, int count, bool escape, unsigned pace,
+                                                       uint64_t expectedWindow) {
+    return impl_->submit(owner, count, escape, false, pace, expectedWindow);
+}
+NativeInjector::Ticket NativeInjector::submitShiftSelect(Owner owner, int count, unsigned pace,
+                                                        uint64_t expectedWindow) {
+    return impl_->submit(owner, count, false, true, pace, expectedWindow);
+}
 bool NativeInjector::backspaces(int count, bool escape, unsigned pace) {
-    if (impl_->x11Display) {
-        std::lock_guard<std::mutex> lock(impl_->x11Mutex);
-        KeyCode backspace = XKeysymToKeycode(impl_->x11Display, XK_BackSpace);
-        KeyCode escapeKey = XKeysymToKeycode(impl_->x11Display, XK_Escape);
-        if (!backspace || (escape && !escapeKey) || count < 0 || count > 64)
-            return false;
-        if (escape) {
-            XTestFakeKeyEvent(impl_->x11Display, escapeKey, True, 0);
-            XTestFakeKeyEvent(impl_->x11Display, escapeKey, False, 0);
-            XFlush(impl_->x11Display);
-            usleep(std::min(pace, 100000u));
-        }
-        for (int i = 0; i < count; ++i) {
-            XTestFakeKeyEvent(impl_->x11Display, backspace, True, 0);
-            XTestFakeKeyEvent(impl_->x11Display, backspace, False, 0);
-            XFlush(impl_->x11Display);
-            if (i + 1 < count) usleep(std::min(pace, 100000u));
-        }
-        return true;
-    }
+    if (impl_->x11) return static_cast<bool>(submitBackspaces(0, count, escape, pace));
 #ifdef SKEY_HAVE_LIBEI
     if (!ready() || count < 0 || count > 64) return false;
     {

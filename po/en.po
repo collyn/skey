@@ -459,14 +459,12 @@ msgid "Khi bật, Native thay thế Uinput trong Auto và trong menu chọn mode
 msgstr "When enabled, Native replaces Uinput in Auto mode and the mode menu."
 
 #: src/settings/general_tab.cpp:142
-msgid "Bật chế độ Native"
-msgstr "Enable Native mode"
+msgid "Bật Native trên Wayland"
+msgstr "Enable Native on Wayland"
 
 #: src/settings/general_tab.cpp:144
-msgid ""
-"Cho phép dùng Native. Trên Wayland, Native có thể mở hộp thoại xin quyền từ "
-"portal."
-msgstr "Enable Native. On Wayland, Native may open a portal permission dialog."
+msgid "Cho phép Native mở hộp thoại xin quyền portal trên Wayland. X11 dùng XTest mà không cần bật tùy chọn này."
+msgstr "Allow Native to open a portal permission dialog on Wayland. X11 uses XTest without this option."
 
 #: src/settings/general_tab.cpp:159
 msgid "Bật A11y"

@@ -2,6 +2,7 @@
 #define SKEY_SETTINGS_CONFIG_IO_H
 
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <string>
@@ -9,6 +10,17 @@
 
 class QString;
 class QObject;
+
+inline bool nativeX11Session(const char *display, const char *waylandDisplay,
+                             const char *sessionType) {
+    return display && *display && !(waylandDisplay && *waylandDisplay) &&
+           !(sessionType && std::string(sessionType) == "wayland");
+}
+
+inline bool nativeX11Session() {
+    return nativeX11Session(std::getenv("DISPLAY"), std::getenv("WAYLAND_DISPLAY"),
+                            std::getenv("XDG_SESSION_TYPE"));
+}
 
 /// Resolved from $XDG_CONFIG_HOME/fcitx5/conf/ (fallback ~/.config/fcitx5/conf/)
 std::string configDir();
@@ -29,7 +41,7 @@ struct SKeyConfig {
     std::string inputMethod  = "Telex";       // "Telex", "VNI"
     std::string outputMode   = "Auto";        // "Auto", "Uinput", "Surrounding Text", "Preedit"
     bool replaceUinputWithNative = false; // Replace Uinput in Auto, explicit modes and menus
-    bool enableNative = false; // Allow Native (XTest/Libei), including its Wayland portal
+    bool enableNative = false; // Allow the Wayland Libei portal; native X11 needs no opt-in
     std::string charset      = "Unicode";     // "Unicode", "TCVN3 (ABC)", "VNI Windows"
     bool shortW       = false;   // Telex: bare 'w' → 'ư'
     bool bracketUO    = false;   // Telex: '[' → 'ơ', ']' → 'ư'

@@ -3,6 +3,7 @@
 
 #include <string>
 #include <optional>
+#include <cstdint>
 
 /// Resolve the focused X11 window's WM_CLASS class string.
 ///
@@ -16,6 +17,10 @@
 /// Returns "" when no X server is reachable or no WM_CLASS is found —
 /// callers then fall back to the shared empty "(IBus app)" key.
 std::string x11FocusedWmClass();
+
+/// Actual X input focus captured before queueing an injected edit. Pinning
+/// this window prevents queued edits targeting a newly focused application.
+std::optional<uint32_t> x11FocusedWindowId();
 
 /// DPI of the default X display (pixels per inch).
 ///

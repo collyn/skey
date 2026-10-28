@@ -876,6 +876,10 @@ A11yMonitor::~A11yMonitor() {
 }
 
 bool A11yMonitor::currentSheetsCell(std::string &identity, std::string &cell) {
+    identity.clear();
+    cell.clear();
+    FocusIdentity focus;
+    if (!sheetsEditorFocused() || !focusIdentity(focus)) return false;
     std::string sender, path, nameBox, address;
     {
         std::lock_guard<std::mutex> lock(sheetsMutex_);
@@ -884,9 +888,7 @@ bool A11yMonitor::currentSheetsCell(std::string &identity, std::string &cell) {
         nameBox = sheetsNameBoxPath_;
         address = sheetsBusAddress_;
     }
-    identity.clear();
-    cell.clear();
-    if (path.empty()) return false;
+    if (path.empty() || sender != focus.busName || path != focus.path) return false;
     identity = sender + path;
     if (address.empty() || nameBox.empty()) return true;
     if (sheetsQueryBus_ && !dbus_connection_get_is_connected(sheetsQueryBus_)) {
@@ -910,6 +912,13 @@ bool A11yMonitor::currentSheetsCell(std::string &identity, std::string &cell) {
     }
     if (sheetsQueryBus_) {
         cell = queryText(sheetsQueryBus_, sender.c_str(), nameBox.c_str(), 30);
+    }
+    FocusIdentity after;
+    if (!focusIdentity(after) || after.generation != focus.generation ||
+        !sheetsEditorFocused()) {
+        identity.clear();
+        cell.clear();
+        return false;
     }
     return true;
 }
@@ -943,6 +952,58 @@ void A11yMonitor::waitForSnapshotUpdate(uint64_t timeoutUsec,
     textCache_.waitForUpdate(observed, timeoutUsec);
 }
 
+bool A11yMonitor::focusIdentity(FocusIdentity &identity) const {
+    std::lock_guard<std::mutex> lock(focusIdentityMutex_);
+    identity = {};
+    const auto stamp = focusSnapshotUsec_.load(std::memory_order_acquire);
+    if (!stamp || focusBus_.empty() || focusPath_.empty()) return false;
+    identity = {focusBus_, focusPath_, focusProcessId_.load(std::memory_order_relaxed),
+                focusGeneration_.load(std::memory_order_acquire), stamp};
+    return true;
+}
+
+void A11yMonitor::clearFocusFlags() {
+    // Invalidate freshness before modifying any verdict. A consumer must not
+    // reuse the previous editor while the next focus's DBus analysis blocks.
+    focusSnapshotUsec_.store(0, std::memory_order_release);
+    browserUIFocused_.store(false);
+    vivaldiAddressBarFocused_.store(false);
+    passwordFocused_.store(false);
+    focusInWebDoc_.store(false);
+    focusRole_.store(0);
+    focusEditable_.store(false);
+    focusProcessId_.store(-1);
+    focusElementPid_.store(-1);
+    focusFbChatSig_.store(false);
+    focusFbCommentSig_.store(false);
+    focusMultiline_.store(false);
+    focusSingleLine_.store(false);
+    textEntryFocused_.store(false);
+    sheetsEditorFocused_.store(false);
+    googleDocsDocFocused_.store(false);
+}
+
+void A11yMonitor::beginFocus(const char *sender, const char *path) {
+    std::lock_guard<std::mutex> lock(focusIdentityMutex_);
+    clearFocusFlags();
+    if (focusBus_ != sender || focusPath_ != path) {
+        focusBus_ = sender;
+        focusPath_ = path;
+        focusGeneration_.fetch_add(1, std::memory_order_release);
+    }
+}
+
+void A11yMonitor::invalidateFocus(const char *sender, const char *path) {
+    std::lock_guard<std::mutex> lock(focusIdentityMutex_);
+    // A late blur/disconnect from a background app must not clear the new one.
+    if (sender && focusBus_ != sender) return;
+    if (path && focusPath_ != path) return;
+    clearFocusFlags();
+    focusBus_.clear();
+    focusPath_.clear();
+    focusGeneration_.fetch_add(1, std::memory_order_release);
+}
+
 void A11yMonitor::start() {
     // Publish startup before launching the worker: config reloads may call
     // start again before threadFunc has reached its first instruction.
@@ -964,6 +1025,7 @@ void A11yMonitor::stop() {
     wakeMonitor();
     if (thread_.joinable())
         thread_.join();
+    invalidateFocus();
 }
 
 void A11yMonitor::threadFunc() {
@@ -1200,6 +1262,8 @@ void A11yMonitor::threadFunc() {
                             if (d1 == 1)
                                 isFocusEvent = true;
                             else {
+                                invalidateFocus(dbus_message_get_sender(msg),
+                                                dbus_message_get_path(msg));
                                 textCache_.blur(dbus_message_get_sender(msg),
                                                 dbus_message_get_path(msg));
                                 if (vivaldiAddressBarBus == dbus_message_get_sender(msg) &&
@@ -1242,6 +1306,9 @@ void A11yMonitor::threadFunc() {
                     if (busName && oldOwner && oldOwner[0])
                         pokeCache.removeBus(busName);
                     if (busName && oldOwner && oldOwner[0] &&
+                        (!newOwner || !newOwner[0]))
+                        invalidateFocus(busName);
+                    if (busName && oldOwner && oldOwner[0] &&
                         vivaldiAddressBarBus == busName)
                         vivaldiAddressBarFocused_.store(false, std::memory_order_release);
                     if (newOwner && newOwner[0]) {
@@ -1258,6 +1325,7 @@ void A11yMonitor::threadFunc() {
                 const char *path = dbus_message_get_path(msg);
                 if (sender && path) {
                     // Invalidate before the potentially slow ancestor walk.
+                    beginFocus(sender, path);
                     vivaldiAddressBarFocused_.store(false, std::memory_order_release);
                     vivaldiAddressBarBus.clear();
                     vivaldiAddressBarPath.clear();
@@ -1418,13 +1486,10 @@ void A11yMonitor::threadFunc() {
                         vivaldiAddressBarPath = path;
                     }
                     vivaldiAddressBarFocused_.store(vivaldiAddressBar, std::memory_order_release);
-                    focusSnapshotUsec_.store(
-                        static_cast<uint64_t>(
-                            std::chrono::steady_clock::now()
-                                .time_since_epoch()
-                                .count() /
-                            1000),
-                        std::memory_order_relaxed);
+                    {
+                        std::lock_guard<std::mutex> lock(focusIdentityMutex_);
+                        focusSnapshotUsec_.store(monotonicUsec(), std::memory_order_release);
+                    }
                     A11Y_LOG("Focus: webDoc=%d role=%d(%s) editable=%d "
                              "multiline=%d singleLine=%d states=[%s] "
                              "pid=%d elemPid=%d path=%s vivaldiAddrBar=%d",
@@ -1483,6 +1548,7 @@ void A11yMonitor::threadFunc() {
 
     textEvents.update(bus, {}, {});
     dbus_connection_unref(bus);
+    invalidateFocus();
     running_.store(false);
     vivaldiAddressBarFocused_.store(false, std::memory_order_release);
     A11Y_LOG("A11yMonitor stopped");

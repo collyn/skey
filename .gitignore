@@ -97,3 +97,7 @@ Testing/
 .gitnexus/
 AGENTS.md
 CLAUDE.md
+
+# Private implementation notes
+docs/input-routing-private.md
+docs/xtest-x11-migration-plan.md

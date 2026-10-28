@@ -1,6 +1,7 @@
 #ifndef SKEY_UINPUT_INJECTOR_H
 #define SKEY_UINPUT_INJECTOR_H
 
+#include "injection_request.h"
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -14,10 +15,8 @@ namespace skey {
 class UinputInjector {
 public:
     using Owner = uint64_t;
-    enum class State { Queued, Complete, Failed, Cancelled };
-    struct Request {
-        std::atomic<State> state{State::Queued};
-    };
+    using Request = InjectionRequest;
+    using State = Request::State;
     using Ticket = std::shared_ptr<Request>;
 
     // Device boundary for isolated tests. open() includes configuration;

@@ -50,6 +50,23 @@ target_compile_features(test_uinput_injector PRIVATE cxx_std_17)
 target_link_libraries(test_uinput_injector pthread)
 add_test(NAME UinputInjector COMMAND test_uinput_injector)
 set_tests_properties(UinputInjector PROPERTIES TIMEOUT 10)
+add_executable(test_native_injector test_native_injector.cpp native_injector.cpp)
+target_compile_features(test_native_injector PRIVATE cxx_std_17)
+target_link_libraries(test_native_injector PkgConfig::NATIVE_X11 pthread)
+add_test(NAME NativeInjector COMMAND test_native_injector)
+set_tests_properties(NativeInjector PROPERTIES TIMEOUT 15)
+find_program(XVFB_RUN xvfb-run)
+if(XVFB_RUN)
+    add_executable(test_xtest_integration test_xtest_integration.cpp native_injector.cpp)
+    target_compile_features(test_xtest_integration PRIVATE cxx_std_17)
+    target_link_libraries(test_xtest_integration PkgConfig::NATIVE_X11 pthread)
+    add_test(NAME XTestIntegration COMMAND ${CMAKE_COMMAND} -E env
+        SKEY_ISOLATED_XVFB=1 ${XVFB_RUN} -a -s "-screen 0 640x480x24 -nolisten tcp"
+        $<TARGET_FILE:test_xtest_integration>)
+    set_tests_properties(XTestIntegration PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
+else()
+    message(STATUS "XTest integration test unavailable: xvfb-run not installed")
+endif()
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME UinputMigration COMMAND ${Python3_EXECUTABLE}
@@ -93,11 +110,35 @@ target_link_libraries(test_engine_performance Fcitx5::Core skey_engine ${DBUS_LI
 target_include_directories(test_engine_performance PRIVATE ${SKEY_ENGINE_DIR} ${DBUS_INCLUDE_DIRS} ${XCB_INCLUDE_DIRS})
 target_compile_features(test_engine_performance PRIVATE cxx_std_17)
 target_compile_definitions(test_engine_performance PRIVATE SKEY_TESTING=1 FCITX_SKEY_ICON_PATH="/tmp/skey-test.svg" FCITX_SKEY_ICON_DIR="/tmp")
+add_executable(test_input_field_policy test_input_field_policy.cpp)
+target_compile_features(test_input_field_policy PRIVATE cxx_std_17)
+add_test(NAME InputFieldPolicy COMMAND test_input_field_policy)
+add_test(NAME ChromiumCommitOrdering COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_CHROMIUM_COMMIT_ORDER_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+set_tests_properties(ChromiumCommitOrdering PROPERTIES TIMEOUT 15)
+foreach(desktop GNOME KDE XFCE)
+    add_test(NAME TerminalCommitForward${desktop} COMMAND ${CMAKE_COMMAND} -E env
+        XDG_CURRENT_DESKTOP=${desktop} SKEY_TEST_TERMINAL_FORWARD_ONLY=1
+        $<TARGET_FILE:test_engine_performance>)
+endforeach()
+add_test(NAME XimCommitOrdering COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_XIM_COMMIT_ORDER_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+set_tests_properties(XimCommitOrdering PROPERTIES TIMEOUT 15)
 add_test(NAME EnginePerformance COMMAND test_engine_performance)
+add_test(NAME NativeTransactions COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_NATIVE_TRANSACTIONS_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+set_tests_properties(NativeTransactions PROPERTIES TIMEOUT 15)
+add_test(NAME A11yOwnerGeneration COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_A11Y_OWNER_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+set_tests_properties(A11yOwnerGeneration PROPERTIES TIMEOUT 15)
 add_test(NAME GnomeAddressBarMenu COMMAND ${CMAKE_COMMAND} -E env
     SKEY_TEST_GNOME_MENU_ONLY=1 $<TARGET_FILE:test_engine_performance>)
 add_test(NAME GnomeX11AddressBarAuto COMMAND ${CMAKE_COMMAND} -E env
     SKEY_TEST_X11_AUTO_MENU_ONLY=1 SKEY_TEST_EXPECT_GNOME=1 $<TARGET_FILE:test_engine_performance>)
+add_test(NAME GnomeX11OrderedFrontends COMMAND ${CMAKE_COMMAND} -E env
+    SKEY_TEST_X11_AUTO_MENU_ONLY=1 SKEY_TEST_EXPECT_GNOME=1
+    SKEY_TEST_ORDERED_FRONTENDS_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+set_tests_properties(GnomeX11OrderedFrontends PROPERTIES TIMEOUT 30)
 add_test(NAME KdeX11AddressBarAuto COMMAND ${CMAKE_COMMAND} -E env
     --unset=SKEY_TEST_EXPECT_GNOME SKEY_TEST_X11_AUTO_MENU_ONLY=1 $<TARGET_FILE:test_engine_performance>)
 add_test(NAME GnomeOmniboxUinput COMMAND ${CMAKE_COMMAND} -E env

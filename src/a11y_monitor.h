@@ -55,13 +55,25 @@ public:
     /// True when the last focus snapshot is at most `maxAgeUsec` old
     /// (CLOCK_MONOTONIC microseconds).
     bool isFocusSnapshotFresh(uint64_t maxAgeUsec) const {
-        uint64_t snap = focusSnapshotUsec_.load(std::memory_order_relaxed);
+        uint64_t snap = focusSnapshotUsec_.load(std::memory_order_acquire);
         if (snap == 0)
             return false;
         uint64_t nowUsec = static_cast<uint64_t>(
             std::chrono::steady_clock::now().time_since_epoch().count() /
             1000);
         return nowUsec - snap <= maxAgeUsec;
+    }
+
+    struct FocusIdentity {
+        std::string busName, path;
+        int processId = -1;
+        uint64_t generation = 0, snapshotUsec = 0;
+    };
+    /// Identity of the completed focus analysis. Unavailable during a new
+    /// ancestor query, after matching blur, owner disconnect, or stop.
+    bool focusIdentity(FocusIdentity &identity) const;
+    uint64_t focusGeneration() const {
+        return focusGeneration_.load(std::memory_order_acquire);
     }
 
     /// Returns true if the currently focused element is a password field.
@@ -212,6 +224,9 @@ private:
     friend struct fcitx::EnginePerformanceTest;
     void threadFunc();
     void wakeMonitor();
+    void beginFocus(const char *sender, const char *path);
+    void invalidateFocus(const char *sender = nullptr, const char *path = nullptr);
+    void clearFocusFlags();
 
     std::thread thread_;
     int wakeFd_ = -1;
@@ -234,6 +249,9 @@ private:
     std::atomic<bool> focusSingleLine_{false};
     std::atomic<bool> textEntryFocused_{false};
     std::atomic<uint64_t> focusSnapshotUsec_{0};
+    std::atomic<uint64_t> focusGeneration_{0};
+    mutable std::mutex focusIdentityMutex_;
+    std::string focusBus_, focusPath_;
     std::atomic<uint64_t> cellSelectionSerial_{0};
     std::atomic<bool> sheetsEditorFocused_{false};
     std::atomic<bool> googleDocsDocFocused_{false};

@@ -25,6 +25,7 @@
 #include "app_delay_key.h"
 #include "surrounding_cursor.h"
 #include "uinput_delete_ack.h"
+#include "input_field_policy.h"
 #include "native_injector.h"
 #include "uinput_injector.h"
 #include <deque>
@@ -113,6 +114,8 @@ private:
     /// API anyway and lets the runtime validation downgrade.
     bool waylandNativeSurroundingProbe() const;
     bool isWayland() const;
+    bool isNativeX11() const;
+    bool nativeModeEnabled() const;
     const struct UinputTiming& uinputTiming() const;
     bool useUinputMode() const;
     bool useNativeMode() const;
@@ -129,6 +132,8 @@ private:
             return "uinput";
         }
     };
+    skey::InputField inputField() const;
+    bool useX11CompositionCommits() const;
     EditRoute editRoute(bool injectedOnly = false) const;
     bool useNativeBackspaceTransport() const;
     bool nativeFailed_ = false;
@@ -138,7 +143,12 @@ private:
     /// focus snapshot is fresh and the pid's comm matches appProgram().
     /// -1 otherwise.  Lets detectors read /proc/<pid>/... directly
     /// instead of scanning the whole process table.
-    int a11yAppPid() const;
+    int a11yAppPid(uint64_t maxAgeUsec = 5000000) const;
+    bool a11yFocusRelevant(uint64_t maxAgeUsec = 5000000) const;
+    mutable uint64_t a11yOwnerGeneration_ = 0;
+    mutable int a11yOwnerPid_ = -1;
+    mutable std::string a11yOwnerProgram_;
+    mutable bool a11yOwnerMatches_ = false;
     /// GNOME Wayland + the omnibox's 1px-beam caret — the shift-select
     /// replacement target (see the consume path).
     bool gnomeOmniboxCaret() const;
@@ -154,6 +164,21 @@ private:
     bool tryX11ForwardedReplacement(int deleteLen, const std::string &text,
                                     int finalLen, const std::string &oldWord,
                                     const std::string &newWord, bool select = false);
+    bool handleXimHandback(KeyEvent &event);
+    struct XimKeyRecord {
+        Key key;
+        int time;
+        bool release;
+        bool accepted;
+        uint64_t expires;
+    };
+    std::deque<XimKeyRecord> ximKeys_, ximEdits_;
+    uint32_t ximInputTime_ = 0, ximForwardTime_ = 0;
+    std::unique_ptr<EventSourceTime> ximDispatchTimer_;
+    Key ximEditKey_;
+    int ximEditCount_ = 0, ximPostMs_ = -1;
+    uint64_t ximSettleDelay_ = 0;
+    void dispatchXimEdits();
     bool x11ForwardedReplacement_ = false;
     int forwardedFocusRetries_ = 0;
     uint64_t forwardedOmniboxQuietUntil_ = 0;
@@ -326,10 +351,14 @@ private:
     // keystrokes; keep the last true verdict for a short grace instead of
     // flipping inChromiumAddressBar() to false mid-word.
     mutable uint64_t addrBarUiVerdictAtUsec_ = 0;
+    mutable uint64_t addrBarUiVerdictGeneration_ = 0;
     // Minimum caret X observed at word starts this session — the
     // omnibox's left text edge.  A word starting near it means the bar
     // was empty; further right means text exists before the cursor.
     int addrBarLeftEdgeCaretX_ = -1;
+    bool ownsPtyMaster() const;
+    mutable std::string cachedPtyProgram_;
+    mutable bool cachedPtyMaster_ = false;
     mutable int cachedIsTerminalApp_ = -1; // tristate: name list + shell scan
     mutable int cachedIsFirefoxOrSnap_ = -1;
     mutable int cachedIsFirefoxBrowser_ = -1;
@@ -380,6 +409,10 @@ private:
     std::string pendingFlushSuffix_;
     skey::UinputInjector::Owner uinputOwner_;
     skey::UinputInjector::Ticket uinputRequest_;
+    EditChannel requestChannel_ = EditChannel::Uinput;
+    bool uinputLateSelect_ = false;
+    bool nativeUnavailable_ = false;
+    bool legacyNativePending_ = false;
     std::unique_ptr<EventSourceTime> uinputRequestTimer_;
     std::string uinputStatus_;
 #ifdef SKEY_TESTING
@@ -387,6 +420,8 @@ private:
     std::function<bool(int, uint32_t, uint32_t)> uinputTestSend_;
     bool uinputTestReady_ = true;
     std::function<bool(int, uint32_t, uint32_t)> nativeTestSend_;
+    std::function<skey::NativeInjector::Ticket(int, bool, unsigned)> nativeTestSubmit_;
+    std::function<skey::NativeInjector::Ticket(int, unsigned)> nativeTestSelect_;
 #endif
     // Uinput replacement state
     bool uinputDeleting_ = false;
@@ -576,7 +611,7 @@ class SKeyEngine : public InputMethodEngineV2 {
 public:
     // Standalone test hosts can omit desktop/configuration side effects.
     SKeyEngine(Instance *instance, bool initializeDesktop = true);
-    ~SKeyEngine() override = default;
+    ~SKeyEngine() override;
 
     void keyEvent(const InputMethodEntry &entry,
                   KeyEvent &keyEvent) override;
