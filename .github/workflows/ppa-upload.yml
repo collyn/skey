@@ -11,6 +11,10 @@ on:
         description: 'Ubuntu series to build (space-separated)'
         required: false
         default: 'noble resolute'
+      revision:
+        description: 'Debian package revision (use 2 when rebuilding an uploaded -1)'
+        required: false
+        default: '1'
 
 permissions:
   contents: write
@@ -70,9 +74,12 @@ jobs:
       - name: Build & upload for all series
         env:
           SERIES_INPUT: ${{ inputs.series }}
+          DEBIAN_REVISION: ${{ inputs.revision }}
         run: |
           chmod +x scripts/make-ppa-source.sh scripts/ppa-build-upload.sh
           # Empty SERIES_INPUT → script falls back to "noble resolute"
           SERIES_INPUT="${SERIES_INPUT:-noble resolute}"
+          DEBIAN_REVISION="${DEBIAN_REVISION:-1}"
           echo "Requested Ubuntu series: ${SERIES_INPUT}"
-          ./scripts/ppa-build-upload.sh "$PKG_VERSION" "$SERIES_INPUT"
+          echo "Requested Debian revision: ${DEBIAN_REVISION}"
+          DEBIAN_REVISION="$DEBIAN_REVISION" ./scripts/ppa-build-upload.sh "$PKG_VERSION" "$SERIES_INPUT"

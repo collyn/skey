@@ -5,9 +5,15 @@ set -e
 
 VERSION="$1"
 SERIES_LIST="${2:-noble resolute}"  # space-separated, can override
+DEBIAN_REVISION="${DEBIAN_REVISION:-1}"
 
 if [ -z "$VERSION" ]; then
     echo "Usage: $0 <version> [series_list]" >&2
+    exit 1
+fi
+
+if ! [[ "$DEBIAN_REVISION" =~ ^[0-9]+$ ]]; then
+    echo "Error: DEBIAN_REVISION must be a non-negative integer" >&2
     exit 1
 fi
 
@@ -26,7 +32,7 @@ if [ -z "$KEYID" ]; then
 fi
 echo "=== Signing with Launchpad-registered key: ${KEYID} ==="
 
-echo "=== Building fcitx5-skey ${VERSION}-1 for: ${SERIES_LIST} (engine ${ENGINE_VER}) ==="
+echo "=== Building fcitx5-skey ${VERSION}-${DEBIAN_REVISION} for: ${SERIES_LIST} (engine ${ENGINE_VER}) ==="
 
 # Create fresh orig tarball once; first series uploads it (-sa), the rest skip (-sd).
 echo "→ Creating orig tarball..."
@@ -60,7 +66,7 @@ for SERIES in ${SERIES_LIST}; do
     echo "=== Series: ${SERIES} (${SA_FLAG}) ==="
 
     cat > debian/changelog << CHLOG
-fcitx5-skey (${VERSION}-1) ${SERIES}; urgency=medium
+fcitx5-skey (${VERSION}-${DEBIAN_REVISION}) ${SERIES}; urgency=medium
 
   * Release ${VERSION} with skey-engine ${ENGINE_VER}.
 
