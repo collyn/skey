@@ -32,7 +32,7 @@ if [ -z "$KEYID" ]; then
 fi
 echo "=== Signing with Launchpad-registered key: ${KEYID} ==="
 
-echo "=== Building fcitx5-skey ${VERSION}-${DEBIAN_REVISION} for: ${SERIES_LIST} (engine ${ENGINE_VER}) ==="
+echo "=== Building fcitx5-skey ${VERSION}-${DEBIAN_REVISION}+ per-series revisions for: ${SERIES_LIST} (engine ${ENGINE_VER}) ==="
 
 # Create fresh orig tarball once; first series uploads it (-sa), the rest skip (-sd).
 echo "→ Creating orig tarball..."
@@ -62,11 +62,16 @@ rm -f ../fcitx5-skey_*_source.changes ../fcitx5-skey_*.dsc \
       ../fcitx5-skey_*.debian.tar.xz ../fcitx5-skey_*.buildinfo
 
 SA_FLAG="-sa"
+SERIES_INDEX=0
 for SERIES in ${SERIES_LIST}; do
+    # Launchpad's incoming queue is global: the same .changes/.dsc filenames
+    # cannot be uploaded twice for different series. Give each upload a
+    # distinct Debian revision while keeping the upstream version unchanged.
+    REVISION=$((DEBIAN_REVISION + SERIES_INDEX))
     echo "=== Series: ${SERIES} (${SA_FLAG}) ==="
 
     cat > debian/changelog << CHLOG
-fcitx5-skey (${VERSION}-${DEBIAN_REVISION}) ${SERIES}; urgency=medium
+fcitx5-skey (${VERSION}-${REVISION}) ${SERIES}; urgency=medium
 
   * Release ${VERSION} with skey-engine ${ENGINE_VER}.
 
@@ -93,7 +98,12 @@ CHLOG
     fi
 
     echo "Uploading to ${SERIES}: $CHANGES"
-    dput ppa-collyn "$CHANGES"
+    DPUT_LOG="/tmp/dput-${SERIES}.log"
+    dput ppa-collyn "$CHANGES" 2>&1 | tee "$DPUT_LOG"
+    if grep -q "Nothing more to do" "$DPUT_LOG"; then
+        echo "Error: dput skipped ${SERIES}; the upload filenames already exist. Choose a higher Debian revision." >&2
+        exit 1
+    fi
     echo "→ Done: ${SERIES}"
 
     # Clean up artifacts from this iteration so the next series' glob
@@ -101,6 +111,7 @@ CHLOG
     rm -f ../fcitx5-skey_*_source.changes ../fcitx5-skey_*.dsc \
           ../fcitx5-skey_*.debian.tar.xz ../fcitx5-skey_*.buildinfo
     SA_FLAG="-sd"
+    SERIES_INDEX=$((SERIES_INDEX + 1))
 done
 
 echo "=== All series uploaded ==="
