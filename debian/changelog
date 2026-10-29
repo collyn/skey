@@ -1,41 +1,5 @@
-fcitx5-skey (0.5.10-1) resolute; urgency=medium
+fcitx5-skey (0.9.3-7) resolute; urgency=medium
 
-  * Update skey-engine to v0.1.12.
-  * Vendor Cargo dependencies for offline Launchpad build.
-  * Keep PPA upload manual-only (ppa-upload.yml).
+  * Release 0.9.3 with skey-engine v0.2.2.
 
- -- Nguyen Tien Huy <collyn094@gmail.com>  Tue, 12 Aug 2026 09:00:00 +0700
-
-fcitx5-skey (0.5.9-2) resolute; urgency=medium
-
-  * Target Ubuntu 26.04 (Resolute) for PPA build.
-
- -- Nguyen Tien Huy <collyn094@gmail.com>  Tue, 11 Aug 2026 12:00:00 +0700
-
-fcitx5-skey (0.5.9-1) resolute; urgency=medium
-
-  * Add patch to fix Rust 1.75 compatibility (#[unsafe(no_mangle)] → #[no_mangle]).
-  * Fix CI workflow for PPA source package signing and upload.
-
- -- Nguyen Tien Huy <collyn094@gmail.com>  Mon, 11 Aug 2026 11:40:00 +0700
-
-fcitx5-skey (0.5.8-1) noble; urgency=medium
-
-  * Update skey-engine to v0.1.7.
-
- -- Nguyen Tien Huy <collyn094@gmail.com>  Mon, 11 Aug 2026 10:00:00 +0700
-
-fcitx5-skey (0.5.7-1ubuntu1) noble; urgency=medium
-
-  * Fix Cargo.lock format compatibility with Launchpad builder Rust 1.75.
-  * Remove Cargo.lock from orig tarball (zero deps, safe to regenerate).
-
- -- Nguyen Tien Huy <collyn094@gmail.com>  Mon, 10 Aug 2026 20:50:00 +0700
-
-fcitx5-skey (0.5.7-1) noble; urgency=medium
-
-  * Initial PPA release.
-  * Vietnamese SKey input method engine for Fcitx5 — supports Telex, Telex W,
-    VNI with advanced surrounding text editing.
-
- -- Nguyen Tien Huy <collyn094@gmail.com>  Sun, 10 Aug 2026 12:00:00 +0700
+ -- Nguyen Tien Huy <collyn094@gmail.com>  Thu, 29 Oct 2026 14:59:15 +0700

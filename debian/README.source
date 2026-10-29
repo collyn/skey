@@ -11,9 +11,18 @@ Quick Start
 
     ./scripts/make-ppa-source.sh
 
-2. Build the source package:
+2. Build and upload from the clean temporary tree (recommended on NixOS):
 
-    debuild -S -sa
+    PPA_REUSE_ORIG=1 ./scripts/ppa-build-upload.sh 0.9.3 "noble resolute"
+
+   `ppa-build-upload.sh` extracts the `.orig.tar.gz` into a temporary
+   directory before invoking `debuild`, so read-only files under a workspace
+   mount such as `.cache/nixos/nix/store` are never scanned by `dh_clean`.
+   Omit `PPA_REUSE_ORIG=1` only when creating a genuinely new upstream
+   version. Launchpad treats an `.orig.tar.gz` filename as immutable.
+
+   For a local source-only build, extract the orig tarball and copy `debian/`
+   into that clean tree, then run `debuild -S -sa` there.
 
 3. Check package quality:
 

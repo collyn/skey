@@ -7042,6 +7042,17 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               // generic deletion observer expect it to remove another letter.
               const std::string_view ackWord =
                   dismissGnomeAutofill ? std::string_view{} : oldComposed;
+              // Electron/Chromium X11 clients can replay the trigger key
+              // after the uinput replacement has settled (Antigravity was
+              // observed replaying it ~200ms later). Keep the original
+              // timestamp so the common replay guard drops that event before
+              // it starts a second Vietnamese transaction.
+              if (isChromiumCached()) {
+                addrBarLastTriggerKey_ = static_cast<int>(sym);
+                addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 500000;
+                addrBarTriggerKeyTime_ = keyEvent.time();
+                addrBarGuardArmedUsec_ = now(CLOCK_MONOTONIC);
+              }
               if (!sendBackspaceUinput(realBackspaces + 1, 0, ackWord)) {
                 resetForCellChange();
                 return;

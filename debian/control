@@ -28,12 +28,12 @@ Vcs-Browser: https://github.com/collyn/skey
 
 Package: fcitx5-skey
 Architecture: amd64
+# Qt6 SVG image plugin is needed because the settings GUI loads SVG icons via
+# QIcon; without it the Icons tab and system tray icon render blank.
 Depends: ${shlibs:Depends},
          ${misc:Depends},
          fcitx5,
          hicolor-icon-theme,
-         # Qt6 SVG image plugin — the settings GUI loads SVG icons via QIcon;
-         # without it the Icons tab (and system tray icon) render blank.
          libqt6svg6,
          acl,
          udev,
