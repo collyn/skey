@@ -35,6 +35,17 @@ Native mặc định tắt để tránh hộp thoại xin quyền input trên Wa
 
 ### Ubuntu / Debian
 
+#### Cài từ PPA (Ubuntu 24.04/26.04)
+
+```bash
+sudo add-apt-repository ppa:collyn094/fcitx5-skey
+sudo apt update
+sudo apt install fcitx5-skey
+skey-setup
+```
+
+#### Cài bằng trình cài đặt
+
 ```bash
 curl -fsSL https://collyn.github.io/skey/install.sh | sudo bash
 sudo apt install fcitx5-skey
