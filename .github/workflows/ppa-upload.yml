@@ -12,7 +12,7 @@ on:
         required: false
         default: 'noble resolute'
       revision:
-        description: 'Debian package revision (use 2 when rebuilding an uploaded -1)'
+        description: 'Starting Debian revision; each series increments it'
         required: false
         default: '1'
 
