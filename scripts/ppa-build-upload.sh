@@ -34,7 +34,9 @@ echo "=== Signing with Launchpad-registered key: ${KEYID} ==="
 
 echo "=== Building fcitx5-skey ${VERSION}-${DEBIAN_REVISION}+ per-series revisions for: ${SERIES_LIST} (engine ${ENGINE_VER}) ==="
 
-# Create fresh orig tarball once; first series uploads it (-sa), the rest skip (-sd).
+# Create fresh orig tarball once. Each series sends a complete source upload;
+# dput skips the identical .orig.tar.gz when Launchpad already has it, while
+# still allowing a later series to recover if the first upload was rejected.
 echo "→ Creating orig tarball..."
 ./scripts/make-ppa-source.sh "$VERSION"
 
@@ -45,6 +47,7 @@ fqdn = ppa.launchpad.net
 method = ftp
 incoming = ~collyn094/ubuntu/fcitx5-skey
 login = anonymous
+passive_ftp = 1
 allow_unsigned_uploads = 0
 DEOF
 
@@ -110,7 +113,6 @@ CHLOG
     # doesn't pick up stale .changes / .dsc from the previous series.
     rm -f ../fcitx5-skey_*_source.changes ../fcitx5-skey_*.dsc \
           ../fcitx5-skey_*.debian.tar.xz ../fcitx5-skey_*.buildinfo
-    SA_FLAG="-sd"
     SERIES_INDEX=$((SERIES_INDEX + 1))
 done
 
