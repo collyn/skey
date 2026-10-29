@@ -216,6 +216,7 @@ struct NativeInjector::Impl {
         std::ifstream in(tokenPath());
         std::getline(in, restoreToken);
     }
+#ifdef SKEY_LIBPORTAL_PERSIST
     void saveToken() {
         char *token = xdp_session_get_restore_token(session);
         if (!token || !*token) { g_free(token); return; }
@@ -235,6 +236,7 @@ struct NativeInjector::Impl {
         }
         g_free(token);
     }
+#endif
     void wake() { uint64_t one = 1; if (wakeFd >= 0) (void)!write(wakeFd, &one, sizeof(one)); }
     void fail(const std::string &s) { ready = false; ++generation; status(s); }
     static void started(GObject *object, GAsyncResult *result, gpointer data) {
@@ -245,7 +247,9 @@ struct NativeInjector::Impl {
             self.fail(error ? error->message : "portal start failed");
             g_clear_error(&error); return;
         }
+#ifdef SKEY_LIBPORTAL_PERSIST
         self.saveToken();
+#endif
         if (self.stop) return;
         if (!(xdp_session_get_devices(self.session) & XDP_DEVICE_KEYBOARD)) {
             self.fail("portal did not grant keyboard access"); return;
