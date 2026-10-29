@@ -36,6 +36,20 @@ fi
 ENGINE_VERSION=$(grep -oP 'set\(SKEY_ENGINE_VERSION "\K[^"]+' CMakeLists.txt)
 PKG_NAME="fcitx5-skey"
 TARBALL="${PKG_NAME}_${VERSION}.orig.tar.gz"
+EXISTING_ORIG="${REPO_ROOT}/../${TARBALL}"
+
+# A Launchpad orig tarball is immutable by filename. When retrying a Debian
+# revision for an already-uploaded upstream version, explicitly reuse the
+# downloaded tarball instead of regenerating different contents.
+if [ "${PPA_REUSE_ORIG:-0}" = 1 ]; then
+    if [ ! -f "$EXISTING_ORIG" ]; then
+        echo "Error: PPA_REUSE_ORIG=1 but orig tarball is missing: $EXISTING_ORIG" >&2
+        exit 1
+    fi
+    echo "=== Reusing existing orig tarball: ${EXISTING_ORIG} ==="
+    exit 0
+fi
+
 WORKDIR="$(mktemp -d)"
 STAGING="${WORKDIR}/${PKG_NAME}-${VERSION}"
 

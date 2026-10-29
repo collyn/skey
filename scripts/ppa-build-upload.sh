@@ -34,11 +34,18 @@ echo "=== Signing with Launchpad-registered key: ${KEYID} ==="
 
 echo "=== Building fcitx5-skey ${VERSION}-${DEBIAN_REVISION}+ per-series revisions for: ${SERIES_LIST} (engine ${ENGINE_VER}) ==="
 
-# Create fresh orig tarball once. Each series sends a complete source upload;
-# dput skips the identical .orig.tar.gz when Launchpad already has it, while
-# still allowing a later series to recover if the first upload was rejected.
+# Create the orig tarball once. For a retry of an already uploaded upstream
+# version, set PPA_REUSE_ORIG=1 so the immutable Launchpad orig is reused.
+REUSE_ORIG="${PPA_REUSE_ORIG:-0}"
 echo "→ Creating orig tarball..."
-./scripts/make-ppa-source.sh "$VERSION"
+PPA_REUSE_ORIG="$REUSE_ORIG" ./scripts/make-ppa-source.sh "$VERSION"
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ORIG_TARBALL="${REPO_ROOT}/../fcitx5-skey_${VERSION}.orig.tar.gz"
+if [ ! -f "$ORIG_TARBALL" ]; then
+    echo "Error: missing orig tarball: $ORIG_TARBALL" >&2
+    exit 1
+fi
 
 # Configure dput once
 cat > ~/.dput.cf << 'DEOF'
@@ -57,14 +64,26 @@ set -o pipefail
 # generated changelog — and thus the .debian.tar.xz — is reproducible.
 CHLOG_DATE=$(date -R ${SOURCE_DATE_EPOCH:+-d @"$SOURCE_DATE_EPOCH"})
 
+BUILD_ROOT="$(mktemp -d)"
+cleanup_build_root() { rm -rf "$BUILD_ROOT"; }
+trap cleanup_build_root EXIT
+cp -f "$ORIG_TARBALL" "$BUILD_ROOT/"
+ORIG_BASENAME="$(basename "$ORIG_TARBALL")"
+
 # Do not let artifacts from an interrupted or previous run be selected by the
 # glob below.  debuild writes all source artifacts one directory above the
 # checkout, and the cleanup at the end of each iteration cannot cover a run
 # that stopped before reaching it.
-rm -f ../fcitx5-skey_*_source.changes ../fcitx5-skey_*.dsc \
-      ../fcitx5-skey_*.debian.tar.xz ../fcitx5-skey_*.buildinfo
+rm -f "$BUILD_ROOT"/fcitx5-skey_*_source.changes "$BUILD_ROOT"/fcitx5-skey_*.dsc \
+      "$BUILD_ROOT"/fcitx5-skey_*.debian.tar.xz "$BUILD_ROOT"/fcitx5-skey_*.buildinfo
 
-SA_FLAG="-sa"
+if [ "$REUSE_ORIG" = 1 ]; then
+    # The upstream orig is already in Launchpad. Sending it again makes dput
+    # open a second FTP transfer and is unnecessary for a new Debian revision.
+    SA_FLAG="-sd"
+else
+    SA_FLAG="-sa"
+fi
 SERIES_INDEX=0
 for SERIES in ${SERIES_LIST}; do
     # Launchpad's incoming queue is global: the same .changes/.dsc filenames
@@ -72,6 +91,13 @@ for SERIES in ${SERIES_LIST}; do
     # distinct Debian revision while keeping the upstream version unchanged.
     REVISION=$((DEBIAN_REVISION + SERIES_INDEX))
     echo "=== Series: ${SERIES} (${SA_FLAG}) ==="
+
+    # Build only from the clean orig tree. The checkout may be on NixOS and
+    # contain read-only mounts such as .cache/nixos/nix/store; dh_clean must
+    # never see those paths.
+    rm -rf "$BUILD_ROOT/fcitx5-skey-${VERSION}"
+    tar -xzf "$BUILD_ROOT/$ORIG_BASENAME" -C "$BUILD_ROOT"
+    cp -a "$REPO_ROOT/debian" "$BUILD_ROOT/fcitx5-skey-${VERSION}/"
 
     cat > debian/changelog << CHLOG
 fcitx5-skey (${VERSION}-${REVISION}) ${SERIES}; urgency=medium
@@ -81,15 +107,19 @@ fcitx5-skey (${VERSION}-${REVISION}) ${SERIES}; urgency=medium
  -- Nguyen Tien Huy <collyn094@gmail.com>  ${CHLOG_DATE}
 CHLOG
 
-    debuild -k"$KEYID" -S ${SA_FLAG} -d 2>&1 | tee /tmp/debuild-${SERIES}.log
+    cp debian/changelog "$BUILD_ROOT/fcitx5-skey-${VERSION}/debian/changelog"
+    (
+        cd "$BUILD_ROOT/fcitx5-skey-${VERSION}"
+        debuild -k"$KEYID" -S ${SA_FLAG} -d 2>&1 | tee /tmp/debuild-${SERIES}.log
+    )
 
     # debuild writes the artifacts to the parent dir. Never copy them into the
     # source tree: the next iteration's dpkg-source would trip over the binary
     # .orig.tar.gz/.debian.tar.xz ("unrepresentable changes to source").
-    CHANGES=$(ls ../fcitx5-skey_*_source.changes 2>/dev/null | head -1)
+    CHANGES=$(ls "$BUILD_ROOT"/fcitx5-skey_*_source.changes 2>/dev/null | head -1)
     if [ -z "$CHANGES" ]; then
         echo "Error: No .changes file found for ${SERIES}" >&2
-        ls -la ..
+        ls -la "$BUILD_ROOT"
         exit 1
     fi
 
@@ -109,10 +139,14 @@ CHLOG
     fi
     echo "→ Done: ${SERIES}"
 
+    # The first upload of a new upstream version carries the orig tarball;
+    # subsequent series reuse the same immutable orig from Launchpad.
+    SA_FLAG="-sd"
+
     # Clean up artifacts from this iteration so the next series' glob
     # doesn't pick up stale .changes / .dsc from the previous series.
-    rm -f ../fcitx5-skey_*_source.changes ../fcitx5-skey_*.dsc \
-          ../fcitx5-skey_*.debian.tar.xz ../fcitx5-skey_*.buildinfo
+    rm -f "$BUILD_ROOT"/fcitx5-skey_*_source.changes "$BUILD_ROOT"/fcitx5-skey_*.dsc \
+          "$BUILD_ROOT"/fcitx5-skey_*.debian.tar.xz "$BUILD_ROOT"/fcitx5-skey_*.buildinfo
     SERIES_INDEX=$((SERIES_INDEX + 1))
 done
 
