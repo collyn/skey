@@ -5673,7 +5673,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           surroundingCommit(preRestore, postRestore);
         }
       }
-      saveLastWord();
+      saveLastWord(true);
       if (useSurroundingText()) {
         forceFlushDeferredCommit();
       } else {
@@ -5984,7 +5984,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         const auto &surrounding = ic_->surroundingText();
         const bool selected = surrounding.isValid() &&
                               surrounding.anchor() != surrounding.cursor();
-        if (!selected && !lastRawInput_.empty() && !wordWasBackspaced_ &&
+        if (!selected && retroactiveEditingEnabled() &&
+            (!retroHistory_.empty() || !lastRawInput_.empty()) &&
+            !wordWasBackspaced_ &&
             !sepAlreadyDeleted_) {
           reclaimReady_ = true;
           sepAlreadyDeleted_ = true;
@@ -6088,7 +6090,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       //
       // Subsequent BS (committedLen_ == -1): delete into the previous
       // word — the user is intentionally removing characters.
-      if (!lastRawInput_.empty()) {
+      if (retroactiveEditingEnabled() &&
+          (!retroHistory_.empty() || !lastRawInput_.empty())) {
         if (committedLen_ == 0) {
           // Delete the separator immediately AND enable reclaim for
           // potential retroactive tone editing on the next keystroke.
@@ -6127,7 +6130,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     // engine just committed), so mark the separator as already deleted —
     // otherwise the tone-key reclaim path would delete a second character
     // via the surrounding-text API and desync the engine from the screen.
-    if (!lastRawInput_.empty() && !wordWasBackspaced_) {
+    if (retroactiveEditingEnabled() &&
+        (!retroHistory_.empty() || !lastRawInput_.empty()) &&
+        !wordWasBackspaced_) {
       reclaimReady_ = true;
       sepAlreadyDeleted_ = true;
     }
@@ -6325,7 +6330,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           }
         }
       }
-      saveLastWord();
+      saveLastWord(true);
       if (useSurroundingText()) {
         forceFlushDeferredCommit();
       } else {
@@ -6435,7 +6440,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           }
         }
       }
-      saveLastWord();
+      saveLastWord(true);
       if (useSurroundingText()) {
         bool hadDeferred = hasDeferredCommitPending();
         if (hadDeferred) {
@@ -6569,7 +6574,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           }
         }
       }
-      saveLastWord();
+      saveLastWord(true);
       if (useSurroundingText()) {
         forceFlushDeferredCommit();
       } else {
@@ -6616,8 +6621,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       // word so the tone can be changed.
       bool didReclaim = false;
       if (reclaimReady_) addrBarPrefixChars_ = -1;
-      if (viet_.getRawInput().empty() && !lastRawInput_.empty() &&
-          reclaimReady_ && useSurroundingText()) {
+      if (viet_.getRawInput().empty() && retroactiveEditingEnabled() &&
+          (!retroHistory_.empty() || !lastRawInput_.empty()) &&
+          reclaimReady_) {
         auto im = engine_->config().inputMethod.value();
         bool isToneKey = false;
         if (im == SKeyInputMethod::Telex) {
@@ -6633,8 +6639,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               mirrorSurroundingDelete(-1, 1);
             }
           }
-          reclaimLastWord();
-          didReclaim = true;
+          didReclaim = reclaimLastWord();
         }
         reclaimReady_ = false;
         sepAlreadyDeleted_ = false;
@@ -6772,6 +6777,9 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           // Tone key didn't produce a useful change — undo reclaim.
           SKEY_DEBUG() << "Reclaim: no transform for '" << ch
                        << "', undo reclaim";
+          // The visible word was never replaced, so restore its history
+          // record before treating the key as a new composition.
+          restoreReclaimedWord();
           viet_.reset();
           viet_.clearCommitted();
           committedLen_ = 0;
@@ -7203,7 +7211,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           }
         }
       }
-      saveLastWord();
+      saveLastWord(true);
       if (useSurroundingText()) {
         bool hadDeferred = hasDeferredCommitPending();
         if (hadDeferred) {
@@ -7246,7 +7254,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
 
   // Any other key: finalize
   if (!viet_.getRawInput().empty()) {
-    saveLastWord();
+    saveLastWord(true);
     if (useSurroundingText()) {
       forceFlushDeferredCommit();
     } else {
@@ -8571,17 +8579,44 @@ void SKeyState::armUinputSafetyTimer() {
       });
 }
 
-void SKeyState::saveLastWord() {
+void SKeyState::saveLastWord(bool committed) {
   if (viet_.getRawInput().empty())
     return;
   lastRawInput_ = viet_.getRawInput();
   lastComposed_ = viet_.getComposed();
   lastCommittedLen_ = committedLen_;
+  if (committed && retroactiveEditingEnabled() && !lastComposed_.empty()) {
+    // A successful boundary commit consumes any in-flight reclaim.  Clear
+    // this before duplicate suppression so an unchanged re-commit cannot
+    // leave a stale record eligible for a later edit.
+    reclaimedWord_.reset();
+    RetroWord word{lastRawInput_, lastComposed_, lastCommittedLen_};
+    if (!retroHistory_.empty()) {
+      const auto &previous = retroHistory_.back();
+      if (previous.raw == word.raw &&
+          previous.composed == word.composed &&
+          previous.committedLen == word.committedLen) {
+        return;
+      }
+    }
+    if (retroHistory_.size() >= kRetroHistoryLimit)
+      retroHistory_.pop_front();
+    retroHistory_.push_back(std::move(word));
+  }
   SKEY_DEBUG() << "SaveLastWord: raw='" << lastRawInput_ << "' composed='"
                << lastComposed_ << "' len=" << lastCommittedLen_;
 }
 
+bool SKeyState::retroactiveEditingEnabled() const {
+  // Retroactive editing requires a trustworthy cursor and delete ordering.
+  // Uinput/Native replacement paths cannot provide that guarantee for every
+  // application (LibreOffice in particular reorders injected Backspaces).
+  return effectiveMode() == SKeyOutputMode::SurroundingText;
+}
+
 void SKeyState::clearLastWord() {
+  retroHistory_.clear();
+  reclaimedWord_.reset();
   lastRawInput_.clear();
   lastComposed_.clear();
   lastCommittedLen_ = 0;
@@ -8589,9 +8624,19 @@ void SKeyState::clearLastWord() {
   sepAlreadyDeleted_ = false;
 }
 
-void SKeyState::reclaimLastWord() {
-  SKEY_DEBUG() << "ReclaimLastWord: raw='" << lastRawInput_ << "' composed='"
-               << lastComposed_ << "' len=" << lastCommittedLen_;
+bool SKeyState::reclaimLastWord() {
+  RetroWord saved;
+  if (!retroHistory_.empty()) {
+    saved = std::move(retroHistory_.back());
+    retroHistory_.pop_back();
+  } else if (!lastRawInput_.empty()) {
+    saved = RetroWord{lastRawInput_, lastComposed_, lastCommittedLen_};
+  } else {
+    return false;
+  }
+  reclaimedWord_ = saved;
+  SKEY_DEBUG() << "ReclaimLastWord: raw='" << saved.raw << "' composed='"
+               << saved.composed << "' len=" << saved.committedLen;
 
   // Restore the VietnameseEngine state from the saved raw input.
   // We do NOT modify the screen — the composed text already matches
@@ -8602,11 +8647,11 @@ void SKeyState::reclaimLastWord() {
   // This avoids complex screen replacement in uinput mode where:
   //   - Ctrl+Shift+U text typing is app-dependent (fails in many apps)
   //   - Async BS counting can stall for seconds in some apps (Telegram)
-  std::string savedRaw = lastRawInput_;
-  int savedLen = lastCommittedLen_;
-
-  // Clear last word state (now being reclaimed)
-  clearLastWord();
+  std::string savedRaw = saved.raw;
+  int savedLen = saved.committedLen;
+  lastRawInput_ = saved.raw;
+  lastComposed_ = saved.composed;
+  lastCommittedLen_ = saved.committedLen;
 
   // Feed saved raw input back into the engine to reconstruct composition
   for (char ch : savedRaw) {
@@ -8614,11 +8659,23 @@ void SKeyState::reclaimLastWord() {
   }
   viet_.clearCommitted();
 
-  committedLen_ = savedLen;
+  committedLen_ = savedLen > 0
+                      ? savedLen
+                      : static_cast<int>(utf8::length(saved.composed));
 
   SKEY_DEBUG() << "ReclaimLastWord: restored raw='" << viet_.getRawInput()
                << "' composed='" << viet_.getComposed()
                << "' committedLen=" << committedLen_;
+  return true;
+}
+
+void SKeyState::restoreReclaimedWord() {
+  if (!reclaimedWord_)
+    return;
+  if (retroHistory_.size() >= kRetroHistoryLimit)
+    retroHistory_.pop_front();
+  retroHistory_.push_back(std::move(*reclaimedWord_));
+  reclaimedWord_.reset();
 }
 
 void SKeyState::refreshPreeditVisibility() {

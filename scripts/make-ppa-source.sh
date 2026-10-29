@@ -61,12 +61,20 @@ rsync -a \
     --exclude='build/' \
     --exclude='build-deb/' \
     --exclude='build-ppa/' \
+    --exclude='CMakeFiles/' \
+    --exclude='Testing/' \
+    --exclude='compile_commands.json' \
+    --exclude='skey-engine/' \
     --exclude='*.deb' \
     --exclude='*.rpm' \
     --exclude='*.pkg.tar.zst' \
     --exclude='*.sig' \
     --exclude='.github/' \
     --exclude='.claude/' \
+    --exclude='.agents/' \
+    --exclude='.aws/' \
+    --exclude='.codex/' \
+    --exclude='.gitnexus/' \
     --exclude='CLAUDE.md' \
     --exclude='AGENTS.md' \
     --exclude='node_modules/' \
@@ -106,7 +114,8 @@ fi
 echo "→ Vendoring Cargo dependencies..."
 pushd "${STAGING}/skey-engine" > /dev/null
 cargo vendor > /dev/null 2>&1 || {
-    echo "Warning: cargo vendor failed, continuing without vendored deps" >&2
+    echo "Error: cargo vendor failed; refusing to create a source package without offline dependencies" >&2
+    exit 1
 }
 if [ -d vendor ]; then
     mkdir -p .cargo

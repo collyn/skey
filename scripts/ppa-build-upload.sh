@@ -47,6 +47,14 @@ set -o pipefail
 # Honor SOURCE_DATE_EPOCH (set by the workflow from the HEAD commit time) so the
 # generated changelog — and thus the .debian.tar.xz — is reproducible.
 CHLOG_DATE=$(date -R ${SOURCE_DATE_EPOCH:+-d @"$SOURCE_DATE_EPOCH"})
+
+# Do not let artifacts from an interrupted or previous run be selected by the
+# glob below.  debuild writes all source artifacts one directory above the
+# checkout, and the cleanup at the end of each iteration cannot cover a run
+# that stopped before reaching it.
+rm -f ../fcitx5-skey_*_source.changes ../fcitx5-skey_*.dsc \
+      ../fcitx5-skey_*.debian.tar.xz ../fcitx5-skey_*.buildinfo
+
 SA_FLAG="-sa"
 for SERIES in ${SERIES_LIST}; do
     echo "=== Series: ${SERIES} (${SA_FLAG}) ==="

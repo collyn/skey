@@ -3,6 +3,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -251,7 +252,8 @@ private:
     /// one word per line, # comments) into the engine.  Called when the
     /// dictionary option is applied.
     void loadUserDict();
-    void reclaimLastWord();
+    bool reclaimLastWord();
+    void restoreReclaimedWord();
     /// Fresh a11y snapshot of a Google Docs-suite page (Sheets/Docs/Slides
     /// by document title) — routes Firefox on these canvas pages to Uinput.
     bool a11yGoogleDocsFocused() const;
@@ -286,8 +288,9 @@ private:
     void clearUI();
     void showModeMenu();
     void refreshAppMode();
-    void saveLastWord();
+    void saveLastWord(bool committed = false);
     void clearLastWord();
+    bool retroactiveEditingEnabled() const;
     void flushAddrBarReplacement();
     void scheduleAddrBarReplacement(int bs, const std::string &text,
                                      int oldComposedLen = 0,
@@ -553,10 +556,24 @@ private:
     uint64_t lastBsRoundTrip_ = 0; // last measured round-trip (usec)
     // EWMA of BS round-trip times for adaptive commit delay (usec)
     uint64_t bsRtEwma_ = 10000;    // seeded with kBsRtInitialUsec
-    // Retroactive tone editing (Unikey-style): saved state of last committed word
-    std::string lastRawInput_;      // Raw input of last committed word
-    std::string lastComposed_;      // Composed text of last committed word
-    int lastCommittedLen_ = 0;      // UTF-8 char count of last committed word
+    // Retroactive tone editing (Unikey-style): in SurroundingText mode, keep
+    // the raw input for a bounded sequence of committed words. The addon
+    // still owns cursor and delete ordering; these records only reconstruct
+    // a word.
+    struct RetroWord {
+      std::string raw;
+      std::string composed;
+      int committedLen = 0;
+    };
+    static constexpr size_t kRetroHistoryLimit = 16;
+    std::deque<RetroWord> retroHistory_;
+    std::optional<RetroWord> reclaimedWord_;
+    // Snapshot of the word currently being composed (or most recently
+    // committed) for diagnostics and compatibility with the existing state
+    // machine.  Committed words are stored in retroHistory_.
+    std::string lastRawInput_;
+    std::string lastComposed_;
+    int lastCommittedLen_ = 0;
     bool reclaimReady_ = false;     // True after BS pressed while idle
     bool sepAlreadyDeleted_ = false; // Separator already deleted by first BS
     bool wordWasBackspaced_ = false; // Word deleted by backspace, block reclaim

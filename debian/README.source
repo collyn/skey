@@ -28,11 +28,8 @@ About skey-engine (Rust)
 
 skey-engine is a stateless Vietnamese input method engine written in Rust.
 It ships as a static library (libskey_engine.a) that links into the C++
-fcitx5 addon.
-
-The engine has zero external Cargo dependencies — it only uses the Rust
-standard library. This makes it suitable for offline build environments
-like Launchpad buildd.
+fcitx5 addon. Its `libc` Cargo dependency is vendored into the orig tarball
+so the Launchpad buildd can build it without network access.
 
 During the build, CMake receives `-DSKEY_ENGINE_SOURCE_DIR=$(CURDIR)/skey-engine`
 (via debian/rules) to use the bundled source instead of cloning from GitHub.

@@ -31,11 +31,11 @@
     owner = "collyn";
     repo = "skey-engine";
     tag = engineVersion;
-    hash = "sha256-L1RpMZCjeP3KhuO4Xjuq0jwKDCxCpoNcmQUu2LTg0JY=";
+    hash = "sha256-X2QUubKDwlEJwG4aJ7c+X4LFNs5E7j60m3xZJS1Y5/s=";
   },
   skeyEngineLib ? builtins.fetchurl {
     url = "https://github.com/collyn/skey-engine/releases/download/${engineVersion}/libskey_engine.a";
-    sha256 = "sha256-YRQ8vbqfStvns1aX2hYrV8ZBkZoAZGTxbblxA+gI2SE=";
+    sha256 = "sha256-WYalK2GzRx2UGt/ti2xOQx68QAkESOzfu2QGA+paNws=";
   },
   devVersion ? null,
 }:
