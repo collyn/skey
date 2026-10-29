@@ -3297,17 +3297,11 @@ static bool isFrontendName(const fcitx::InputContext *ic, const char *name) {
 }
 
 bool SKeyState::waylandNativeSurroundingProbe() const {
-  // The probe exists for native Wayland apps whose caps omit the
-  // SurroundingText bit on the COMPOSITOR text-input path (kwin →
-  // waylandim).  It must not fire for the D-Bus frontend: fcitx5-gtk4 on
-  // Wayland reports display "wayland:" but carries its own accurate caps
-  // (surrounding support is only advertised when the app really provides
-  // it), and its forwardKey(BS) is an empty stub — Surr mode there means
-  // replacements never delete ("chào" → "chaào" in ghostty when the
-  // GTK_IM_MODULE=fcitx session env routed it through the dbus module,
-  // 2026-09-16; the dbus IC has no app id either, so the terminal name
-  // list can't catch it — "no SurroundingText cap, probing" → Surr).
-  // Gate on the frontend name instead of the display.
+  // Only the compositor's native Wayland text-input path has the complete
+  // surrounding/delete contract when the capability bit is omitted.  The
+  // D-Bus frontend may still expose a readable snapshot, but Telegram and
+  // similar Qt clients can ignore deleteSurroundingText(); treating that
+  // snapshot as a writable API makes held Backspace appear to do nothing.
   return isWayland() && isFrontendName(ic_, "wayland") &&
          !isChromiumCached() && !isTerminalAppCached();
 }
@@ -4963,17 +4957,18 @@ void SKeyState::reset() {
   if (!hasDeferredCommitPending()) {
     committedLen_ = 0;
   }
-  // Firefox/Gecko on Wayland emits an informational reset immediately after
-  // an input context is created, before the first key reaches the engine.
-  // Re-running Auto here can observe the previous focus's capability/a11y
-  // state and switch the first word from the activation route (usually
-  // Uinput/Select) to Surrounding Text.  Keep the activation decision for
-  // this short, empty-focus window; later resets still invalidate normally.
-  const bool preserveInitialFirefoxMode =
-      isWayland() && isFirefoxOrSnap() && viet_.getRawInput().empty() &&
+  // Firefox/Gecko and Chromium on Wayland can emit an informational reset
+  // immediately after an input context is created, before the first key
+  // reaches the engine. Re-running Auto here can observe the previous
+  // focus's capability/a11y state and switch the first word between Uinput
+  // and Surrounding Text. Keep the activation decision for this short,
+  // empty-focus window; later resets still invalidate normally.
+  const bool preserveInitialBrowserMode =
+      isWayland() && (isFirefoxOrSnap() || isChromiumBrowser(appProgram())) &&
+      viet_.getRawInput().empty() &&
       lastActivateUsec_ > 0 &&
       now(CLOCK_MONOTONIC) - lastActivateUsec_ < 500000;
-  if (!preserveInitialFirefoxMode)
+  if (!preserveInitialBrowserMode)
     modeCacheValid_ = false;
   // The caret baseline belongs to the previous focus — a fresh focus must
   // not compare against a foreign rect (blind cell-change fallback).
@@ -5379,6 +5374,10 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
        (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)) ||
       (a11yDocs &&
        (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput));
+  const bool initialBrowserStabilizing =
+      isWayland() && (isFirefoxOrSnap() || isChromiumBrowser(appProgram())) &&
+      viet_.getRawInput().empty() && lastActivateUsec_ > 0 &&
+      now(CLOCK_MONOTONIC) - lastActivateUsec_ < 500000;
   // Back-off: the a11y triggers above re-evaluate the mode at every word
   // boundary even when the verdict is stable (measured 31 detectAutoMode
   // runs for 16 keystrokes in one Chrome input).  Re-check at most every
@@ -5387,6 +5386,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // (modeDecisionPending_) is never backed off — its 2s window must
   // catch the caps upgrade in time.
   if (viet_.getRawInput().empty() && triggerHit &&
+      !initialBrowserStabilizing &&
       (modeDecisionPending_ || !modeCacheValid_ ||
        now(CLOCK_MONOTONIC) >= triggerBackoffUntilUsec_)) {
     modeCacheValid_ = false;
@@ -8288,6 +8288,20 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       // checks below; missing/stale snapshots still fall back to Backspace.
       const bool firefoxDocsUinput = !isWayland() && isFirefoxOrSnap() &&
                                      a11yGoogleDocsFocused();
+      // Chrome's first Wayland web-editor replacement is the least stable:
+      // the renderer can publish a valid surrounding snapshot before it is
+      // ready to apply deleteSurroundingText. Use the ordered uinput
+      // transaction once at the start of the focus session; later words keep
+      // the low-latency native path.
+      const bool firstChromiumWaylandReplace =
+          isWayland() && isChromiumBrowser(appProgram()) &&
+          !inChromiumAddressBar() && !addrBarHadFirstWord_;
+      if (firstChromiumWaylandReplace && useNativeSurroundingApi()) {
+        SKEY_DEBUG() << "Surr: first Chromium web replacement -> Uinput";
+        deleteViaBackspace(/*deferForwardCommit=*/false,
+                           /*forceUinput=*/true);
+        return;
+      }
       if (useNativeSurroundingApi() && !inChromiumAddressBar() &&
           !firefoxDocsUinput &&
           !engine_->isSurrDeleteBrokenApp(appProgram())) {
