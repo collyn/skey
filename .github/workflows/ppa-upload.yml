@@ -17,7 +17,10 @@ permissions:
 
 jobs:
   ppa-upload:
-    runs-on: ubuntu-22.04
+    # cargo vendor runs on the source-package runner.  Use the same baseline
+    # toolchain as the Ubuntu 24.04 Launchpad builder instead of relying on a
+    # runner image that does not provide Cargo by default.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
@@ -33,7 +36,7 @@ jobs:
           sudo apt-get update
           # This runner only prepares source packages. Launchpad installs
           # Build-Depends from debian/control in each target series.
-          sudo apt-get install -y devscripts debhelper dpkg-dev git rsync dput
+          sudo apt-get install -y devscripts debhelper dpkg-dev git rsync dput cargo
 
       - name: Resolve version
         run: |
