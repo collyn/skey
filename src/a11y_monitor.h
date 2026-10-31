@@ -206,6 +206,10 @@ public:
     // input (native-edit-context / inputarea): Chat when an ancestor is the
     // chat input part, CodeEditor otherwise.  Unknown for everything else.
     // Consumer must check snapshot freshness like any other a11y signal.
+    // Tests/diagnostics: walk the ancestors of every app, not only
+    // Chromium/Electron and Gecko runtimes (a fake AT-SPI app is neither).
+    void setWalkAllApps(bool all) { walkAllApps_.store(all, std::memory_order_relaxed); }
+
     enum class IdeWidget : int { Unknown = 0, Terminal, CodeEditor, Chat };
     IdeWidget ideWidget() const {
         return static_cast<IdeWidget>(ideWidget_.load(std::memory_order_acquire));
@@ -267,6 +271,7 @@ private:
     std::atomic<bool> sheetsEditorFocused_{false};
     std::atomic<bool> googleDocsDocFocused_{false};
     std::atomic<int> ideWidget_{0};
+    std::atomic<bool> walkAllApps_{false};
     mutable std::mutex sheetsMutex_;
     std::string sheetsBus_, sheetsPath_, sheetsNameBoxPath_, sheetsBusAddress_;
     DBusConnection *sheetsQueryBus_ = nullptr; // main-thread owned

@@ -1,6 +1,7 @@
 #include "a11y_monitor.h"
 #include "sheets_cell_tracker.h"
 #include "a11y_work_policy.h"
+#include "process_markers.h"
 
 #include <cctype>
 #include <cerrno>
@@ -746,6 +747,17 @@ static A11yMonitor::IdeWidget classifyIdeWidget(
     return W::CodeEditor;
 }
 
+// Chromium/Electron or Gecko runtime behind an AT-SPI connection — probed
+// through /proc/<pid>/root so flatpak browsers (exe inside their own mount
+// namespace) are recognized.  Unknown evidence counts as a web runtime.
+static bool processHasWebRuntime(int pid) {
+    if (pid <= 1) return true;
+    const std::string exe = skey::processExe(pid);
+    if (exe.empty()) return true;
+    const std::string root = "/proc/" + std::to_string(pid) + "/root";
+    return skey::exeHasChromiumMarkers(exe, root) || skey::exeHasGeckoMarker(exe, root);
+}
+
 static const char *ideWidgetName(A11yMonitor::IdeWidget widget) {
     switch (widget) {
     case A11yMonitor::IdeWidget::Terminal: return "terminal";
@@ -1244,6 +1256,7 @@ void A11yMonitor::threadFunc() {
     // while the bus lives, so the pid only goes when the name does.
     A11yAncestorCache ancestorCache;
     std::unordered_map<std::string, int> connectionPids;
+    std::unordered_map<std::string, bool> webRuntimes; // per connection
 
     using Clock = std::chrono::steady_clock;
     const auto kNever = Clock::time_point::max();
@@ -1418,6 +1431,7 @@ void A11yMonitor::threadFunc() {
                         pokeCache.removeBus(busName);
                         ancestorCache.removeBus(busName);
                         connectionPids.erase(busName);
+                        webRuntimes.erase(busName);
                     }
                     if (busName && oldOwner && oldOwner[0] &&
                         (!newOwner || !newOwner[0]))
@@ -1445,13 +1459,42 @@ void A11yMonitor::threadFunc() {
                     vivaldiAddressBarPath.clear();
                     textCache_.focus({}, {}, monotonicUsec());
                     int role = queryRole(bus, sender, path);
+                    int procId;
+                    if (auto known = connectionPids.find(sender);
+                        known != connectionPids.end()) {
+                        procId = known->second;
+                    } else {
+                        procId = queryConnectionPid(bus, sender);
+                        if (procId > 0) {
+                            if (connectionPids.size() >= 512) connectionPids.clear();
+                            connectionPids.emplace(sender, procId);
+                        }
+                    }
+                    // Every consumer of the ancestor walk (web document,
+                    // Docs title, Sheets/grid, FB signatures, IDE widget
+                    // ancestors) concerns a Chromium/Electron or Gecko
+                    // runtime.  Native Qt/GTK apps paid 2 blocking round
+                    // trips per level up to their root for nothing — skip
+                    // them.  Unknown pid / unreadable exe: walk as before.
+                    bool webRuntime = walkAllApps_.load(std::memory_order_relaxed);
+                    if (!webRuntime) {
+                        if (auto known = webRuntimes.find(sender); known != webRuntimes.end()) {
+                            webRuntime = known->second;
+                        } else {
+                            webRuntime = processHasWebRuntime(procId);
+                            if (webRuntimes.size() >= 512) webRuntimes.clear();
+                            webRuntimes.emplace(sender, webRuntime);
+                        }
+                    }
                     bool fbChatSig = false, fbCommentSig = false;
                     std::string documentPath, framePath;
                     std::vector<std::string> nearAncestors;
-                    bool hasDocWeb = hasDocumentWebAncestor(
+                    const bool hasDocWeb = webRuntime && hasDocumentWebAncestor(
                         bus, sender, path, fbChatSig, fbCommentSig,
                         documentPath, framePath, &nearAncestors,
                         &ancestorCache);
+                    if (!webRuntime)
+                        A11Y_LOG("  ancestor walk skipped: no web runtime (pid=%d)", procId);
                     // Chrome ≥150 reports the cell editor as either the
                     // combo box (11) or the inner ENTRY (79, single-line) —
                     // states alone cannot separate it from real inputs.
@@ -1567,17 +1610,6 @@ void A11yMonitor::threadFunc() {
                     // connection-owner pid from the daemon is the browser
                     // process itself, which is exactly what the engine's
                     // /proc marker checks need.
-                    int procId;
-                    if (auto known = connectionPids.find(sender);
-                        known != connectionPids.end()) {
-                        procId = known->second;
-                    } else {
-                        procId = queryConnectionPid(bus, sender);
-                        if (procId > 0) {
-                            if (connectionPids.size() >= 512) connectionPids.clear();
-                            connectionPids.emplace(sender, procId);
-                        }
-                    }
                     focusProcessId_.store(procId,
                                           std::memory_order_relaxed);
                     // Per-element pid (renderer pid on old Chrome) —

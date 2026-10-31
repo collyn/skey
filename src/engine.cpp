@@ -4,6 +4,7 @@
 #include "icon_resolver.h"
 #include "input_timing.h"
 #include "browser_identity.h"
+#include "process_markers.h"
 #include "x11_app_name.h"
 
 #include <fcitx-config/iniparser.h>
@@ -877,49 +878,18 @@ using skey::isChromiumBrowser;
 // Firefox fork as Chromium and its bare-caps sticky locked it to Uinput).
 // Renamed Electron shells are caught by chrome-sandbox /
 // chrome_crashpad_handler next to their own binary.
+
+// Binary-layout markers live in process_markers.h (shared with the a11y
+// monitor); the engine probes the host filesystem, as before.
 static bool exeHasChromiumMarkers(const std::string &exe) {
-  std::string lower = exe;
-  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-  if (lower.find("electron") != std::string::npos ||
-      lower.find("chrome") != std::string::npos ||
-      lower.find("chromium") != std::string::npos) {
-    return true;
-  }
-  size_t lastSlash = exe.rfind('/');
-  if (lastSlash != std::string::npos) {
-    std::string exeDir = exe.substr(0, lastSlash);
-    // Newer Electron builds renamed the crashpad handler to
-    // "browser_crashpad_handler" (ChatGPT on Mint ships only that one —
-    // the chrome_* check missed it and the app fell through every
-    // detection tier, 2026-09-08).
-    if (access((exeDir + "/chrome-sandbox").c_str(), F_OK) == 0 ||
-        access((exeDir + "/chrome_crashpad_handler").c_str(), F_OK) == 0 ||
-        access((exeDir + "/browser_crashpad_handler").c_str(), F_OK) == 0) {
-      return true;
-    }
-  }
-  return false;
+  return skey::exeHasChromiumMarkers(exe);
 }
 
 // Firefox-family marker: Gecko browsers always ship libxul.so next to
-// their main binary — a binary-layout check instead of hardcoding app
-// names (covers zen, librewolf, ...).
+// their main binary (covers zen, librewolf, ...).
 static bool processHasGeckoMarker(pid_t pid) {
-  char exeBuf[PATH_MAX];
-  std::string exePath = "/proc/" + std::to_string(pid) + "/exe";
-  ssize_t len = readlink(exePath.c_str(), exeBuf, sizeof(exeBuf) - 1);
-  if (len > 0) {
-    exeBuf[len] = '\0';
-    std::string exe(exeBuf);
-    size_t lastSlash = exe.rfind('/');
-    if (lastSlash != std::string::npos) {
-      std::string exeDir = exe.substr(0, lastSlash);
-      if (access((exeDir + "/libxul.so").c_str(), F_OK) == 0) {
-        return true;
-      }
-    }
-  }
-  return false;
+  const auto exe = skey::processExe(pid);
+  return !exe.empty() && skey::exeHasGeckoMarker(exe);
 }
 
 // Matches Chromium-family browsers AND Electron-based apps.
@@ -1043,16 +1013,8 @@ static bool processHasChromiumMarkers(pid_t pid) {
   // in a11yAppPid) — only its OWN binary is evidence.  Ancestors are
   // not checked: an app launched from an Electron terminal must not
   // inherit the parent's classification (zen false-positive).
-  char exeBuf[PATH_MAX];
-  std::string exePath = "/proc/" + std::to_string(pid) + "/exe";
-  ssize_t len = readlink(exePath.c_str(), exeBuf, sizeof(exeBuf) - 1);
-  if (len > 0) {
-    exeBuf[len] = '\0';
-    if (exeHasChromiumMarkers(exeBuf)) {
-      return true;
-    }
-  }
-  return false;
+  const auto exe = skey::processExe(pid);
+  return !exe.empty() && exeHasChromiumMarkers(exe);
 }
 
 // Check a KNOWN pid for a shell in its descendant chain (terminals spawn
@@ -7269,7 +7231,21 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               // on kernel 7.0's fast loopbacks.
               int realBackspaces = deleteLen;
               bool dismissGnomeAutofill = false;
-              if (gnomeRelayOmnibox() && isAutofillCertain()) {
+              // Chrome page search boxes (the new-tab Google box) inline-
+              // autocomplete like the omnibox: "cha" + selected suggestion
+              // tail, and the first BS only removes the selection ("chào"
+              // → "chaào", 2026-10-31).  Chrome Wayland reports that
+              // selection in the surrounding text.
+              const bool chromiumPageField = isWayland() &&
+                  isChromiumBrowser(appProgram()) && !inChromiumAddressBar();
+              if (chromiumPageField) {
+                const auto &surr = ic_->surroundingText();
+                SKEY_DEBUG() << "Uinput: page field before replace surrValid=" << surr.isValid()
+                             << " text='" << (surr.isValid() ? surr.text().substr(0, 60) : std::string())
+                             << "' cursor=" << (surr.isValid() ? surr.cursor() : 0)
+                             << " anchor=" << (surr.isValid() ? surr.anchor() : 0);
+              }
+              if ((gnomeRelayOmnibox() || chromiumPageField) && isAutofillCertain()) {
                 // The relay hides Chrome's identity, so the normal addrbar
                 // route above does not run. A selected suggestion consumes
                 // the first BS without deleting the typed suffix. Require
@@ -7283,8 +7259,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                                         oldComposed.size(), oldComposed) == 0;
                 if (dismissGnomeAutofill) {
                   ++realBackspaces;
-                  SKEY_DEBUG() << "Uinput: GNOME omnibox autofill, +1 BS (total="
-                               << realBackspaces << ")";
+                  SKEY_DEBUG() << "Uinput: " << (chromiumPageField ? "Chrome page" : "GNOME omnibox")
+                               << " autofill, +1 BS (total=" << realBackspaces << ")";
                 }
               }
               // Firefox URL bar: the first Backspace removes the selected

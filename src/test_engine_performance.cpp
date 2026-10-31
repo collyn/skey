@@ -1,4 +1,5 @@
 #include "engine.h"
+#include "process_markers.h"
 #include "input_timing.h"
 #include "uinput_delete_ack.h"
 #include "a11y_work_policy.h"
@@ -3070,6 +3071,43 @@ struct EnginePerformanceTest {
         monitor.focusGeneration_ = 0;
     }
 
+    // Chrome page search box (new-tab Google box) inline-autocompletes:
+    // "cha" + selected suggestion tail.  One extra Backspace removes the
+    // selection; without one the replacement leaves "chaào".
+    static void chromePageAutofill(Instance &instance, const std::string &text,
+                                   unsigned cursor, unsigned anchor, uint32_t expectedBs) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlags(0x72));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ =
+            state.cachedIsFirefoxBrowser_ = 0;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.modeCacheValid_ = true;
+        state.viet_.setRawInput("cha");
+        state.committedLen_ = 3;
+        input.surroundingText().setText(text, cursor, anchor);
+        int sockets[2];
+        check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+              "isolate the page-field replacement transport");
+        captureUinput(state, sockets[0]);
+        KeyEvent tone(&input, Key(FcitxKey_f));
+        state.keyEvent(tone);
+        uint32_t request[4] = {};
+        if (recv(sockets[1], request, sizeof(request), 0) != sizeof(request) ||
+            request[0] != expectedBs)
+            std::cerr << "page autofill text='" << text << "' cursor=" << cursor
+                      << " anchor=" << anchor << " sent=" << request[0] << '\n';
+        check(request[0] == expectedBs && state.pendingUinputCommit_ == "à",
+              "Chrome page field: one extra Backspace only for a selected autocomplete tail");
+        state.resetForCellChange();
+        close(sockets[1]);
+    }
+
     // A word typed in the omnibox must not continue in the page: the
     // omnibox churn guard swallows the focus cycle of a real click into a
     // Google Sheets cell, so the reset has to come from the a11y focus.
@@ -3967,6 +4005,33 @@ static void policies() {
           "ancestor entry expires after its TTL");
     ancestors.removeBus(":1.54");
     check(!ancestors.find(":1.54", "/a/10", 2000), "app leaving the bus drops its ancestors");
+
+    // Runtime markers, including a sandbox root (flatpak: the exe path is
+    // inside the app's own mount namespace, probed via /proc/<pid>/root).
+    {
+        char rootTemplate[] = "/tmp/skey-markers-XXXXXX";
+        const char *root = mkdtemp(rootTemplate);
+        check(root != nullptr, "create marker fixture root");
+        const auto touch = [&](const std::string &file) {
+            std::filesystem::create_directories(std::filesystem::path(root + file).parent_path());
+            std::ofstream(root + file) << "";
+        };
+        touch("/app/lib/firefox/libxul.so");
+        touch("/app/extra/apps/chrome-sandbox");
+        check(skey::exeHasGeckoMarker("/app/lib/firefox/firefox", root) &&
+                  !skey::exeHasGeckoMarker("/app/lib/firefox/firefox"),
+              "Gecko marker is found inside the sandbox root, not on the host path");
+        check(skey::exeHasChromiumMarkers("/app/extra/apps/renamed-shell", root) &&
+                  !skey::exeHasChromiumMarkers("/app/extra/apps/renamed-shell"),
+              "Chromium helper binaries are found inside the sandbox root");
+        check(skey::exeHasChromiumMarkers("/opt/google/chrome/chrome") &&
+                  skey::exeHasChromiumMarkers("/usr/lib/Electron/app"),
+              "a runtime named in the exe path needs no file probe");
+        check(!skey::exeHasChromiumMarkers("/usr/bin/konsole", root) &&
+                  !skey::exeHasGeckoMarker("/usr/bin/telegram-desktop", root),
+              "native apps carry no runtime marker");
+        std::filesystem::remove_all(root);
+    }
 }
 
 int main(int argc, char **argv) {
@@ -4354,6 +4419,15 @@ int main(int argc, char **argv) {
     {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::addrBarWordLeavesForPage(instance);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        // Autocomplete tail selected after the typed word: +1 BS.
+        fcitx::EnginePerformanceTest::chromePageAutofill(instance, "chatgpt.com", 3, 11, 3);
+        // No selection: the plain deletion plus anchor.
+        fcitx::EnginePerformanceTest::chromePageAutofill(instance, "cha", 3, 3, 2);
+        // A selection that does not reach the end is not an autocomplete.
+        fcitx::EnginePerformanceTest::chromePageAutofill(instance, "chatgpt.com", 3, 5, 2);
     }
     {
         fcitx::Instance instance(argc, argv);
