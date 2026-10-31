@@ -393,19 +393,30 @@ bool SKeyState::waylandBrowserAddressBarCaret() const {
   return true;
 }
 
-// Mutter relays browser input as "gnome-shell": the AT-SPI focus (fresh,
-// owned by a Chromium/Gecko process) is the only identity left — either
-// its browser UI or a field in the page (webContent).
+// Mutter relays browser input as "gnome-shell": the AT-SPI focus (owned by
+// a Chromium/Gecko process) is the only identity left — either its browser
+// UI or a field in the page (webContent).
 bool SKeyState::gnomeRelayBrowserFocus(bool gecko, bool webContent) const {
   if (!isWayland() || !(gnomeDesktop() || appProgram() == "gnome-shell"))
     return false;
   auto *monitor = engine_->a11yMonitor();
-  if (!monitor || !monitor->isFocusSnapshotFresh(5000000)) return false;
-  const int pid = monitor->focusProcessId();
-  if (pid <= 1 || !(webContent ? monitor->isWebContentFocused()
-                               : monitor->isBrowserUIFocused()))
+  A11yMonitor::FocusIdentity identity;
+  // Same focus, same verdict (see a11yBlind()): a 5s window turned long
+  // typing in a page field into the thin-caret omnibox guess.  The relay
+  // name cannot pass a11yFocusRelevant()'s owner check; the runtime
+  // markers of the focus owner below take its place.
+  if (!monitor || !monitor->focusIdentity(identity) || identity.processId <= 1)
     return false;
-  return gecko ? processHasGeckoMarker(pid) : processHasChromiumMarkers(pid);
+  // A click into a page focuses its document node first: its own role is
+  // document_web/frame while webDoc (an ANCESTOR test) reads 0 — that is
+  // the page, never browser UI (GNOME picked the Select transport there).
+  const int role = monitor->focusRole();
+  const bool document = role == 95 /*DOCUMENT_WEB*/ || role == 82 /*DOCUMENT_FRAME*/;
+  const bool page = monitor->isWebContentFocused() || document;
+  const bool browserUI = monitor->isBrowserUIFocused() && !document;
+  if (!(webContent ? page : browserUI)) return false;
+  return gecko ? processHasGeckoMarker(identity.processId)
+               : processHasChromiumMarkers(identity.processId);
 }
 
 bool SKeyState::gnomeRelayBrowserUI(bool gecko) const {
@@ -427,6 +438,10 @@ bool SKeyState::gnomeRelayOmnibox() const {
   // after Mutter relayed the context as gnome-shell.
   if (!(program.empty() || program == "gnome-shell")) return false;
   if (gnomeRelayBrowserUI(false) || gnomeRelayBrowserUI(true)) return true;
+  // The browser's own focus in the page (any age) rules out the omnibox:
+  // the caret shape below matches most thin-caret web fields.
+  if (gnomeRelayBrowserFocus(false, true) || gnomeRelayBrowserFocus(true, true))
+    return false;
   auto *monitor = engine_->a11yMonitor();
   if (monitor && monitor->isFocusSnapshotFresh(5000000)) return false;
   return gnomeOmniboxCaret();

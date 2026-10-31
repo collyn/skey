@@ -3076,6 +3076,33 @@ struct EnginePerformanceTest {
     // Chrome page search box (new-tab Google box) inline-autocompletes:
     // "cha" + selected suggestion tail.  One extra Backspace removes the
     // selection; without one the replacement leaves "chaào".
+    // A real process whose binary sits next to chrome-sandbox — the marker
+    // of renamed Chromium/Electron runtimes (processHasChromiumMarkers reads
+    // the live /proc/<pid>/exe).  Owns the a11y focus in relay tests.
+    struct ChromiumProcess {
+        pid_t pid = -1;
+        std::string dir;
+        ChromiumProcess() {
+            char dirTemplate[] = "/tmp/skey-relay-XXXXXX";
+            check(mkdtemp(dirTemplate) != nullptr, "create relay browser fixture");
+            dir = dirTemplate;
+            std::filesystem::copy_file("/bin/sleep", dir + "/browser");
+            std::ofstream(dir + "/chrome-sandbox") << "";
+            pid = fork();
+            if (pid == 0) {
+                execl((dir + "/browser").c_str(), "browser", "30", nullptr);
+                _exit(127);
+            }
+            check(pid > 0, "start relay browser fixture");
+            for (int i = 0; i < 200 && skey::processExe(pid) != dir + "/browser"; ++i)
+                usleep(1000);
+        }
+        ~ChromiumProcess() {
+            if (pid > 0) { kill(pid, SIGKILL); waitpid(pid, nullptr, 0); }
+            std::filesystem::remove_all(dir);
+        }
+    };
+
     // gnomeRelay: mutter relays Chrome as "gnome-shell" over the ibus
     // frontend; only the a11y focus (a Chromium process, web content)
     // identifies the page field.
@@ -3089,27 +3116,14 @@ struct EnginePerformanceTest {
         if (gnomeRelay) input.frontendName = "ibus";
         input.setFocusGroup(&group);
         input.setCapabilityFlags(CapabilityFlags(0x72));
-        // A real process whose binary sits next to chrome-sandbox — the
-        // marker of renamed Chromium/Electron runtimes — owns the focus.
-        char dirTemplate[] = "/tmp/skey-relay-XXXXXX";
-        pid_t browser = -1;
-        std::string browserDir;
+        std::unique_ptr<ChromiumProcess> browser;
         if (gnomeRelay) {
-            check(mkdtemp(dirTemplate) != nullptr, "create relay browser fixture");
-            browserDir = dirTemplate;
-            std::filesystem::copy_file("/bin/sleep", browserDir + "/browser");
-            std::ofstream(browserDir + "/chrome-sandbox") << "";
-            browser = fork();
-            if (browser == 0) {
-                execl((browserDir + "/browser").c_str(), "browser", "30", nullptr);
-                _exit(127);
-            }
-            check(browser > 0, "start relay browser fixture");
-            for (int i = 0; i < 200 && skey::processExe(browser) != browserDir + "/browser"; ++i)
-                usleep(1000);
+            browser = std::make_unique<ChromiumProcess>();
             engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
             engine.a11yMonitor_->focusInWebDoc_ = true;
-            engine.a11yMonitor_->focusProcessId_ = browser;
+            engine.a11yMonitor_->focusProcessId_ = browser->pid;
+            engine.a11yMonitor_->focusBus_ = ":1.35";
+            engine.a11yMonitor_->focusPath_ = "/page/search";
             engine.a11yMonitor_->focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
         }
         auto &state = *input.propertyFor(&engine.factory_);
@@ -3137,11 +3151,45 @@ struct EnginePerformanceTest {
               "Chrome page field: one extra Backspace only for a selected autocomplete tail");
         state.resetForCellChange();
         close(sockets[1]);
-        if (browser > 0) {
-            kill(browser, SIGKILL);
-            waitpid(browser, nullptr, 0);
-            std::filesystem::remove_all(browserDir);
-        }
+    }
+
+    // GNOME relays Chrome as "gnome-shell": the omnibox verdict comes from
+    // the browser's a11y focus.  A page document or a page field typed in
+    // past 5s must not fall back to the thin-caret guess (Select in pages).
+    static void gnomeRelayAddressBar(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+        auto &monitor = *engine.a11yMonitor_;
+        ChromiumProcess browser;
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "gnome-shell");
+        input.frontendName = "ibus";
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlags(0x110012));
+        input.setCursorRect(Rect(344, 86, 345, 104)); // omnibox-like thin caret
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "gnome-shell";
+        const auto focus = [&](int role, bool webDoc, uint64_t ageUsec) {
+            monitor.focusBus_ = ":1.35";
+            monitor.focusPath_ = "/focus/" + std::to_string(role);
+            monitor.focusProcessId_ = browser.pid;
+            monitor.focusRole_ = role;
+            monitor.focusInWebDoc_ = webDoc;
+            monitor.browserUIFocused_ = !webDoc;
+            monitor.focusSnapshotUsec_ = now(CLOCK_MONOTONIC) - ageUsec;
+        };
+        focus(79, false, 0);
+        check(state.gnomeRelayOmnibox(), "relay: the browser's own entry is the omnibox");
+        focus(79, false, 6000000);
+        check(state.gnomeRelayOmnibox(), "relay: the omnibox verdict holds past 5s on the same focus");
+        focus(95, false, 0);
+        check(!state.gnomeRelayOmnibox() && state.gnomeRelayBrowserFocus(false, true),
+              "relay: a focused page document is the page, not browser UI");
+        focus(79, true, 6000000);
+        check(!state.gnomeRelayOmnibox() && state.gnomeRelayBrowserFocus(false, true),
+              "relay: a page field typed in past 5s never falls back to the caret guess");
+        monitor.focusSnapshotUsec_ = 0;
+        check(state.gnomeRelayOmnibox(), "relay with a11y blind keeps the thin-caret fallback");
     }
 
     // A word typed in the omnibox must not continue in the page: the
@@ -4467,6 +4515,10 @@ int main(int argc, char **argv) {
         // GNOME: the same fields relayed as gnome-shell.
         fcitx::EnginePerformanceTest::chromePageAutofill(instance, "chatgpt.com", 3, 11, 3, true);
         fcitx::EnginePerformanceTest::chromePageAutofill(instance, "cha", 3, 3, 2, true);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::gnomeRelayAddressBar(instance);
     }
     {
         fcitx::Instance instance(argc, argv);
