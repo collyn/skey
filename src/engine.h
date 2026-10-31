@@ -102,6 +102,12 @@ private:
     bool inFirefoxAddressBar() const;
     bool x11AddressBarCaret() const;
     bool isFirefoxBrowserCached() const;
+    bool detectFirefoxBrowser() const;
+    bool detectFirefoxOrSnap() const;
+    bool detectWebKitGtk() const;
+    /// Engine-level (program-keyed, 60s) cache around a /proc-scanning
+    /// trait detector; falls through to `detect` for unnamed programs.
+    bool programTrait(char trait, const std::function<bool()> &detect) const;
     bool isX11Tabby() const;
     bool useOrderedUinputReplay() const;
     bool forwardUserBackspace() const;
@@ -150,6 +156,14 @@ private:
     mutable int a11yOwnerPid_ = -1;
     mutable std::string a11yOwnerProgram_;
     mutable bool a11yOwnerMatches_ = false;
+    /// Integrated terminal of a standalone Chromium app, latched to the a11y
+    /// focus generation: snapshot freshness (5s) expires while the user keeps
+    /// typing in the same terminal, the generation only on a new focus event.
+    bool ideTerminalFocused() const;
+    /// No trustworthy a11y focus for this app (see engine.cpp) — gates the
+    /// blind fallbacks.  Not the 5s freshness window.
+    bool a11yBlind() const;
+    mutable uint64_t ideTerminalGeneration_ = 0;
     /// GNOME Wayland + the omnibox's 1px-beam caret — the shift-select
     /// replacement target (see the consume path).
     bool gnomeOmniboxCaret() const;
@@ -214,6 +228,9 @@ private:
     bool a11yBrowserNonEntryNarrow() const;
     /// Integrated terminal in a standalone Chromium app (see engine.cpp).
     bool a11yChromiumTerminal() const;
+    /// xterm.js / Monaco widget kind of the focused input in a standalone
+    /// Chromium app (VS Code family); Unknown without a fresh snapshot.
+    A11yMonitor::IdeWidget a11yIdeWidget() const;
     /// Record a surrounding-text failure.  Returns true when the IC should
     /// downgrade to Uinput (surroundingTextFailed_): Chromium-family apps
     /// downgrade immediately (their forwarded keys are unreliable); other
@@ -610,6 +627,20 @@ private:
     // current word.  Rect updates lag one key, which is fine — it still
     // reflects the word-start region.  -1 = not recorded.
     int addrBarWordStartCaretX_ = -1;
+    // Text after the caret when the current word began (surrounding
+    // snapshot).  A mid-URL edit keeps that tail; a tail that CHANGED while
+    // the word was typed is Firefox's inline autofill selection (it also
+    // covers a word that replaced the whole selected URL after Ctrl+L).
+    std::string wordStartTail_;
+    bool wordStartTailKnown_ = false;
+    // The word in flight began in a browser address bar (decided at its
+    // first key, with a11y overriding stale Url caps).  See
+    // checkCellSelection(): a word cannot continue into the page.
+    bool wordStartedInAddrBar_ = false;
+    /// Firefox URL bar inline autofill selected after the typed word (see
+    /// engine.cpp) — shift-select would shrink it instead of selecting the
+    /// word.
+    bool firefoxUrlAutofillShown(const std::string &oldComposed) const;
     // True when the user pressed BackSpace since the current word began.
     // Gates the a11y desync guard — only backspace-driven edits can
     // desync the engine from the screen, so the guard must not run
@@ -771,6 +802,13 @@ private:
     // once per program, not once per focus (see isTerminalAppCached).
     std::string terminalCachedProgram_;
     int terminalCachedVerdict_ = -1; // -1 = unset
+    // Program-level cache for the binary-identity traits (Chromium/Gecko
+    // markers, Snap, WebKitGTK).  The per-IC caches are cleared on every
+    // reset()/activate(); without this a program the a11y pid cannot
+    // vouch for (flatpak app-ids, stale snapshots) re-ran full /proc
+    // scans (~8ms each) on every focus.  Keyed by trait + program.
+    struct ProgramTrait { bool value; uint64_t atUsec; };
+    std::unordered_map<std::string, ProgramTrait> programTraits_;
     bool chromiumHadBareCaps_ = false;
 
     std::set<std::string> surrDeleteBrokenApps_;

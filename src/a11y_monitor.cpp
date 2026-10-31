@@ -484,31 +484,53 @@ static constexpr int FB_CHAT_ROLE_A = 87;
 static constexpr int FB_CHAT_ROLE_B = 16;
 static constexpr int FB_COMMENT_ROLE = 39;
 
+// Nearest ancestors recorded by the walk below, for the IDE widget
+// classification (VS Code chat sits 3-4 levels above its Monaco input).
+static constexpr size_t kIdeAncestorDepth = 8;
+
 static bool hasDocumentWebAncestor(DBusConnection *bus,
                                    const char *sender,
                                    const char *path,
                                    bool &chatSig, bool &commentSig,
                                    std::string &documentPath,
-                                   std::string &framePath) {
+                                   std::string &framePath,
+                                   std::vector<std::string> *ancestors = nullptr,
+                                   A11yAncestorCache *cache = nullptr) {
     std::string curSender = sender;
     std::string curPath = path;
     chatSig = false;
     commentSig = false;
     int prevRole = -1;
 
+    const uint64_t walkStamp = monotonicUsec();
     for (int depth = 0; depth < MAX_ANCESTOR_DEPTH; ++depth) {
         std::string parentSender, parentPath;
-        if (!queryParent(bus, curSender.c_str(), curPath.c_str(),
-                         parentSender, parentPath))
+        int role = -1;
+        const auto *known = cache ? cache->find(curSender, curPath, walkStamp) : nullptr;
+        if (known) {
+            parentSender = known->parentBus;
+            parentPath = known->parentPath;
+            role = known->parentRole;
+        } else if (!queryParent(bus, curSender.c_str(), curPath.c_str(),
+                                parentSender, parentPath)) {
             break;
+        }
 
         if (parentPath == "/org/a11y/atspi/null" ||
             parentPath == "/org/a11y/atspi/accessible/root")
             break;
 
-        int role = queryRole(bus, parentSender.c_str(), parentPath.c_str());
-        A11Y_LOG("  ancestor[%d]: role=%d path=%s", depth, role,
-                 parentPath.c_str());
+        if (ancestors && ancestors->size() < kIdeAncestorDepth &&
+            parentSender == sender)
+            ancestors->push_back(parentPath);
+        if (!known) {
+            role = queryRole(bus, parentSender.c_str(), parentPath.c_str());
+            // A failed role query (-1) is not cached: the next walk retries.
+            if (cache && role >= 0)
+                cache->put(curSender, curPath, {parentSender, parentPath, role, walkStamp});
+        }
+        A11Y_LOG("  ancestor[%d]: role=%d path=%s%s", depth, role,
+                 parentPath.c_str(), known ? " (cached)" : "");
         if (prevRole == FB_CHAT_ROLE_A && role == FB_CHAT_ROLE_B)
             chatSig = true;
         if (role == FB_COMMENT_ROLE)
@@ -642,8 +664,11 @@ static std::string queryName(DBusConnection *bus, const char *sender,
     return name;
 }
 
+// Returns the accessible "id" attribute; `cls`, when given, receives the
+// "class" attribute from the same GetAttributes reply (no extra round trip).
 static std::string queryAccessibleId(DBusConnection *bus, const char *sender,
-                                     const char *path) {
+                                     const char *path,
+                                     std::string *cls = nullptr) {
     DBusError err;
     dbus_error_init(&err);
     DBusMessage *msg = dbus_message_new_method_call(
@@ -669,7 +694,9 @@ static std::string queryAccessibleId(DBusConnection *bus, const char *sender,
             }
             if (key && value && strcmp(key, "id") == 0) {
                 found = value;
-                break;
+                if (!cls) break;
+            } else if (key && value && cls && strcmp(key, "class") == 0) {
+                *cls = value;
             }
             dbus_message_iter_next(&array);
         }
@@ -677,6 +704,55 @@ static std::string queryAccessibleId(DBusConnection *bus, const char *sender,
     if (reply) dbus_message_unref(reply);
     dbus_error_free(&err);
     return found;
+}
+
+// Classify the focused input of an xterm.js / Monaco based app from its DOM
+// class (verified 2026-10-30 on VS Code + Tabby, Wayland):
+//   terminal  — <textarea class="xterm-helper-textarea">
+//   editor    — <div class="native-edit-context"> (older builds: textarea
+//               "inputarea"), ancestor "editor-instance"
+//   chat      — the same Monaco input, ancestor "interactive-input-part"
+//               inside id "workbench.panel.chat"
+// Ancestor classes are read only for Monaco inputs, at most
+// kIdeAncestorDepth short (30ms) GetAttributes calls.
+static A11yMonitor::IdeWidget classifyIdeWidget(
+        DBusConnection *bus, const char *sender, const std::string &cls,
+        const std::vector<std::string> &ancestors) {
+    using W = A11yMonitor::IdeWidget;
+    if (cls.find("xterm-helper-textarea") != std::string::npos)
+        return W::Terminal;
+    auto hasToken = [](const std::string &value, const char *token) {
+        const size_t length = strlen(token);
+        for (size_t at = value.find(token); at != std::string::npos;
+             at = value.find(token, at + 1)) {
+            const bool startOk = at == 0 || value[at - 1] == ' ';
+            const bool endOk = at + length == value.size() || value[at + length] == ' ';
+            if (startOk && endOk) return true;
+        }
+        return false;
+    };
+    if (!hasToken(cls, "native-edit-context") && !hasToken(cls, "inputarea"))
+        return W::Unknown;
+    for (const auto &ancestor : ancestors) {
+        std::string ancestorClass;
+        const std::string id =
+            queryAccessibleId(bus, sender, ancestor.c_str(), &ancestorClass);
+        if (hasToken(ancestorClass, "interactive-input-part") ||
+            id == "workbench.panel.chat")
+            return W::Chat;
+        if (hasToken(ancestorClass, "editor-instance"))
+            return W::CodeEditor;
+    }
+    return W::CodeEditor;
+}
+
+static const char *ideWidgetName(A11yMonitor::IdeWidget widget) {
+    switch (widget) {
+    case A11yMonitor::IdeWidget::Terminal: return "terminal";
+    case A11yMonitor::IdeWidget::CodeEditor: return "editor";
+    case A11yMonitor::IdeWidget::Chat: return "chat";
+    default: return "-";
+    }
 }
 
 static std::string queryDocumentUri(DBusConnection *bus, const char *sender,
@@ -981,6 +1057,7 @@ void A11yMonitor::clearFocusFlags() {
     textEntryFocused_.store(false);
     sheetsEditorFocused_.store(false);
     googleDocsDocFocused_.store(false);
+    ideWidget_.store(0);
 }
 
 void A11yMonitor::beginFocus(const char *sender, const char *path) {
@@ -1066,9 +1143,38 @@ void A11yMonitor::threadFunc() {
 
     registerEvent("object:state-changed:focused");
     registerEvent("focus:");
-    registerEvent("object:active-descendant-changed");
-    registerEvent("object:selection-changed");
-    registerEvent("object:property-change:accessible-name");
+    // AT-SPI toolkits only emit the event types some client registered —
+    // a session-wide registration makes EVERY app (Chrome, Telegram, KDE)
+    // serialize selection / active-descendant / name changes of every list
+    // and menu, and wakes this thread for each.  Only a focused web grid
+    // needs the cell-change events, and the accessible-name one is a log
+    // aid: register them for exactly that span (fire-and-forget, so a busy
+    // registry never stalls focus analysis).
+    auto sendRegistry = [&](const char *member, const char *eventName) {
+        DBusMessage *msg = dbus_message_new_method_call(
+            "org.a11y.atspi.Registry", "/org/a11y/atspi/registry",
+            "org.a11y.atspi.Registry", member);
+        if (!msg) return;
+        dbus_message_append_args(msg, DBUS_TYPE_STRING, &eventName, DBUS_TYPE_INVALID);
+        dbus_message_set_no_reply(msg, TRUE);
+        dbus_connection_send(bus, msg, nullptr);
+        dbus_message_unref(msg);
+    };
+    bool cellEventsRegistered = false, nameEventsRegistered = false;
+    auto setCellEvents = [&](bool cell, bool name) {
+        if (cell != cellEventsRegistered) {
+            for (const char *event : {"object:active-descendant-changed",
+                                      "object:selection-changed"})
+                sendRegistry(cell ? "RegisterEvent" : "DeregisterEvent", event);
+            cellEventsRegistered = cell;
+            A11Y_LOG("Cell events %s", cell ? "registered" : "deregistered");
+        }
+        if (name != nameEventsRegistered) {
+            sendRegistry(name ? "RegisterEvent" : "DeregisterEvent",
+                         "object:property-change:accessible-name");
+            nameEventsRegistered = name;
+        }
+    };
 
     dbus_bus_add_match(bus,
                        "type='signal',"
@@ -1133,6 +1239,11 @@ void A11yMonitor::threadFunc() {
     // periodic sweep as a fallback.
     A11yPokeCache pokeCache;
     pokeA11yApps(bus, pokeCache);
+    // Focus-walk caches (monitor thread only): ancestors already resolved,
+    // and the owner pid per connection — unique bus names are never reused
+    // while the bus lives, so the pid only goes when the name does.
+    A11yAncestorCache ancestorCache;
+    std::unordered_map<std::string, int> connectionPids;
 
     using Clock = std::chrono::steady_clock;
     const auto kNever = Clock::time_point::max();
@@ -1303,8 +1414,11 @@ void A11yMonitor::threadFunc() {
                                           DBUS_TYPE_STRING, &oldOwner,
                                           DBUS_TYPE_STRING, &newOwner,
                                           DBUS_TYPE_INVALID)) {
-                    if (busName && oldOwner && oldOwner[0])
+                    if (busName && oldOwner && oldOwner[0]) {
                         pokeCache.removeBus(busName);
+                        ancestorCache.removeBus(busName);
+                        connectionPids.erase(busName);
+                    }
                     if (busName && oldOwner && oldOwner[0] &&
                         (!newOwner || !newOwner[0]))
                         invalidateFocus(busName);
@@ -1333,20 +1447,36 @@ void A11yMonitor::threadFunc() {
                     int role = queryRole(bus, sender, path);
                     bool fbChatSig = false, fbCommentSig = false;
                     std::string documentPath, framePath;
+                    std::vector<std::string> nearAncestors;
                     bool hasDocWeb = hasDocumentWebAncestor(
                         bus, sender, path, fbChatSig, fbCommentSig,
-                        documentPath, framePath);
+                        documentPath, framePath, &nearAncestors,
+                        &ancestorCache);
                     // Chrome ≥150 reports the cell editor as either the
                     // combo box (11) or the inner ENTRY (79, single-line) —
                     // states alone cannot separate it from real inputs.
                     // The accessible-id is the only reliable discriminator.
-                    const std::string entryId = hasDocWeb && (role == 11 || role == 79)
-                        ? queryAccessibleId(bus, sender, path) : std::string();
-                    const bool sheetsEditor = entryId == "waffle-rich-text-editor";
+                    // Text entries are also read outside web documents: the
+                    // IDE terminal textarea can report webDoc=0.  The class
+                    // comes from the same GetAttributes reply.
+                    std::string entryClass;
+                    const bool textInputRole = role == 79 || role == 61;
+                    const std::string entryId =
+                        (hasDocWeb && role == 11) || textInputRole
+                            ? queryAccessibleId(bus, sender, path, &entryClass)
+                            : std::string();
+                    const auto ideWidget = textInputRole
+                        ? classifyIdeWidget(bus, sender, entryClass, nearAncestors)
+                        : IdeWidget::Unknown;
+                    ideWidget_.store(static_cast<int>(ideWidget),
+                                     std::memory_order_release);
+                    const bool sheetsEditor = hasDocWeb && (role == 11 || role == 79) &&
+                                              entryId == "waffle-rich-text-editor";
                     // Vivaldi renders its browser UI as a web document and
                     // reports the address field as plain text, without Url.
                     // Require the internal origin too: a page can reuse the id.
-                    const bool vivaldiAddressBar = role == 79 && entryId == "urlFieldInput" &&
+                    const bool vivaldiAddressBar = hasDocWeb && role == 79 &&
+                        entryId == "urlFieldInput" &&
                         queryDocumentUri(bus, sender, documentPath.c_str()).rfind(
                             "chrome-extension://mpognobbkildjkofajifpdfhcoklimli/", 0) == 0;
                     std::string nameBox;
@@ -1422,6 +1552,8 @@ void A11yMonitor::threadFunc() {
                         cellContainerBus.clear();
                         cellContainerPath.clear();
                     }
+                    setCellEvents(!cellContainerPath.empty(),
+                                  sheetsEditor && debug_.load(std::memory_order_relaxed));
                     focusFbChatSig_.store(fbChatSig,
                                           std::memory_order_relaxed);
                     focusFbCommentSig_.store(fbCommentSig,
@@ -1435,7 +1567,17 @@ void A11yMonitor::threadFunc() {
                     // connection-owner pid from the daemon is the browser
                     // process itself, which is exactly what the engine's
                     // /proc marker checks need.
-                    int procId = queryConnectionPid(bus, sender);
+                    int procId;
+                    if (auto known = connectionPids.find(sender);
+                        known != connectionPids.end()) {
+                        procId = known->second;
+                    } else {
+                        procId = queryConnectionPid(bus, sender);
+                        if (procId > 0) {
+                            if (connectionPids.size() >= 512) connectionPids.clear();
+                            connectionPids.emplace(sender, procId);
+                        }
+                    }
                     focusProcessId_.store(procId,
                                           std::memory_order_relaxed);
                     // Per-element pid (renderer pid on old Chrome) —
@@ -1492,10 +1634,12 @@ void A11yMonitor::threadFunc() {
                     }
                     A11Y_LOG("Focus: webDoc=%d role=%d(%s) editable=%d "
                              "multiline=%d singleLine=%d states=[%s] "
-                             "pid=%d elemPid=%d path=%s vivaldiAddrBar=%d",
+                             "pid=%d elemPid=%d path=%s vivaldiAddrBar=%d "
+                             "ideWidget=%s",
                              hasDocWeb, role, roleName(role), editable,
                              multiline, singleLine, states.c_str(), procId,
-                             elemPid, path, vivaldiAddressBar);
+                             elemPid, path, vivaldiAddressBar,
+                             ideWidgetName(ideWidget));
                     // Only browser UI consumes text snapshots. Do not read
                     // passwords or web documents while the engine's focus
                     // verdict is still catching up with this event.

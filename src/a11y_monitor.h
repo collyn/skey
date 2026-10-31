@@ -200,6 +200,17 @@ public:
         return googleDocsDocFocused_.load(std::memory_order_acquire);
     }
 
+    // Widget kind inside an xterm.js / Monaco based app (VS Code family,
+    // Tabby), from the focused node's DOM "class" attribute — not localized,
+    // unlike the accessible name.  Terminal: xterm-helper-textarea.  Monaco
+    // input (native-edit-context / inputarea): Chat when an ancestor is the
+    // chat input part, CodeEditor otherwise.  Unknown for everything else.
+    // Consumer must check snapshot freshness like any other a11y signal.
+    enum class IdeWidget : int { Unknown = 0, Terminal, CodeEditor, Chat };
+    IdeWidget ideWidget() const {
+        return static_cast<IdeWidget>(ideWidget_.load(std::memory_order_acquire));
+    }
+
     // Main-thread only. Read the current Sheets cell before processing a key,
     // using a separate connection so the focus thread's queue cannot delay it.
     // True means Sheets is focused; an empty cell means the query failed or
@@ -255,6 +266,7 @@ private:
     std::atomic<uint64_t> cellSelectionSerial_{0};
     std::atomic<bool> sheetsEditorFocused_{false};
     std::atomic<bool> googleDocsDocFocused_{false};
+    std::atomic<int> ideWidget_{0};
     mutable std::mutex sheetsMutex_;
     std::string sheetsBus_, sheetsPath_, sheetsNameBoxPath_, sheetsBusAddress_;
     DBusConnection *sheetsQueryBus_ = nullptr; // main-thread owned

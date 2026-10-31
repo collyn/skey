@@ -10,6 +10,7 @@
 #include <cerrno>
 #include <iostream>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -71,7 +72,10 @@ public:
     explicit TestInput(fcitx::InputContextManager &manager, const std::string &program = "skey-test")
         : InputContext(manager, program) { created(); }
     ~TestInput() override { destroy(); }
-    const char *frontend() const override { return "test"; }
+    // Frontend-keyed policies (input_field_policy.h) need the real one —
+    // e.g. Tabby and VS Code talk D-Bus.
+    const char *frontend() const override { return frontendName.c_str(); }
+    std::string frontendName = "test";
     std::vector<std::string> commits;
     struct Forward { fcitx::Key key; bool release; int time; };
     std::vector<Forward> forwarded;
@@ -175,6 +179,14 @@ struct EnginePerformanceTest {
         check(!user.accepted(), "unsent cancelled keys must not swallow future user Backspace");
     }
 
+    // Queued keys replay behind a commit-dispatch timer (replaySettledKeys,
+    // 2026-10-28) that only the event loop fires — run it inline.
+    static void drainSettledReplay(SKeyState &state) {
+        for (int i = 0; i < 8 && (state.settledReplayTimer_ || !state.settledKeys_.empty()); ++i) {
+            state.settledReplayTimer_.reset();
+            state.replaySettledKeys();
+        }
+    }
     static void captureUinput(SKeyState &state, int fd) {
         auto owned = std::shared_ptr<int>(new int(fd), [](int *p) { close(*p); delete p; });
         state.uinputTestSend_ = [fd, owned](int count, uint32_t flags, uint32_t pace) {
@@ -287,6 +299,13 @@ struct EnginePerformanceTest {
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::SurroundingText;
         state.addrBarUiVerdictAtUsec_ = 0;
+        // Native X11 Chromium page editors in Auto ride the native transport
+        // on their own (editRoute, 2026-10-28) — independent of the omnibox
+        // preference.  Pin Surrounding Text to test the locality itself.
+        check(state.useNativeBackspaceTransport() == !wayland,
+              "Auto: native X11 Chromium web content rides the native transport, Wayland does not");
+        engine.config_.outputMode.setValue(SKeyOutputMode::SurroundingText);
+        state.modeCacheValid_ = false;
         check(!state.useNativeBackspaceTransport(), "web content keeps its existing Surrounding Text transport");
         close(sockets[1]);
     }
@@ -307,11 +326,14 @@ struct EnginePerformanceTest {
         close(fd);
         check(mapping != MAP_FAILED, "map toolkit fixture");
         state.cachedIsWebKitGtk_ = -1;
+        // The engine-level WebKitGTK verdict lives 5s; simulate its expiry.
+        engine.programTraits_.clear();
         check(state.webkitGtkSurroundingFallback(), "loaded toolkit is recognized without application-name exceptions");
         munmap(mapping, 4096);
         unlink(path.c_str());
         rmdir(directory);
         state.cachedIsWebKitGtk_ = -1;
+        engine.programTraits_.clear();
         check(!state.webkitGtkSurroundingFallback(), "unmapped toolkit must not leave a positive detector result after refresh");
     }
     static void webkitSurrounding(Instance &instance, bool wayland, bool perApp,
@@ -566,6 +588,7 @@ struct EnginePerformanceTest {
                         if (!deletion.accepted()) input.backspace();
                     }
                     state.finishUinputSettle(0, 0);
+                    drainSettledReplay(state);
                     if (reversed) {
                         check(state.settledKeys_.empty() && state.bufferedUinputKeys_.empty(),
                               "GNOME replacement drains the queued append exactly once");
@@ -573,6 +596,7 @@ struct EnginePerformanceTest {
                         KeyEvent append(&input, Key(FcitxKey_o));
                         state.keyEvent(append);
                         if (!append.accepted()) input.text += "o";
+                        drainSettledReplay(state);
                     }
                     check(input.text == prefix + "chào", "GNOME replacement produces chào without leftover a or lost prefix");
                     state.resetForCellChange();
@@ -678,10 +702,12 @@ struct EnginePerformanceTest {
                 check(state.uinputDeleteAck_.start(prefix + "ca", cursor, cursor, "ca", 1,
                           now(CLOCK_MONOTONIC) - 200000, 150000), "simulate expired GNOME deletion acknowledgement");
                 state.finishUinputSettle(0, 0);
+                drainSettledReplay(state);
                 if (!queued) {
                     KeyEvent append(&input, Key(FcitxKey_c));
                     state.keyEvent(append);
                     if (!append.accepted()) input.raw(append.key());
+                    drainSettledReplay(state);
                 }
                 input.flush();
                 check(input.text == prefix + "các" && input.droppedRaw == 0,
@@ -786,6 +812,9 @@ struct EnginePerformanceTest {
                     }
                     state.finishUinputSettle(0, 0);
                 }
+                // Plain keys can queue behind the previous commit's
+                // dispatch timer too — drain after every press.
+                drainSettledReplay(state);
                 if (publish) input.publish();
             };
             auto type = [&](const std::string &keys) {
@@ -1138,12 +1167,21 @@ struct EnginePerformanceTest {
         state.addrBarTriggerKeyTime_ = timestamped ? 1000 : 0;
         state.addrBarGuardArmedUsec_ = now(CLOCK_MONOTONIC);
         state.addrBarTriggerDeadline_ = now(CLOCK_MONOTONIC) + 100000;
+        // The fresh repeat is the field's first Chromium web replacement,
+        // which rides the uinput transport: give it one (without it the
+        // injector rejects the request and the word resets — the guard
+        // under test is never reached).
+        int sockets[2];
+        check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+              "isolate the repeated-letter replacement transport");
+        captureUinput(state, sockets[0]);
         KeyEvent event(&input, Key(FcitxKey_a), false,
                        timestamped ? (replay ? 1000 : 1020) : 0);
         state.keyEvent(event);
         check(state.viet_.getComposed() == (!replay && timestamped ? "đâ" : "đa"),
               "Wayland fresh repeat composes aa; identical or missing timestamps retain guard");
         state.resetForCellChange();
+        close(sockets[1]);
     }
 
     static void x11AckBeforeAnchor(Instance &instance, bool firefox) {
@@ -1222,6 +1260,7 @@ struct EnginePerformanceTest {
         SKeyEngine engine(&instance, false);
         FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
         TestInput input(instance.inputContextManager(), program);
+        input.frontendName = "dbus";
         input.setFocusGroup(&group);
         input.setCapabilityFlags(CapabilityFlag::Preedit);
         input.setCursorRect(Rect(700, 480, 700, 508));
@@ -1264,12 +1303,13 @@ struct EnginePerformanceTest {
             state.settledReplayTimer_.reset(); state.replaySettledKeys();
             state.settledReplayTimer_.reset(); state.replaySettledKeys();
             state.settledReplayTimer_.reset(); state.replaySettledKeys();
-            check(input.commits == std::vector<std::string>{"ự"} && input.forwarded.size() == 3 &&
-                      input.forwarded[0].key.check(FcitxKey_space) && !input.forwarded[0].release &&
-                      input.forwarded[1].key.check(FcitxKey_n) && !input.forwarded[1].release &&
-                      input.forwarded[2].key.check(FcitxKey_n) && input.forwarded[2].release &&
-                      input.forwarded[1].time == 2010 && input.forwarded[2].time == 2011,
-                  "Tabby forwards queued ASCII keys and releases with original identity and order");
+            // Printable replay stays on the commit channel for composition
+            // clients (replaySettledKeys, 2026-10-28): raw keys and commits
+            // use different queues, so a forwarded space could overtake the
+            // replacement.  Printable releases are not re-sent.
+            check(input.commits == std::vector<std::string>({"ự", " ", "n"}) &&
+                      input.forwarded.empty(),
+                  "Tabby replays queued ASCII keys in order on the commit channel");
         }
         state.resetForCellChange();
         if (!wayland && program == "tabby" && deletes == 1 && overrideMs < 0) {
@@ -1856,6 +1896,9 @@ struct EnginePerformanceTest {
         public:
             CompositionInput(InputContextManager &manager, const char *program)
                 : TestInput(manager, program) {}
+            // The composition policy (input_field_policy.h) is keyed on the
+            // frontend: an X11 embedded Chromium client (Tabby) talks D-Bus.
+            const char *frontend() const override { return "dbus"; }
             std::string composition, visible;
             std::vector<std::string> events;
         protected:
@@ -1892,11 +1935,17 @@ struct EnginePerformanceTest {
         state.cachedIsChromium_ = firefox ? 0 : 1;
         state.cachedIsFirefoxOrSnap_ = firefox ? 1 : 0;
         state.cachedIsTerminalApp_ = 0;
-        const bool expected = preeditCap && !url && !omnibox && sheets != 1 &&
-            ((!wayland && std::string(program) == "tabby") ||
-             (replacement && ((std::string(program) == "google-chrome") ||
-              (!wayland && firefox && sheets != 3)))) &&
-            (std::string(program) == "google-chrome" || utf8::length(suffix) == 1);
+        // Native X11 embedded Chromium clients (Tabby, VS Code) compose every
+        // commit — input_field_policy.h usesCompositionCommits(), keyed on
+        // the runtime and frontend, not on Url or suffix length (2026-10-28).
+        const std::string name(program);
+        const bool compositionClient = !wayland && preeditCap && sheets != 1 &&
+                                       (name == "tabby" || name == "code");
+        const bool expected = compositionClient ||
+            (preeditCap && !url && !omnibox && sheets != 1 &&
+             replacement && (name == "google-chrome" ||
+                             (!wayland && firefox && sheets != 3)) &&
+             (name == "google-chrome" || utf8::length(suffix) == 1));
         check(state.commitText(suffix, replacement), "replacement commit issued");
         check(input.commits == std::vector<std::string>{suffix}, "single suffix commit without retries");
         if (input.visible != (expected ? suffix : ""))
@@ -2284,6 +2333,11 @@ struct EnginePerformanceTest {
             const auto request = cache.beginPoll(stamp);
             check(request.has_value(), "prepare pre-word omnibox snapshot");
             cache.finishPoll(*request, true, "http://127.0.0.1/", 16, 16, stamp);
+            // The text snapshot is only trusted with a live focus snapshot
+            // of this app (a11yFocusRelevant, 2026-10-28) — a stale one from
+            // another Chrome window must not steer the replacement.
+            engine.a11yMonitor_->browserUIFocused_ = true;
+            engine.a11yMonitor_->focusSnapshotUsec_ = stamp;
         }
         state.scheduleAddrBarReplacement(2, "ạn", 3, FcitxKey_j, 1100,
                                          "bạn", true, "ban");
@@ -2429,6 +2483,12 @@ struct EnginePerformanceTest {
         TestInput input(instance.inputContextManager(), program);
         input.setFocusGroup(&group);
         input.setCursorRect(Rect(200, 54, 201, 72));
+        if (program == "tabby") {
+            // Tabby is a D-Bus composition client (preedit-capable): its
+            // ordered queue comes from that policy, not from an omnibox.
+            input.frontendName = "dbus";
+            input.setCapabilityFlags(CapabilityFlag::Preedit);
+        }
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = program;
         state.cachedIsChromium_ = 1;
@@ -2620,6 +2680,9 @@ struct EnginePerformanceTest {
         SKeyEngine engine(&instance, false);
         engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
         engine.a11yMonitor_->googleDocsDocFocused_ = docs;
+        // The Docs verdict needs a live focus snapshot of this app
+        // (a11yGoogleDocsFocused → a11yFocusRelevant).
+        if (docs) engine.a11yMonitor_->focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
         FocusGroup group("x11:test", instance.inputContextManager());
         TestInput input(instance.inputContextManager(), "firefox");
         input.setFocusGroup(&group);
@@ -2938,6 +3001,532 @@ struct EnginePerformanceTest {
               "browser, non-Electron and X11 native deletion policy must remain unchanged");
     }
 
+    // VS Code family: the DOM class of the focused input (xterm.js helper
+    // textarea / Monaco input) decides terminal and editor regardless of
+    // stale chat hints in the caps; the chat input keeps the caps verdict.
+    static void ideWidgetAutoMode(Instance &instance, bool wayland) {
+        using W = A11yMonitor::IdeWidget;
+        SKeyEngine engine(&instance, false);
+        engine.config_.outputMode.setValue(SKeyOutputMode::Auto);
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+        auto &monitor = *engine.a11yMonitor_;
+        FocusGroup group(wayland ? "wayland:test" : "x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "code");
+        input.setFocusGroup(&group);
+        // Weak hint carried over from the chat panel (UppercaseWords).
+        input.setCapabilityFlags(CapabilityFlags(0x80072));
+        auto &state = *input.propertyFor(&engine.factory_);
+        const auto detect = [&](W widget) {
+            monitor.ideWidget_ = static_cast<int>(widget);
+            monitor.focusInWebDoc_ = true;
+            monitor.focusRole_ = 79;
+            monitor.textEntryFocused_ = true;
+            monitor.focusSingleLine_ = true;
+            monitor.focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
+            state.cachedProgram_ = "code";
+            state.cachedIsChromium_ = 1;
+            state.cachedIsTerminalApp_ = state.cachedIsFirefoxOrSnap_ =
+                state.cachedIsFirefoxBrowser_ = 0;
+            state.focusSawContentHints_ = true;
+            state.modeCacheValid_ = false;
+            return state.detectAutoMode();
+        };
+        const auto injecting = [](SKeyOutputMode mode) {
+            return mode == SKeyOutputMode::Uinput || mode == SKeyOutputMode::Native;
+        };
+        check(injecting(detect(W::Terminal)),
+              "xterm.js terminal class routes Uinput despite stale chat hints");
+        check(state.a11yChromiumTerminal(), "terminal class counts as integrated terminal at webDoc=1");
+        check(injecting(detect(W::CodeEditor)),
+              "Monaco code editor routes Uinput despite stale chat hints");
+        check(detect(W::Chat) == SKeyOutputMode::SurroundingText,
+              "IDE chat input keeps the caps-based SurroundingText verdict");
+        check(!state.a11yChromiumTerminal(), "chat input is never an integrated terminal");
+        monitor.focusSnapshotUsec_ = 0;
+        check(state.a11yIdeWidget() == W::Unknown, "stale snapshot never yields a widget kind");
+
+        // Terminal latch: typing past the 5s freshness window in the same
+        // terminal must not turn into "a11y blind" (delete-ack repair ate
+        // real characters there).
+        monitor.ideWidget_ = static_cast<int>(W::Terminal);
+        monitor.focusBus_ = ":1.54";
+        monitor.focusPath_ = "/org/a11y/atspi/accessible/49128";
+        monitor.focusProcessId_ = 4242;
+        monitor.focusGeneration_ = 7;
+        monitor.focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
+        state.a11yOwnerGeneration_ = 7;
+        state.a11yOwnerPid_ = 4242;
+        state.a11yOwnerProgram_ = "code";
+        state.a11yOwnerMatches_ = true;
+        check(state.ideTerminalFocused(), "fresh terminal focus latches");
+        monitor.focusSnapshotUsec_ = now(CLOCK_MONOTONIC) - 6000000;
+        check(state.a11yChromiumTerminal() && state.ideTerminalFocused(),
+              "terminal verdict survives snapshot expiry on the same focus");
+        monitor.focusGeneration_ = 8;
+        check(!state.ideTerminalFocused(), "a new focus event drops the terminal latch");
+        monitor.focusGeneration_ = 7;
+        state.activate();
+        check(!state.ideTerminalFocused(), "activation (app switch) drops the terminal latch");
+        monitor.focusGeneration_ = 0;
+    }
+
+    // A word typed in the omnibox must not continue in the page: the
+    // omnibox churn guard swallows the focus cycle of a real click into a
+    // Google Sheets cell, so the reset has to come from the a11y focus.
+    static void addrBarWordLeavesForPage(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+        auto &monitor = *engine.a11yMonitor_;
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlags(CapabilityFlag::SurroundingText) |
+                                 CapabilityFlag::Url);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ =
+            state.cachedIsFirefoxBrowser_ = 0;
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.modeCacheValid_ = true;
+        const auto focus = [&](bool webContent, uint64_t ageUsec) {
+            monitor.focusBus_ = ":1.35";
+            monitor.focusPath_ = webContent ? "/sheets" : "/omnibox";
+            monitor.focusInWebDoc_ = webContent;
+            monitor.browserUIFocused_ = !webContent;
+            monitor.focusSnapshotUsec_ = now(CLOCK_MONOTONIC) - ageUsec;
+        };
+        const auto wordThenFocus = [&](bool startInPage, bool webContent, uint64_t ageUsec) {
+            state.viet_.reset();
+            focus(startInPage, 0);
+            state.checkCellSelection(); // word start
+            state.viet_.setRawInput("gox");
+            focus(webContent, ageUsec);
+            state.checkCellSelection();
+            return state.viet_.getRawInput().empty();
+        };
+        check(wordThenFocus(false, true, 400000),
+              "omnibox word resets once the focus has settled in the page");
+        check(!wordThenFocus(false, true, 50000),
+              "a short bounce into the page (omnibox churn) keeps the omnibox word");
+        check(!wordThenFocus(false, false, 400000), "focus back in the omnibox keeps the word");
+        check(!wordThenFocus(true, true, 400000),
+              "a word begun in the page (stale Url caps) never resets this way");
+    }
+
+    // Firefox URL bar inline autofill: "d" + selected "ocs.google.com/".
+    // Shift+Left would shrink that selection ("dđ/"); the Backspace
+    // transport with one extra BS removes it.  A mid-URL edit (tail
+    // unchanged) must never get the extra Backspace.
+    static void firefoxUrlAutofill(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        engine.config_.outputMode.setValue(SKeyOutputMode::Uinput);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "firefox");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlags(CapabilityFlag::SurroundingText) |
+                                 CapabilityFlag::Url);
+        auto &state = *input.propertyFor(&engine.factory_);
+        const auto prime = [&] {
+            state.cachedProgram_ = "firefox";
+            state.cachedIsChromium_ = state.cachedIsTerminalApp_ = 0;
+            state.cachedIsFirefoxBrowser_ = state.cachedIsFirefoxOrSnap_ = 1;
+            state.cachedWebKitProgram_ = "firefox";
+            state.cachedIsWebKitGtk_ = 0;
+        };
+        const auto set = [&](const std::string &text, unsigned cursor) {
+            input.surroundingText().setText(text, cursor, cursor);
+        };
+        const auto shown = [&](const std::string &startText, unsigned startCursor,
+                               const std::string &nowText, unsigned nowCursor,
+                               const std::string &word) {
+            prime();
+            set(startText, startCursor);
+            const auto &surr = input.surroundingText();
+            state.wordStartTailKnown_ = true;
+            state.wordStartTail_ = surr.text().substr(static_cast<size_t>(
+                utf8::ncharByteLength(surr.text().begin(), startCursor)));
+            set(nowText, nowCursor);
+            return state.firefoxUrlAutofillShown(word);
+        };
+        check(shown("", 0, "docs.google.com/", 1, "d"),
+              "autofill after a word typed into an empty URL bar is detected");
+        check(shown("https://example.com/", 0, "docs.google.com/", 1, "d"),
+              "autofill after a word that replaced the selected URL (Ctrl+L) is detected");
+        check(!shown("abcxyz", 3, "abcdxyz", 4, "d"),
+              "mid-URL edit keeps its tail: never an autofill, never an extra Backspace");
+        check(!shown("", 0, "d", 1, "d"), "no text after the caret is no autofill");
+        check(!shown("", 0, "xxocs.google.com/", 2, "d"),
+              "the typed word must sit right before the caret");
+        state.wordStartTailKnown_ = false;
+        set("docs.google.com/", 1);
+        check(!state.firefoxUrlAutofillShown("d"), "unknown word-start state is never an autofill");
+
+        // End to end: "dd" in an empty bar that autofills after "d".
+        prime();
+        state.cachedMode_ = SKeyOutputMode::Uinput;
+        state.modeCacheValid_ = true;
+        state.viet_.reset();
+        int sockets[2];
+        check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+              "isolate the URL bar replacement transport");
+        captureUinput(state, sockets[0]);
+        set("", 0);
+        KeyEvent first(&input, Key(FcitxKey_d));
+        state.keyEvent(first);
+        check(state.wordStartTailKnown_ && state.wordStartTail_.empty(),
+              "the word start records the empty tail");
+        set("docs.google.com/", 1);
+        KeyEvent tone(&input, Key(FcitxKey_d));
+        state.keyEvent(tone);
+        uint32_t request[4] = {};
+        check(recv(sockets[1], request, sizeof(request), 0) == sizeof(request) &&
+                  request[0] == 3 && state.pendingUinputCommit_ == "đ",
+              "autofill: one extra Backspace removes the selection, then đ replaces d");
+        close(sockets[1]);
+    }
+
+    // Right after fcitx5 starts the uinput device is still warming up: the
+    // first Chromium web replacement must not be forced onto it (rejected →
+    // word reset, "đây" → "day"); the native surrounding path takes it.
+    static void chromiumFirstReplaceUinputWarmup(Instance &instance, bool ready) {
+        class Editor : public TestInput {
+        public:
+            using TestInput::TestInput;
+            int deletes = 0;
+        protected:
+            void deleteSurroundingTextImpl(int, unsigned size) override {
+                deletes += static_cast<int>(size);
+            }
+        };
+        SKeyEngine engine(&instance, false);
+        engine.config_.outputMode.setValue(SKeyOutputMode::SurroundingText);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        Editor input(instance.inputContextManager(), "google-chrome");
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlags(0x80072));
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "google-chrome";
+        state.cachedIsChromium_ = 1;
+        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ =
+            state.cachedIsFirefoxBrowser_ = 0;
+        state.cachedWebKitProgram_ = "google-chrome";
+        state.cachedIsWebKitGtk_ = 0;
+        state.cachedMode_ = SKeyOutputMode::SurroundingText;
+        state.modeCacheValid_ = true;
+        state.uinputTestReady_ = ready;
+        int sockets[2];
+        check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
+              "isolate the warmup replacement transport");
+        captureUinput(state, sockets[0]);
+        KeyEvent first(&input, Key(FcitxKey_d));
+        state.keyEvent(first);
+        input.surroundingText().setText("d", 1, 1);
+        KeyEvent tone(&input, Key(FcitxKey_d));
+        state.keyEvent(tone);
+        uint32_t request[4] = {};
+        const bool injected = recv(sockets[1], request, sizeof(request), 0) == sizeof(request);
+        if (ready) {
+            check(injected && input.deletes == 0,
+                  "ready uinput keeps the ordered first-replacement transport");
+        } else {
+            check(!injected && input.deletes == 1 && state.viet_.getComposed() == "đ",
+                  "warming uinput: the first replacement rides the native delete, word kept");
+            auto stop = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+                now(CLOCK_MONOTONIC) + 40000, 1,
+                [&](EventSourceTime *, uint64_t) { instance.eventLoop().exit(); return true; });
+            instance.eventLoop().exec();
+            check(input.commits.size() == 1 && input.commits[0] == "đ",
+                  "warming uinput: the replacement commits đ once");
+        }
+        close(sockets[1]);
+    }
+
+    // Wayland Chromium page churn: a Deactivate→Activate cycle while a
+    // replacement awaits its settle must not commit into the disabled
+    // text-input (dropped → Gemini lost every word); the held commit lands
+    // in the reactivated IC.  A genuine focus loss discards it; other
+    // Wayland apps keep the validated eager flush.
+    // One event-loop run per Instance: a second exec() on the same loop
+    // throws (stale handle) and aborts every later test.
+    static void waylandBrowserChurn(Instance &instance, int scenario) {
+        SKeyEngine engine(&instance, false);
+        engine.config_.outputMode.setValue(SKeyOutputMode::SurroundingText);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        const auto prepare = [&](TestInput &input, const char *program, bool chromium) {
+            input.setFocusGroup(&group);
+            input.setCapabilityFlags(CapabilityFlags(0x80072));
+            auto &state = *input.propertyFor(&engine.factory_);
+            state.cachedProgram_ = program;
+            state.cachedIsChromium_ = chromium ? 1 : 0;
+            state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ =
+                state.cachedIsFirefoxBrowser_ = 0;
+            state.cachedMode_ = SKeyOutputMode::SurroundingText;
+            state.modeCacheValid_ = true;
+            // Replacement "d" -> "đ": Backspace already looped back, the
+            // commit waits for the settle.
+            state.viet_.reset();
+            state.viet_.setRawInput("dd");
+            state.uinputDeleting_ = true;
+            state.uinputSettling_ = true;
+            state.expectedUinputBackspaces_ = 0;
+            state.pendingUinputCommit_ = "đ";
+            state.uinputPendingFinalLen_ = 1;
+            return &state;
+        };
+        const auto runLoop = [&](uint64_t usec) {
+            auto stop = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC,
+                now(CLOCK_MONOTONIC) + usec, 1,
+                [&](EventSourceTime *, uint64_t) { instance.eventLoop().exit(); return true; });
+            instance.eventLoop().exec();
+        };
+
+        if (scenario == 0) {
+            TestInput chrome(instance.inputContextManager(), "google-chrome");
+            auto &state = *prepare(chrome, "google-chrome", true);
+            state.deactivate();
+            check(chrome.commits.empty() && state.uinputDeleting_ &&
+                      state.pendingUinputCommit_ == "đ" && state.uinputCycleTimer_,
+                  "Wayland Chrome churn holds the replacement instead of committing into the disabled IC");
+            state.reset();
+            check(state.pendingUinputCommit_ == "đ", "the churn reset keeps the held replacement");
+            state.finishUinputSettle(0, 0);
+            check(chrome.commits.empty(), "no settle commit while the IC is deactivated");
+            state.activate();
+            check(!state.uinputCycleTimer_, "reactivation ends the churn window");
+            state.finishUinputSettle(0, 0);
+            runLoop(50000);
+            check(chrome.commits.size() == 1 && chrome.commits[0] == "đ" &&
+                      !state.uinputDeleting_,
+                  "the held replacement commits exactly once into the reactivated IC");
+        }
+        if (scenario == 1) {
+            TestInput chrome(instance.inputContextManager(), "google-chrome");
+            auto &state = *prepare(chrome, "google-chrome", true);
+            state.deactivate();
+            runLoop(600000);
+            check(chrome.commits.empty() && !state.uinputDeleting_ &&
+                      state.pendingUinputCommit_.empty(),
+                  "genuine focus loss discards the held replacement after 500ms");
+        }
+        if (scenario == 2) {
+            TestInput telegram(instance.inputContextManager(), "Telegram");
+            auto &state = *prepare(telegram, "Telegram", false);
+            state.deactivate();
+            check(telegram.commits.size() == 1 && telegram.commits[0] == "đ" &&
+                      !state.uinputDeleting_,
+                  "non-browser Wayland apps keep the eager deactivate flush");
+        }
+    }
+
+    // The native-delete post-verify may mark an app delete-broken for the
+    // whole session.  Only evidence about OUR replacement counts: a user
+    // edit or a focus change ends the watch, and a browser's empty field
+    // (composer cleared on send) is no evidence at all.
+    static void surrNativeVerifyEvidence(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        engine.config_.outputMode.setValue(SKeyOutputMode::SurroundingText);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        const auto make = [&](const char *program, bool browser) {
+            auto input = std::make_unique<TestInput>(instance.inputContextManager(), program);
+            input->setFocusGroup(&group);
+            input->setCapabilityFlags(CapabilityFlags(0x72));
+            auto &state = *input->propertyFor(&engine.factory_);
+            state.cachedProgram_ = program;
+            state.cachedIsChromium_ = browser ? 1 : 0;
+            state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ =
+                state.cachedIsFirefoxBrowser_ = 0;
+            state.cachedMode_ = SKeyOutputMode::SurroundingText;
+            state.modeCacheValid_ = true;
+            return input;
+        };
+        const auto pushed = [](const std::string &text) {
+            fcitx::SurroundingText surrounding;
+            const auto length = static_cast<unsigned>(utf8::length(text));
+            surrounding.setText(text, length, length);
+            return surrounding;
+        };
+        const auto arm = [](SKeyState &state) {
+            state.armSurrNativePostVerify("go", "ô", "gô", 1, 2);
+        };
+
+        // Non-browser (areca-settings class): an empty push with no user
+        // edit still marks the app — the original evidence is preserved.
+        auto areca = make("areca-settings", false);
+        auto &arecaState = *areca->propertyFor(&engine.factory_);
+        arm(arecaState);
+        check(arecaState.surrNativeRepairIfDropped(pushed(""), true, false) == 1 &&
+                  engine.isSurrDeleteBrokenApp("areca-settings"),
+              "non-browser empty push after a native replace still marks broken");
+        engine.surrDeleteBrokenApps_.clear();
+
+        // A user key that edits the field ends the watch.
+        for (const Key userKey : {Key(FcitxKey_Return), Key(FcitxKey_KP_Enter),
+                                  Key(FcitxKey_BackSpace), Key(FcitxKey_Delete),
+                                  Key(FcitxKey_a, KeyState::Ctrl),
+                                  Key(FcitxKey_x, KeyState::Ctrl)}) {
+            arm(arecaState);
+            arecaState.viet_.reset();
+            KeyEvent event(areca.get(), userKey);
+            arecaState.keyEvent(event);
+            check(!arecaState.surrNativePostVerify_,
+                  "a user edit (Enter/Backspace/Delete/Ctrl) ends the native-delete watch");
+            check(arecaState.surrNativeRepairIfDropped(pushed(""), true, false) == 0 &&
+                      !engine.isSurrDeleteBrokenApp("areca-settings"),
+                  "the field the user emptied never marks the app broken");
+        }
+        // Typing letters keeps the watch (the lagging-push evidence).
+        arm(arecaState);
+        arecaState.viet_.reset();
+        KeyEvent letter(areca.get(), Key(FcitxKey_g));
+        arecaState.keyEvent(letter);
+        check(arecaState.surrNativePostVerify_, "plain typing keeps the native-delete watch");
+        // A focus change ends it too.
+        arm(arecaState);
+        arecaState.activate();
+        check(!arecaState.surrNativePostVerify_, "activation ends the native-delete watch");
+        engine.surrDeleteBrokenApps_.clear();
+
+        // Browser: an empty field is no evidence (Gemini composer cleared).
+        auto chrome = make("google-chrome", true);
+        auto &chromeState = *chrome->propertyFor(&engine.factory_);
+        arm(chromeState);
+        check(chromeState.surrNativeRepairIfDropped(pushed(""), true, false) == 0 &&
+                  !engine.isSurrDeleteBrokenApp("google-chrome") &&
+                  !chromeState.surrNativePostVerify_,
+              "browser empty field never marks the browser delete-broken");
+        // ...but the text-shaped evidence still works for browsers.
+        arm(chromeState);
+        check(chromeState.surrNativeRepairIfDropped(pushed("goô"), true, false) == 1 &&
+                  engine.isSurrDeleteBrokenApp("google-chrome"),
+              "browser old word + committed suffix still proves a dropped delete");
+        engine.surrDeleteBrokenApps_.clear();
+    }
+
+    // "A11y blind" means no trustworthy focus for this app — not "snapshot
+    // older than 5s".  Typing past 5s in one live field must not switch on
+    // the blind fallbacks; a dead/foreign/absent snapshot still must.
+    static void a11yBlindDefinition(Instance &instance) {
+        using W = A11yMonitor::IdeWidget;
+        SKeyEngine engine(&instance, false);
+        engine.config_.outputMode.setValue(SKeyOutputMode::Uinput);
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+        auto &monitor = *engine.a11yMonitor_;
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "google-chrome-stable");
+        input.setFocusGroup(&group);
+        auto &state = *input.propertyFor(&engine.factory_);
+        const auto prime = [&] {
+            state.cachedProgram_ = "google-chrome-stable";
+            state.cachedIsChromium_ = 1;
+            state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ =
+                state.cachedIsFirefoxBrowser_ = 0;
+            state.cachedMode_ = SKeyOutputMode::Uinput;
+            state.modeCacheValid_ = true;
+        };
+        const auto snapshot = [&](uint64_t ageUsec, bool textEntry, W widget,
+                                  int role) {
+            monitor.focusBus_ = ":1.37";
+            monitor.focusPath_ = "/org/a11y/atspi/accessible/2670";
+            monitor.focusGeneration_ = 0;
+            monitor.textEntryFocused_ = textEntry;
+            monitor.ideWidget_ = static_cast<int>(widget);
+            monitor.focusRole_ = role;
+            monitor.focusSnapshotUsec_ = now(CLOCK_MONOTONIC) - ageUsec;
+        };
+        prime();
+
+        // State matrix.
+        monitor.focusSnapshotUsec_ = 0;
+        check(state.a11yBlind(), "no focus snapshot at all is blind");
+        snapshot(0, false, W::Unknown, 95);
+        check(!state.a11yBlind(), "fresh snapshot is never blind");
+        snapshot(6000000, true, W::Unknown, 79);
+        check(!state.a11yBlind(), "same text entry past 5s stays trusted");
+        snapshot(60000000, true, W::Unknown, 61);
+        check(!state.a11yBlind(), "same text entry a minute later stays trusted");
+        snapshot(6000000, false, W::Unknown, 95);
+        check(state.a11yBlind(), "old window/document snapshot is no evidence about the field");
+        snapshot(6000000, false, W::Terminal, 79);
+        check(!state.a11yBlind(), "a classified IDE widget stays trusted past 5s");
+        snapshot(0, true, W::Unknown, 79);
+        monitor.focusGeneration_ = 3;
+        monitor.focusProcessId_ = getpid(); // the test binary: not a Chrome process
+        check(state.a11yBlind(), "focus owned by another application is blind");
+        snapshot(6000000, true, W::Unknown, 79);
+        monitor.invalidateFocus();
+        check(state.a11yBlind(), "invalidated focus (monitor stopped) is blind");
+
+        // Caret-jump cell-change fallback: inert on a live field past 5s,
+        // active when blind.
+        const auto jumpResets = [&](uint64_t age, bool textEntry) {
+            prime();
+            if (age == UINT64_MAX) monitor.focusSnapshotUsec_ = 0;
+            else snapshot(age, textEntry, W::Unknown, textEntry ? 79 : 95);
+            state.viet_.reset();
+            state.viet_.setRawInput("chao");
+            state.lastKeyCaretX_ = 100;
+            state.lastKeyCaretY_ = 100;
+            input.setCursorRect(Rect(400, 300, 401, 320));
+            return state.checkCellSelection();
+        };
+        check(!jumpResets(6000000, true),
+              "live field typed past 5s keeps the word on a caret jump");
+        check(jumpResets(UINT64_MAX, false), "blind caret jump still resets the word");
+        check(jumpResets(6000000, false), "old non-entry snapshot still counts as blind");
+
+        // Surrounding field-change fallback: same gate.
+        const auto fieldResets = [&](uint64_t age) {
+            prime();
+            if (age == UINT64_MAX) monitor.focusSnapshotUsec_ = 0;
+            else snapshot(age, true, W::Unknown, 79);
+            state.viet_.reset();
+            state.viet_.setRawInput("chao");
+            state.lastKeyCaretX_ = state.lastKeyCaretY_ = -1;
+            state.surrPrevKeyUsec_ = now(CLOCK_MONOTONIC) - 300000;
+            state.lastKeySurrText_ = "abc chao";
+            state.lastKeySurrValid_ = true;
+            input.surroundingText().setText("xyz", 0, 0);
+            return state.checkBlindFieldChange();
+        };
+        check(!fieldResets(6000000), "live field past 5s: a surrounding mismatch is not a new field");
+        check(fieldResets(UINT64_MAX), "blind: the new-field fallback still fires");
+
+        // IDE chat composer: "bare caps after hints" must survive a long
+        // typing session (a11y alive, snapshot old) but stay off when blind.
+        TestInput ide(instance.inputContextManager(), "code");
+        ide.setFocusGroup(&group);
+        ide.setCapabilityFlags(CapabilityFlags(0x72));
+        auto &ideState = *ide.propertyFor(&engine.factory_);
+        const auto ideMode = [&](uint64_t age, W widget) {
+            if (age == UINT64_MAX) monitor.focusSnapshotUsec_ = 0;
+            else snapshot(age, true, widget, 79);
+            monitor.focusInWebDoc_ = true;
+            monitor.focusSingleLine_ = true;
+            ideState.cachedProgram_ = "code";
+            ideState.cachedIsChromium_ = 1;
+            ideState.cachedIsTerminalApp_ = ideState.cachedIsFirefoxOrSnap_ =
+                ideState.cachedIsFirefoxBrowser_ = 0;
+            ideState.focusSawContentHints_ = true;
+            ideState.modeDecisionPending_ = false;
+            ideState.chromiumBareCapsUinput_ = false;
+            ideState.modeCacheValid_ = false;
+            return ideState.detectAutoMode();
+        };
+        const auto injecting = [](SKeyOutputMode mode) {
+            return mode == SKeyOutputMode::Uinput || mode == SKeyOutputMode::Native;
+        };
+        check(ideMode(6000000, W::Chat) == SKeyOutputMode::SurroundingText,
+              "chat composer keeps Surr after typing past 5s");
+        check(injecting(ideMode(6000000, W::Terminal)),
+              "terminal past 5s never takes the hints → Surr route");
+        check(injecting(ideMode(6000000, W::CodeEditor)),
+              "code editor past 5s stays on Uinput");
+        check(injecting(ideMode(UINT64_MAX, W::Unknown)),
+              "blind IDE skips the hints route (chat and terminal indistinguishable)");
+        monitor.focusSnapshotUsec_ = 0;
+    }
+
     static void addressBarIdentity(Instance &instance, bool wayland) {
         SKeyEngine engine(&instance, false);
         engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
@@ -2949,7 +3538,9 @@ struct EnginePerformanceTest {
         for (const char *name : {"electron", "code", "code-insiders", "antigravity-ide",
                                  "Tabby", "Hyper", "Slack", "Discord", "chrome-notes",
                                  "chromium-editor", "cooperation", "brave-editor",
-                                 "com.example.chrome", "chrome-app-abcdef", "firefox", "zen"}) {
+                                 "com.example.chrome", "chrome-app-abcdef"}) {
+            // firefox/zen are browsers with their own URL-bar modes since
+            // 2026-10-27 (inFirefoxAddressBar) — not part of this list.
             TestInput input(instance.inputContextManager(), name);
             input.setFocusGroup(&group);
             auto &state = *input.propertyFor(&engine.factory_);
@@ -2984,8 +3575,15 @@ struct EnginePerformanceTest {
             input.setCursorRect(Rect());
             check(!state.inChromiumAddressBar(), "browser web input without Url/caret must not be omnibox");
             if (wayland) {
+                // Since 2026-10-28 (waylandBrowserAddressBarCaret) a thin caret
+                // near the top of the window is an address bar on Wayland even
+                // without Url — some Chromium frontends omit it.  Known risk,
+                // accepted after field use showed no problem: Chrome's Ctrl+F
+                // find bar has the same caret shape (its Escape dismissal would
+                // close the find bar).  Revisit here if that shows up.
                 input.setCursorRect(Rect(10, 20, 11, 40));
-                check(!state.inChromiumAddressBar(), "Wayland find bar must not use X11 caret heuristic");
+                check(state.inChromiumAddressBar(),
+                      "Wayland thin top caret without Url is treated as the address bar");
             } else {
                 const double scale = std::clamp(x11DisplayDpi() / 96.0, 1.0, 2.5);
                 Rect caret;
@@ -3360,6 +3958,15 @@ static void policies() {
     cache.result(":1.1", "/root", false, 1000000);
     check(!cache.due(":1.1", "/root", 2000000) && cache.due(":1.1", "/root", 3000000), "failed activations back off");
     check(cache.due(":1.2", "/root", 0), "cache must include sender");
+    A11yAncestorCache ancestors;
+    ancestors.put(":1.54", "/a/10", {":1.54", "/a/9", 85, 1000});
+    const auto *hit = ancestors.find(":1.54", "/a/10", 2000);
+    check(hit && hit->parentPath == "/a/9" && hit->parentRole == 85, "known ancestor skips the round trips");
+    check(!ancestors.find(":1.55", "/a/10", 2000), "ancestor cache must include sender");
+    check(!ancestors.find(":1.54", "/a/10", 1000 + A11yAncestorCache::kTtlUsec),
+          "ancestor entry expires after its TTL");
+    ancestors.removeBus(":1.54");
+    check(!ancestors.find(":1.54", "/a/10", 2000), "app leaving the bus drops its ancestors");
 }
 
 int main(int argc, char **argv) {
@@ -3378,6 +3985,24 @@ int main(int argc, char **argv) {
     // active-window origin or DPI. Live X11 geometry is tested separately.
     unsetenv("DISPLAY");
     unsetenv("WAYLAND_DISPLAY");
+    // The session type decides native X11 vs XWayland (waylandSession()):
+    // run on a Wayland desktop, every "x11:test" case was routed as
+    // XWayland and the X11 expectations failed.  Each case declares its
+    // platform through the input's display; GNOME cases set the desktop
+    // explicitly below (gnomeDesktop() caches its first answer).
+    unsetenv("XDG_SESSION_TYPE");
+    unsetenv("XDG_CURRENT_DESKTOP");
+    // Never reach the developer's desktop.  A Native route starts the libei
+    // injector, which asked the REAL RemoteDesktop portal for keyboard
+    // permission on every run (a popup each time, 2026-10-31); and the debug
+    // flag is read from $HOME, so cases wrote into the live /tmp/skey.log.
+    setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/skey-test-bus", 1);
+    setenv("HOME", configRoot, 1);
+    {
+        const auto confDir = std::filesystem::path(configRoot) / ".config" / "fcitx5" / "conf";
+        std::filesystem::create_directories(confDir);
+        std::ofstream(confDir / "skey.conf") << "Debug=False\n";
+    }
 
     if (std::getenv("SKEY_TEST_GNOME_NATIVE_ONLY")) {
         setenv("XDG_CURRENT_DESKTOP", "GNOME", 1);
@@ -3709,6 +4334,26 @@ int main(int argc, char **argv) {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::addressBarIdentity(instance, false);
         fcitx::EnginePerformanceTest::addressBarIdentity(instance, true);
+        fcitx::EnginePerformanceTest::ideWidgetAutoMode(instance, false);
+        fcitx::EnginePerformanceTest::ideWidgetAutoMode(instance, true);
+        fcitx::EnginePerformanceTest::a11yBlindDefinition(instance);
+        fcitx::EnginePerformanceTest::surrNativeVerifyEvidence(instance);
+    }
+    for (int scenario : {0, 1, 2}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::waylandBrowserChurn(instance, scenario);
+    }
+    for (bool ready : {false, true}) {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::chromiumFirstReplaceUinputWarmup(instance, ready);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::firefoxUrlAutofill(instance);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::addrBarWordLeavesForPage(instance);
     }
     {
         fcitx::Instance instance(argc, argv);

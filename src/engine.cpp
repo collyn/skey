@@ -101,7 +101,12 @@ static bool readDebugFromFile() {
   return true; // default on if key not found
 }
 
+#ifdef SKEY_TESTING
+// Test engines skip reloadConfig(): never write into the live /tmp/skey.log.
+static bool g_skeyDebugEnabled = false;
+#else
 static bool g_skeyDebugEnabled = true;
+#endif
 
 class SKeyLogger {
 public:
@@ -649,6 +654,26 @@ bool SKeyState::handleXimHandback(KeyEvent &event) {
 // BS anchor.  Returns true when it took over the replace; on an
 // injector rejection the state resets and the key passes raw (the
 // caller returns either way).
+bool SKeyState::firefoxUrlAutofillShown(const std::string &oldComposed) const {
+  // A mid-URL edit keeps the text after the caret unchanged and must never
+  // lose a character to the extra Backspace — only a tail that appeared or
+  // changed while this word was typed is the autofill selection.
+  if (!wordStartTailKnown_ || oldComposed.empty() || !inFirefoxAddressBar())
+    return false;
+  const auto &surr = ic_->surroundingText();
+  if (!surr.isValid()) return false;
+  const auto &text = surr.text();
+  const size_t caret = std::min(surr.cursor(), surr.anchor());
+  const auto typedEnd = static_cast<size_t>(utf8::ncharByteLength(text.begin(), caret));
+  if (typedEnd >= text.size()) return false; // nothing after the caret
+  const std::string_view tail(text.data() + typedEnd, text.size() - typedEnd);
+  if (tail == wordStartTail_) return false;
+  // The typed word sits right before the caret.
+  return typedEnd >= oldComposed.size() &&
+         text.compare(typedEnd - oldComposed.size(), oldComposed.size(),
+                      oldComposed) == 0;
+}
+
 bool SKeyState::tryShiftSelectReplace(int deleteLen,
                                       const std::string &addPart,
                                       const std::string &oldComposed,
@@ -657,13 +682,29 @@ bool SKeyState::tryShiftSelectReplace(int deleteLen,
   if (!selectTransportActive()) {
     return false;
   }
+  // Firefox URL bar inline autofill ("d" + selected "ocs.google.com/"):
+  // Shift+Left shrinks that selection instead of selecting the word, and
+  // the commit lands in front of the leftover tail ("dđ/", 2026-10-31).
+  // The Backspace transport below removes the selection with one extra BS.
+  if (firefoxUrlAutofillShown(oldComposed)) {
+    return false;
+  }
   if (tryX11ForwardedReplacement(deleteLen, addPart,
           static_cast<int>(utf8::length(newComposed)), oldComposed, newComposed, true)) {
     keyEvent.filterAndAccept();
     committedLen_ = static_cast<int>(utf8::length(newComposed));
     return true;
   }
-  SKEY_DEBUG() << "Uinput: shift-select replace '" << addPart << "'";
+  {
+    // Diagnostic: the field state the selection starts from — an inline
+    // autofill selection (Firefox URL bar) changes what Shift+Left selects.
+    const auto &surr = ic_->surroundingText();
+    SKEY_DEBUG() << "Uinput: shift-select replace '" << addPart
+                 << "' surrValid=" << surr.isValid() << " text='"
+                 << (surr.isValid() ? surr.text().substr(0, 60) : std::string())
+                 << "' cursor=" << (surr.isValid() ? surr.cursor() : 0)
+                 << " anchor=" << (surr.isValid() ? surr.anchor() : 0);
+  }
   bsSentAt_ = now(CLOCK_MONOTONIC);
   // 1ms pace: the synthetic Shift latches the seat-wide keyboard state
   // (mutter's XKB is per-seat), so a fast physical key inside the Shift
@@ -1827,8 +1868,8 @@ void SKeyEngine::reloadConfig() {
     a11yMonitor_->setAutoEnableA11y(*config_.autoEnableA11y);
     // The A11y setting is the master switch: start/stop the monitor so a
     // mid-session toggle takes effect at the next activate (this runs on
-    // every activate).  A stopped monitor keeps its last snapshot — the
-    // 5s freshness gates make all consumers treat it as blind.
+    // every activate).  stop() invalidates the focus identity, so every
+    // consumer treats a stopped monitor as blind (a11yBlind()).
     if (*config_.autoEnableA11y && !a11yMonitor_->isRunning())
       a11yMonitor_->start();
     else if (!*config_.autoEnableA11y && a11yMonitor_->isRunning())
@@ -2668,14 +2709,70 @@ bool SKeyState::a11yChromiumTerminal() const {
   if (!isChromiumCached() || isChromiumBrowser(appProgram()))
     return false;
   auto *mon = engine_->a11yMonitor();
-  if (!mon || !a11yFocusRelevant())
+  // Same focus = same element: the verdict holds past the 5s freshness
+  // window until the next focus event (owner + generation still checked).
+  if (!mon || !a11yFocusRelevant(UINT64_MAX))
     return false;
+  // The xterm.js helper textarea class is authoritative in both directions:
+  // VS Code reports its terminal as webDoc=1, which the geometry heuristic
+  // below can never match, and a known editor/chat input is never a terminal.
+  switch (mon->ideWidget()) {
+  case A11yMonitor::IdeWidget::Terminal: return true;
+  case A11yMonitor::IdeWidget::Unknown: break;
+  default: return false;
+  }
   if (mon->isWebContentFocused())
     return false;
   int role = mon->focusRole();
   if (role != 61 && role != 79 && role != 94) // TEXT / ENTRY / DOCUMENT_TEXT
     return false;
   return mon->isFocusSingleLine() && !mon->isFocusMultiline();
+}
+
+bool SKeyState::a11yBlind() const {
+  // "Blind" = no trustworthy a11y focus for this app: no monitor, no live
+  // focus identity (monitor stopped, focus invalidated), or the focused
+  // accessible belongs to another app (the browser never registered its
+  // tree).  NOT the 5s freshness window: a snapshot keeps describing the
+  // focused element until the next focus event, and typing past 5s in one
+  // field switched on the blind fallbacks (delete-ack repair, field-change
+  // resets) that misfire on a live field.
+  auto *mon = engine_->a11yMonitor();
+  if (!mon) return true;
+  if (a11yFocusRelevant()) return false;
+  // Past 5s only a text input (or a classified IDE widget) is trusted: a
+  // half-alive tree may have reported just its window or document once,
+  // and that is no evidence about the field being typed in.
+  return !(a11yFocusRelevant(UINT64_MAX) &&
+           (mon->isTextEntryFocused() ||
+            mon->ideWidget() != A11yMonitor::IdeWidget::Unknown));
+}
+
+bool SKeyState::ideTerminalFocused() const {
+  auto *mon = engine_->a11yMonitor();
+  A11yMonitor::FocusIdentity identity;
+  if (!mon || !mon->focusIdentity(identity)) return false;
+  if (a11yChromiumTerminal()) {
+    ideTerminalGeneration_ = identity.generation;
+    return true;
+  }
+  // Past the freshness window the terminal verdict no longer holds by
+  // itself — "a11y blind" there armed the browser delete-ack repair, whose
+  // check never sees xterm.js apply a Backspace, and every "retry one BS"
+  // ate a real character ("vãi thật" → "vãật", VS Code 2026-10-30).
+  return ideTerminalGeneration_ != 0 &&
+         ideTerminalGeneration_ == identity.generation;
+}
+
+A11yMonitor::IdeWidget SKeyState::a11yIdeWidget() const {
+  if (!isChromiumCached() || isChromiumBrowser(appProgram()))
+    return A11yMonitor::IdeWidget::Unknown;
+  auto *mon = engine_->a11yMonitor();
+  // A widget kind describes the focused element: valid until the next
+  // focus event, not only for the 5s freshness window.
+  if (!mon || !a11yFocusRelevant(UINT64_MAX))
+    return A11yMonitor::IdeWidget::Unknown;
+  return mon->ideWidget();
 }
 
 bool SKeyState::noteSurroundingFailure() {
@@ -2761,11 +2858,16 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   // (modeCacheValid_) AND the SurroundingText cap are required: without
   // the cap, Surr mode can only run its race-prone fallback, so
   // "keeping" it can never be right for a cap-less app.
+  // The Sheets cell editor can report role 11 (combo box), which the narrow
+  // line-state check no longer recognizes on Chrome ≥150 — its accessible-id
+  // must also break the guard, or Sheets would keep Surr here.
+  const auto *flickerMon = engine_->a11yMonitor();
   if (nonEntry && modeCacheValid_ &&
       cachedMode_ == SKeyOutputMode::SurroundingText &&
       ic_->capabilityFlags().test(CapabilityFlag::SurroundingText) &&
       !isWayland() && isChromiumCached() && isChromiumBrowser(appProgram()) &&
-      !inChromiumAddressBar() && !a11yBrowserNonEntryNarrow()) {
+      !inChromiumAddressBar() && !a11yBrowserNonEntryNarrow() &&
+      !(flickerMon && flickerMon->sheetsEditorFocused())) {
     SKEY_DEBUG() << "Auto: non-entry flicker over X11 web editor, keep Surr";
     return SKeyOutputMode::SurroundingText;
   }
@@ -2780,6 +2882,18 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
   // otherwise route it to SurroundingText.
   if (a11yChromiumTerminal()) {
     SKEY_DEBUG() << "Auto: Chromium integrated terminal (a11y) → Uinput";
+    return autoUinput(SKeyOutputMode::Uinput);
+  }
+
+  // Monaco code editor in a standalone Chromium app (VS Code family).  Same
+  // reason as the terminal: caps can arrive stale from the chat panel
+  // (hints included) and would route "bare caps after hints" or the
+  // fall-through to SurroundingText.  The editor's established verdict is
+  // Uinput (bare-caps deferred/sticky); the a11y class just reaches it on
+  // the first key instead of relying on the caps history.  The chat input
+  // (IdeWidget::Chat) keeps the caps-based decisions below.
+  if (a11yIdeWidget() == A11yMonitor::IdeWidget::CodeEditor) {
+    SKEY_DEBUG() << "Auto: IDE code editor (a11y) → Uinput";
     return autoUinput(SKeyOutputMode::Uinput);
   }
 
@@ -2917,9 +3031,7 @@ SKeyOutputMode SKeyState::detectAutoMode() const {
       // the terminal (the a11y webDoc discriminator is gone), and the
       // blind Uinput machinery handles Electron correctly now.
       {
-        auto *hintsBlindMon = engine_->a11yMonitor();
-        const bool hintsBlind = !hintsBlindMon ||
-            !a11yFocusRelevant();
+        const bool hintsBlind = a11yBlind();
         if (!isChromiumBrowser(appProgram()) && focusSawContentHints_ &&
             !hintsBlind) {
           SKEY_DEBUG() << "Auto: bare caps after hints → SurroundingText";
@@ -3109,13 +3221,41 @@ bool SKeyState::isChromiumCached() const {
     bool chromium =
         isChromiumBrowser(prog) || prog.find("electron") != std::string::npos;
     if (!chromium) {
-      int pid = a11yAppPid();
-      chromium =
-          pid > 0 ? processHasChromiumMarkers(pid) : isChromiumBasedApp(prog);
+      chromium = programTrait('c', [&] {
+        int pid = a11yAppPid();
+        return pid > 0 ? processHasChromiumMarkers(pid) : isChromiumBasedApp(prog);
+      });
     }
     cachedIsChromium_ = chromium ? 1 : 0;
   }
   return cachedIsChromium_ == 1;
+}
+
+// Binary identity does not change while a program keeps its name; the TTL
+// only bounds staleness for traits that depend on what the process loaded
+// (WebKitGTK) and for a program name reused by a different binary.
+static constexpr uint64_t kProgramTraitTtlUsec = 60000000; // 60s
+// WebKitGTK is a loaded-library trait: the app can map it on demand (mail
+// preview, help viewer) or drop it — keep it short; it still collapses the
+// reset/activate burst of a single focus into one scan.
+static constexpr uint64_t kLoadedTraitTtlUsec = 5000000; // 5s
+
+bool SKeyState::programTrait(char trait, const std::function<bool()> &detect) const {
+  const auto &program = appProgram();
+  // GNOME's relay context names the shell, not the app behind it — the
+  // verdict there follows the a11y pid and must not be shared.
+  if (program.empty() || program == "gnome-shell") return detect();
+  const std::string key = std::string(1, trait) + program;
+  const auto stamp = now(CLOCK_MONOTONIC);
+  auto &cache = engine_->programTraits_;
+  if (auto it = cache.find(key); it != cache.end()) {
+    const uint64_t ttl = trait == 'w' ? kLoadedTraitTtlUsec : kProgramTraitTtlUsec;
+    if (stamp - it->second.atUsec < ttl) return it->second.value;
+  }
+  const bool value = detect();
+  if (cache.size() >= 256) cache.clear();
+  cache[key] = {value, stamp};
+  return value;
 }
 
 bool SKeyState::ownsPtyMaster() const {
@@ -3178,6 +3318,13 @@ bool SKeyState::isTerminalAppCached() const {
 }
 
 bool SKeyState::isFirefoxBrowserCached() const {
+  if (cachedIsFirefoxBrowser_ < 0)
+    cachedIsFirefoxBrowser_ =
+        programTrait('g', [this] { return detectFirefoxBrowser(); }) ? 1 : 0;
+  return cachedIsFirefoxBrowser_ == 1;
+}
+
+bool SKeyState::detectFirefoxBrowser() const {
   if (cachedIsFirefoxBrowser_ >= 0) return cachedIsFirefoxBrowser_ == 1;
   const auto &program = appProgram();
   bool firefox = skey::isFirefoxBrowser(program);
@@ -3206,6 +3353,13 @@ bool SKeyState::isFirefoxBrowserCached() const {
 }
 
 bool SKeyState::isFirefoxOrSnap() const {
+  if (cachedIsFirefoxOrSnap_ < 0)
+    cachedIsFirefoxOrSnap_ =
+        programTrait('f', [this] { return detectFirefoxOrSnap(); }) ? 1 : 0;
+  return cachedIsFirefoxOrSnap_ == 1;
+}
+
+bool SKeyState::detectFirefoxOrSnap() const {
   if (cachedIsFirefoxOrSnap_ >= 0) {
     return cachedIsFirefoxOrSnap_ == 1;
   }
@@ -3313,8 +3467,14 @@ bool SKeyState::webkitGtkSurroundingFallback() const {
     cachedIsWebKitGtk_ = -1;
   }
   if (cachedIsWebKitGtk_ >= 0) return cachedIsWebKitGtk_;
+  if (program.empty()) return (cachedIsWebKitGtk_ = 0);
+  cachedIsWebKitGtk_ = programTrait('w', [this] { return detectWebKitGtk(); }) ? 1 : 0;
+  return cachedIsWebKitGtk_;
+}
+
+bool SKeyState::detectWebKitGtk() const {
+  const auto program = appProgram();
   cachedIsWebKitGtk_ = 0;
-  if (program.empty()) return false;
   // WebKitGTK's GTK3 IM context handles retrieve-surrounding but not
   // delete-surrounding. Detect the loaded toolkit, never application names.
   // GTK4 has a different library/forward-key contract and is not included.
@@ -3589,6 +3749,11 @@ void SKeyState::activate() {
   // Invalidate mode cache — new focus means caps/program may have changed.
   chromiumBareCapsUinput_ = false;
   focusSawContentHints_ = false;
+  ideTerminalGeneration_ = 0;
+  // The native-delete verify watches the field of the replacement; after a
+  // focus change the pushes describe another field (or one the app just
+  // cleared), never that replacement's outcome.
+  surrNativePostVerify_ = false;
   // Spurious-cycle preservation (X11 Chromium): a deactivate→activate
   // round trip within 500ms of the same window is Chrome's focus churn,
   // not an input change — re-running the full detectAutoMode chain per
@@ -3735,8 +3900,7 @@ bool SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
   // blind-mode repair in finishUinputSettle().  Covers the Chromium family
   // and Firefox alike.
   const bool blindBrowser = (isChromiumCached() || isFirefoxBrowserCached()) &&
-      !isTerminalAppCached() &&
-      (!monitor || !a11yFocusRelevant());
+      !isTerminalAppCached() && !ideTerminalFocused() && a11yBlind();
   if (uinputAckUnavailable_ &&
       now(CLOCK_MONOTONIC) >= uinputAckUnavailableDeadlineUsec_) {
     // Retry the ack after the backoff — a single slow push must not leave
@@ -3765,7 +3929,8 @@ bool SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
     // learned-delay override — the pair-transform race (dd→đ) is real
     // there too, just rare.
     const bool waylandFamily = isWayland() &&
-        (isChromiumCached() || isFirefoxOrSnap()) && !isTerminalAppCached();
+        (isChromiumCached() || isFirefoxOrSnap()) && !isTerminalAppCached() &&
+        !ideTerminalFocused();
     if (!uinputAckUnavailable_ && flags == 0 && count > 1 &&
         ((observeDeletion && *engine_->config().autoDelay &&
           appDelayOverrideResolved().preCommitMs < 0) || blindBrowser ||
@@ -4345,6 +4510,13 @@ void SKeyState::scheduleUinputSettle(uint64_t delay, int retries, int postMs) {
 void SKeyState::finishUinputSettle(int retries, int postMs) {
   if (deferUinputTimer(uinputCommitTimer_.get())) return;
   if (!uinputSettling_ || !uinputDeleting_) return;
+  // Wayland churn window (see deactivate): the IC is deactivated until the
+  // reactivation cancels uinputCycleTimer_ — a commit now would hit the
+  // disabled text-input.  The cycle timer ends the wait after 500ms.
+  if (isWayland() && uinputCycleTimer_) {
+    scheduleUinputSettle(2000, retries, postMs);
+    return;
+  }
   if ((x11ForwardedReplacement_ ||
        (isNativeX11() && requestChannel_ == EditChannel::Native)) &&
       (uinputCycleTimer_ || addrBarCycleTimer_)) {
@@ -4366,10 +4538,8 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
     }
   }
   if (checkCellSelection()) return; // never commit the previous Sheets cell
-  auto *blindMon = engine_->a11yMonitor();
   const bool blindBrowser = (isChromiumCached() || isFirefoxBrowserCached()) &&
-      !isTerminalAppCached() &&
-      (!blindMon || !a11yFocusRelevant());
+      !isTerminalAppCached() && !ideTerminalFocused() && a11yBlind();
   if (uinputDeleteAck_.active()) {
     const auto stamp = now(CLOCK_MONOTONIC);
     const auto remaining = isWayland() ? uinputDeleteAck_.remaining(stamp)
@@ -4390,7 +4560,8 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
       // produced the alternating correct/wrong retype rounds).  The
       // backoff stays for the inputs that publish nothing at all.
       const bool familyKeepArmed = isWayland() &&
-          (isChromiumCached() || isFirefoxOrSnap()) && !isTerminalAppCached();
+          (isChromiumCached() || isFirefoxOrSnap()) && !isTerminalAppCached() &&
+          !ideTerminalFocused();
       if (!familyKeepArmed) {
         uinputAckUnavailable_ = true;
         uinputAckUnavailableDeadlineUsec_ =
@@ -4716,6 +4887,17 @@ void SKeyState::deactivate() {
                << " seenBs=" << seenUinputBackspaces_ << " pendingCommit='"
                << pendingUinputCommit_ << "'";
   lastDeactivateTime_ = now(CLOCK_MONOTONIC);
+  // Wayland Chromium page churn (Gemini, 2026-10-30): emptying the field
+  // with our injected Backspace makes the page rebuild its editor, and
+  // Chrome cycles Deactivate→Activate ~50ms later while the replacement
+  // awaits its settle.  The eager flush below committed into the disabled
+  // text-input — the compositor drops it, the field stays empty, the next
+  // tone key is again a first-word replacement, and every word vanished.
+  // Hold the replacement across the cycle like X11 does; it commits into
+  // the reactivated IC (finishUinputSettle waits for the activation).
+  const bool waylandBrowserChurn = isWayland() &&
+      isChromiumBrowser(appProgram()) && !inChromiumAddressBar() &&
+      uinputDeleting_ && !pendingUinputCommit_.empty();
   // Genuine focus loss: any Surr tentative word state is gone with it.
   surrResetTentative_ = false;
   // X11 Chromium churn: keep the deferred commit pending instead of
@@ -4739,7 +4921,7 @@ void SKeyState::deactivate() {
   // timer hasn't fired yet, flush synchronously so the replacement text
   // isn't lost.  Otherwise the app ends up with only the deleted chars.
   if (uinputDeleting_ && !pendingUinputCommit_.empty() &&
-      expectedUinputBackspaces_ == 0 &&
+      expectedUinputBackspaces_ == 0 && !waylandBrowserChurn &&
       !x11ForwardedReplacement_ &&
       !(isNativeX11() && requestChannel_ == EditChannel::Native) &&
       !deferUinputTimer(uinputCommitTimer_.get()) &&
@@ -4814,8 +4996,9 @@ void SKeyState::deactivate() {
   // completes the commit.  If nothing reactivates within 500ms it was a
   // genuine focus loss — discard the replacement instead of committing it
   // into a stale focus. Ordered D-Bus replacements need the same guard.
-  if (!isWayland() && (isChromiumCached() || x11ForwardedReplacement_) && uinputDeleting_ &&
-      !pendingUinputCommit_.empty()) {
+  if (((!isWayland() && (isChromiumCached() || x11ForwardedReplacement_)) ||
+       waylandBrowserChurn) &&
+      uinputDeleting_ && !pendingUinputCommit_.empty()) {
     SKEY_DEBUG() << "Deactivate: mid-replacement churn, keep uinput state";
     uinputCycleTimer_.reset();
     uinputCycleTimer_ = engine_->instance()->eventLoop().addTimeEvent(
@@ -4895,9 +5078,13 @@ void SKeyState::reset() {
   // and the word loses its tail ("bạn" → "b"). Firefox/Snap also resets
   // after the preceding append's commit, before the first injected BS.
   // Don't compare the new composed word with old surrounding text then.
-  if (!isWayland() && (isChromiumCached() || isFirefoxOrSnap() ||
-                       x11ForwardedReplacement_) && uinputDeleting_ &&
-      !pendingUinputCommit_.empty()) {
+  // Wayland Chromium pages: the same churn (see deactivate) — the reset
+  // that follows the reactivation must not drop the held replacement.
+  if (((!isWayland() && (isChromiumCached() || isFirefoxOrSnap() ||
+                         x11ForwardedReplacement_)) ||
+       (isWayland() && isChromiumBrowser(appProgram()) &&
+        !inChromiumAddressBar())) &&
+      uinputDeleting_ && !pendingUinputCommit_.empty()) {
     surrResetTentative_ = false;
     SKEY_DEBUG() << "Reset: mid-replacement churn, keep uinput state";
     return;
@@ -5032,8 +5219,12 @@ bool SKeyState::checkBlindFieldChange() {
   auto *mon = engine_->a11yMonitor();
   // An unresolved program name at activation is the known Wayland focus
   // race for Chromium — accept it, the text guards below carry the safety.
+  // Terminals have no fields to change: their surrounding text follows the
+  // shell output, which the comparison below misreads as a new field and
+  // resets the word mid-typing (Tabby "goxg", 2026-10-30).
   if (!mon || (!isChromiumCached() && !appProgram().empty()) ||
-      a11yFocusRelevant() ||
+      !a11yBlind() || isTerminalAppName(appProgram()) ||
+      ideTerminalFocused() ||
       viet_.getRawInput().empty() || surrPrevKeyUsec_ == 0 ||
       now(CLOCK_MONOTONIC) - surrPrevKeyUsec_ < kSurrVerifyQuietUsec ||
       !settledKeys_.empty() || settledReplayTimer_ ||
@@ -5090,12 +5281,36 @@ bool SKeyState::checkBlindFieldChange() {
   return true;
 }
 
+// A web-content focus younger than this may be Chrome's omnibox churn (focus
+// bouncing through the document and back); older, the user is in the page.
+static constexpr uint64_t kAddrBarLeftStableUsec = 300000; // 300ms
+
 bool SKeyState::checkCellSelection() {
   // A web grid can change cells without an fcitx focus/reset cycle. Consume
   // the selection generation before saving/reclaiming the word or processing
   // even a looped-back injected Backspace. Preserve the outstanding count so
   // those old injected keys are still swallowed by the normal loopback guard.
   if (auto *mon = engine_->a11yMonitor()) {
+    // A word begun in the address bar never continues in the page.  The
+    // omnibox churn guard ("expecting cycle") also swallows the focus cycle
+    // of a genuine click into the page, so the word survived: the first key
+    // in a Google Sheets cell extended the omnibox's "gõ" ("goxg…",
+    // 2026-10-31).  Only a web-content focus that has settled counts.
+    if (viet_.getRawInput().empty()) {
+      wordStartedInAddrBar_ = addressBarModesAvailable() &&
+          !(a11yFocusRelevant() && mon->isWebContentFocused());
+    } else if (wordStartedInAddrBar_ && a11yFocusRelevant() &&
+               mon->isWebContentFocused()) {
+      A11yMonitor::FocusIdentity identity;
+      if (mon->focusIdentity(identity) &&
+          now(CLOCK_MONOTONIC) - identity.snapshotUsec >= kAddrBarLeftStableUsec) {
+        SKEY_DEBUG() << "AddrBar: focus settled in the page, resetting word '"
+                     << viet_.getComposed() << "'";
+        wordStartedInAddrBar_ = false;
+        resetForCellChange();
+        return true;
+      }
+    }
     const auto serial = mon->cellSelectionSerial();
     bool changed = serial != cellSelectionSerial_;
     cellSelectionSerial_ = serial;
@@ -5130,7 +5345,7 @@ bool SKeyState::checkCellSelection() {
       // (Wayland Chrome sends none — the a11y path above is the real
       // channel there).  Uinput only: Surr mode has its own surrounding-
       // based verification.
-      if (useUinputMode() && isWayland() && !a11yFocusRelevant() &&
+      if (useUinputMode() && isWayland() && a11yBlind() &&
           !viet_.getRawInput().empty() && ic_->cursorRect().height() > 0) {
         const int prevX = lastKeyCaretX_, prevY = lastKeyCaretY_;
         const auto &rect = ic_->cursorRect();
@@ -5364,16 +5579,21 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // shows the focus is not on a text entry and the cached mode isn't
   // Uinput yet.
   bool a11yNonEntry = a11yBrowserNonEntryNarrow();
-  bool a11yTerminal = a11yChromiumTerminal();
+  bool a11yTerminal = a11yChromiumTerminal() ||
+                      a11yIdeWidget() == A11yMonitor::IdeWidget::CodeEditor;
   bool a11yDocs = a11yGoogleDocsFocused();
+  // detectAutoMode's Uinput verdicts go through autoUinput(), which yields
+  // Native on native X11 (or with replaceUinputWithNative) — both count as
+  // "already on the key-injection path", or these triggers re-ran the full
+  // chain every back-off period on a verdict that could not change.
+  const bool notInjecting =
+      !modeCacheValid_ || (cachedMode_ != SKeyOutputMode::Uinput &&
+                           cachedMode_ != SKeyOutputMode::Native);
   bool triggerHit =
       modeDecisionPending_ || a11yFreshWebEditor() ||
-      (a11yNonEntry &&
-       (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)) ||
-      (a11yTerminal &&
-       (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput)) ||
-      (a11yDocs &&
-       (!modeCacheValid_ || cachedMode_ != SKeyOutputMode::Uinput));
+      (a11yNonEntry && notInjecting) ||
+      (a11yTerminal && notInjecting) ||
+      (a11yDocs && notInjecting);
   const bool initialBrowserStabilizing =
       isWayland() && (isFirefoxOrSnap() || isChromiumBrowser(appProgram())) &&
       viet_.getRawInput().empty() && lastActivateUsec_ > 0 &&
@@ -5385,6 +5605,10 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   // still invalidate via reset()/activate(), and the bare-caps deferral
   // (modeDecisionPending_) is never backed off — its 2s window must
   // catch the caps upgrade in time.
+  if (viet_.getRawInput().empty() && triggerHit && initialBrowserStabilizing)
+    SKEY_DEBUG() << "Auto: re-eval suppressed (initial browser window), "
+                    "first word keeps mode="
+                 << outputModeName(cachedMode_);
   if (viet_.getRawInput().empty() && triggerHit &&
       !initialBrowserStabilizing &&
       (modeDecisionPending_ || !modeCacheValid_ ||
@@ -5555,6 +5779,19 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
   }
 
   auto key = keyEvent.key();
+
+  // A user edit outside the watched native replacement (Backspace/Delete,
+  // Enter sending a chat message, Ctrl/Alt shortcuts: select-all, cut,
+  // undo) makes the following surrounding pushes the user's own — an
+  // emptied field is not evidence of a dropped native delete (Gemini in
+  // Chrome got marked delete-broken for the session, 2026-10-30).  Our own
+  // injected Backspaces never get here (handlePendingUinputBackspace).
+  if (surrNativePostVerify_ &&
+      (key.sym() == FcitxKey_BackSpace || key.sym() == FcitxKey_Delete ||
+       key.sym() == FcitxKey_Return || key.sym() == FcitxKey_KP_Enter ||
+       key.states().test(KeyState::Ctrl) || key.states().test(KeyState::Alt))) {
+    surrNativePostVerify_ = false;
+  }
 
   // ── Mode switch menu (activated by ` key) ──
   if (modeMenuActive_) {
@@ -6862,6 +7099,18 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               // focus change.
               addrBarWordStartCaretX_ = ic_->cursorRect().left();
               {
+                const auto &startSurr = ic_->surroundingText();
+                wordStartTailKnown_ = startSurr.isValid();
+                wordStartTail_.clear();
+                if (wordStartTailKnown_) {
+                  const auto caretByte = static_cast<size_t>(utf8::ncharByteLength(
+                      startSurr.text().begin(),
+                      std::max(startSurr.cursor(), startSurr.anchor())));
+                  wordStartTail_ = startSurr.text().substr(
+                      std::min(caretByte, startSurr.text().size()));
+                }
+              }
+              {
                 int caretX = addrBarWordStartCaretX_;
                 if (caretX > 0 && (addrBarLeftEdgeCaretX_ < 0 ||
                                    caretX < addrBarLeftEdgeCaretX_)) {
@@ -7037,6 +7286,14 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                   SKEY_DEBUG() << "Uinput: GNOME omnibox autofill, +1 BS (total="
                                << realBackspaces << ")";
                 }
+              }
+              // Firefox URL bar: the first Backspace removes the selected
+              // inline autofill; Firefox never re-autofills on a deletion.
+              if (!dismissGnomeAutofill && firefoxUrlAutofillShown(oldComposed)) {
+                dismissGnomeAutofill = true;
+                ++realBackspaces;
+                SKEY_DEBUG() << "Uinput: Firefox URL autofill, +1 BS (total="
+                             << realBackspaces << ")";
               }
               // The dismissal is not a character deletion. Do not let the
               // generic deletion observer expect it to remove another letter.
@@ -7995,6 +8252,12 @@ int SKeyState::surrNativeRepairIfDropped(const fcitx::SurroundingText &surr,
   // forever after) — no repair evidence will ever arrive.  Mark the app
   // sticky so every later replacement skips the native delete; this word
   // stays broken once.
+  // Browsers legitimately report an empty field (a chat composer cleared on
+  // send, a reset form): only the text-shaped evidence below counts there.
+  if (text.empty() && (isChromiumCached() || isFirefoxOrSnap())) {
+    surrNativePostVerify_ = false;
+    return 0;
+  }
   if (text.empty()) {
     surrNativePostVerify_ = false;
     engine_->markSurrDeleteBrokenApp(appProgram());
@@ -8307,7 +8570,22 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       const bool firstChromiumWaylandReplace =
           isWayland() && isChromiumBrowser(appProgram()) &&
           !inChromiumAddressBar() && !addrBarHadFirstWord_;
-      if (firstChromiumWaylandReplace && useNativeSurroundingApi()) {
+      // Right after fcitx5 (re)starts the uinput device is still warming up
+      // (registration window, ~4s): a forced uinput replacement is rejected
+      // and the word resets ("đây" → "day" on the first word).  The native
+      // surrounding path is the regular Chromium Wayland route (atomic
+      // suffix delete + deferred commit + post-verify) — use it until the
+      // device is ready.
+#ifdef SKEY_TESTING
+      const bool uinputReady = uinputTestReady_;
+#else
+      const bool uinputReady = engine_->uinput_.ready();
+#endif
+      if (firstChromiumWaylandReplace && useNativeSurroundingApi() && !uinputReady) {
+        SKEY_DEBUG() << "Surr: first Chromium web replacement, uinput not ready "
+                        "-> native";
+      }
+      if (firstChromiumWaylandReplace && useNativeSurroundingApi() && uinputReady) {
         SKEY_DEBUG() << "Surr: first Chromium web replacement -> Uinput";
         deleteViaBackspace(/*deferForwardCommit=*/false,
                            /*forceUinput=*/true);
@@ -8451,6 +8729,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
                      << (webkitGtkSurroundingFallback() ? "webkit-gtk-no-delete-handler"
                          : !useNativeSurroundingApi() ? "native-api-unavailable"
                          : inChromiumAddressBar() ? "chromium-address-bar"
+                         : engine_->isSurrDeleteBrokenApp(appProgram()) ? "app-delete-broken"
                                                   : "firefox-docs-x11-policy")
                      << " surrValid=" << surrounding.isValid()
                      << " cursor=" << surrounding.cursor()
