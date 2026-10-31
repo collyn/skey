@@ -12,6 +12,8 @@
 #include <iostream>
 #include <filesystem>
 #include <fstream>
+#include <csignal>
+#include <sys/wait.h>
 #include <limits>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -3074,15 +3076,44 @@ struct EnginePerformanceTest {
     // Chrome page search box (new-tab Google box) inline-autocompletes:
     // "cha" + selected suggestion tail.  One extra Backspace removes the
     // selection; without one the replacement leaves "chaào".
+    // gnomeRelay: mutter relays Chrome as "gnome-shell" over the ibus
+    // frontend; only the a11y focus (a Chromium process, web content)
+    // identifies the page field.
     static void chromePageAutofill(Instance &instance, const std::string &text,
-                                   unsigned cursor, unsigned anchor, uint32_t expectedBs) {
+                                   unsigned cursor, unsigned anchor, uint32_t expectedBs,
+                                   bool gnomeRelay = false) {
         SKeyEngine engine(&instance, false);
         FocusGroup group("wayland:test", instance.inputContextManager());
-        TestInput input(instance.inputContextManager(), "google-chrome");
+        const std::string program = gnomeRelay ? "gnome-shell" : "google-chrome";
+        TestInput input(instance.inputContextManager(), program);
+        if (gnomeRelay) input.frontendName = "ibus";
         input.setFocusGroup(&group);
         input.setCapabilityFlags(CapabilityFlags(0x72));
+        // A real process whose binary sits next to chrome-sandbox — the
+        // marker of renamed Chromium/Electron runtimes — owns the focus.
+        char dirTemplate[] = "/tmp/skey-relay-XXXXXX";
+        pid_t browser = -1;
+        std::string browserDir;
+        if (gnomeRelay) {
+            check(mkdtemp(dirTemplate) != nullptr, "create relay browser fixture");
+            browserDir = dirTemplate;
+            std::filesystem::copy_file("/bin/sleep", browserDir + "/browser");
+            std::ofstream(browserDir + "/chrome-sandbox") << "";
+            browser = fork();
+            if (browser == 0) {
+                execl((browserDir + "/browser").c_str(), "browser", "30", nullptr);
+                _exit(127);
+            }
+            check(browser > 0, "start relay browser fixture");
+            for (int i = 0; i < 200 && skey::processExe(browser) != browserDir + "/browser"; ++i)
+                usleep(1000);
+            engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+            engine.a11yMonitor_->focusInWebDoc_ = true;
+            engine.a11yMonitor_->focusProcessId_ = browser;
+            engine.a11yMonitor_->focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
+        }
         auto &state = *input.propertyFor(&engine.factory_);
-        state.cachedProgram_ = "google-chrome";
+        state.cachedProgram_ = program;
         state.cachedIsChromium_ = 1;
         state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ =
             state.cachedIsFirefoxBrowser_ = 0;
@@ -3106,6 +3137,11 @@ struct EnginePerformanceTest {
               "Chrome page field: one extra Backspace only for a selected autocomplete tail");
         state.resetForCellChange();
         close(sockets[1]);
+        if (browser > 0) {
+            kill(browser, SIGKILL);
+            waitpid(browser, nullptr, 0);
+            std::filesystem::remove_all(browserDir);
+        }
     }
 
     // A word typed in the omnibox must not continue in the page: the
@@ -4428,6 +4464,9 @@ int main(int argc, char **argv) {
         fcitx::EnginePerformanceTest::chromePageAutofill(instance, "cha", 3, 3, 2);
         // A selection that does not reach the end is not an autocomplete.
         fcitx::EnginePerformanceTest::chromePageAutofill(instance, "chatgpt.com", 3, 5, 2);
+        // GNOME: the same fields relayed as gnome-shell.
+        fcitx::EnginePerformanceTest::chromePageAutofill(instance, "chatgpt.com", 3, 11, 3, true);
+        fcitx::EnginePerformanceTest::chromePageAutofill(instance, "cha", 3, 3, 2, true);
     }
     {
         fcitx::Instance instance(argc, argv);

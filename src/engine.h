@@ -169,6 +169,7 @@ private:
     bool gnomeOmniboxCaret() const;
     bool waylandBrowserAddressBarCaret() const;
     bool gnomeRelayBrowserUI(bool gecko) const;
+    bool gnomeRelayBrowserFocus(bool gecko, bool webContent) const;
     bool gnomeRelayOmnibox() const;
     /// Auto uses Select in detected browser address bars on X11 and Wayland.
     bool autoSelectAddressBar() const;

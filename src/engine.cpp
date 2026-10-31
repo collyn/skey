@@ -393,14 +393,23 @@ bool SKeyState::waylandBrowserAddressBarCaret() const {
   return true;
 }
 
-bool SKeyState::gnomeRelayBrowserUI(bool gecko) const {
+// Mutter relays browser input as "gnome-shell": the AT-SPI focus (fresh,
+// owned by a Chromium/Gecko process) is the only identity left — either
+// its browser UI or a field in the page (webContent).
+bool SKeyState::gnomeRelayBrowserFocus(bool gecko, bool webContent) const {
   if (!isWayland() || !(gnomeDesktop() || appProgram() == "gnome-shell"))
     return false;
   auto *monitor = engine_->a11yMonitor();
   if (!monitor || !monitor->isFocusSnapshotFresh(5000000)) return false;
   const int pid = monitor->focusProcessId();
-  if (pid <= 1 || !monitor->isBrowserUIFocused()) return false;
+  if (pid <= 1 || !(webContent ? monitor->isWebContentFocused()
+                               : monitor->isBrowserUIFocused()))
+    return false;
   return gecko ? processHasGeckoMarker(pid) : processHasChromiumMarkers(pid);
+}
+
+bool SKeyState::gnomeRelayBrowserUI(bool gecko) const {
+  return gnomeRelayBrowserFocus(gecko, false);
 }
 
 bool SKeyState::addressBarModesAvailable() const {
@@ -7236,8 +7245,10 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               // tail, and the first BS only removes the selection ("chào"
               // → "chaào", 2026-10-31).  Chrome Wayland reports that
               // selection in the surrounding text.
-              const bool chromiumPageField = isWayland() &&
-                  isChromiumBrowser(appProgram()) && !inChromiumAddressBar();
+              // GNOME relays Chrome as "gnome-shell" (frontend ibus): the
+              // a11y focus identifies the page field there.
+              const bool chromiumPageField = isWayland() && !inChromiumAddressBar() &&
+                  (isChromiumBrowser(appProgram()) || gnomeRelayBrowserFocus(false, true));
               if (chromiumPageField) {
                 const auto &surr = ic_->surroundingText();
                 SKEY_DEBUG() << "Uinput: page field before replace surrValid=" << surr.isValid()
