@@ -3086,16 +3086,25 @@ struct EnginePerformanceTest {
             char dirTemplate[] = "/tmp/skey-relay-XXXXXX";
             check(mkdtemp(dirTemplate) != nullptr, "create relay browser fixture");
             dir = dirTemplate;
-            std::filesystem::copy_file("/bin/sleep", dir + "/browser");
+            // Keep the name "sleep": multicall coreutils pick the utility
+            // from the executable's name ("unknown program 'browser'" made
+            // the fixture exit at once — a flaky race with the exe probe).
+            // The marker is the sibling chrome-sandbox, not the name.
+            std::filesystem::copy_file("/bin/sleep", dir + "/sleep");
             std::ofstream(dir + "/chrome-sandbox") << "";
             pid = fork();
             if (pid == 0) {
-                execl((dir + "/browser").c_str(), "browser", "30", nullptr);
+                execl((dir + "/sleep").c_str(), "sleep", "30", nullptr);
                 _exit(127);
             }
             check(pid > 0, "start relay browser fixture");
-            for (int i = 0; i < 200 && skey::processExe(pid) != dir + "/browser"; ++i)
+            for (int i = 0; i < 200 && skey::processExe(pid) != dir + "/sleep"; ++i)
                 usleep(1000);
+            // Give a failing exec time to exit, then require it still runs
+            // (kill(pid, 0) alone also succeeds for an unreaped zombie).
+            usleep(20000);
+            check(waitpid(pid, nullptr, WNOHANG) == 0 && skey::processExe(pid) == dir + "/sleep",
+                  "relay browser fixture stays alive with its marked binary");
         }
         ~ChromiumProcess() {
             if (pid > 0) { kill(pid, SIGKILL); waitpid(pid, nullptr, 0); }
