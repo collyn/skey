@@ -349,9 +349,15 @@ struct NativeInjector::Impl {
         wakeSource = g_unix_fd_source_new(wakeFd, G_IO_IN);
         g_source_set_callback(wakeSource, G_SOURCE_FUNC(commands), this, nullptr);
         g_source_attach(wakeSource, context);
-        portal = xdp_portal_new();
+        // xdp_portal_new() aborts the whole process (g_error) when the
+        // session bus is unreachable — it took Fcitx down with it.  The
+        // initable variant reports the failure instead (libportal >= 0.7).
+        GError *portalError = nullptr;
+        portal = xdp_portal_initable_new(&portalError);
         if (!portal) {
-            fail("cannot create portal proxy");
+            fail(std::string("cannot create portal proxy: ") +
+                 (portalError ? portalError->message : "unknown error"));
+            g_clear_error(&portalError);
         } else {
             pending = true;
             // Keyboard only: no screencast, pointer or clipboard access.
