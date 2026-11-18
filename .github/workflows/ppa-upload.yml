@@ -12,7 +12,7 @@ on:
         required: false
         default: 'noble resolute'
       revision:
-        description: 'Starting Debian revision; each series increments it'
+        description: 'Starting Debian revision; each series increments it. To retry one series, enter only that series and the revision it failed on'
         required: false
         default: '1'
 
