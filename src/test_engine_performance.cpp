@@ -7,6 +7,7 @@
 #include <fcitx-utils/event.h>
 #include <fcitx-utils/utf8.h>
 #include <fcitx/focusgroup.h>
+#include <algorithm>
 #include <cstdlib>
 #include <cerrno>
 #include <iostream>
@@ -104,7 +105,7 @@ struct EnginePerformanceTest {
         input.setFocusGroup(&group);
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "skey-test";
-        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsChromium_ = state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         state.uinputRequest_ = std::make_shared<skey::UinputInjector::Request>();
@@ -139,7 +140,7 @@ struct EnginePerformanceTest {
         input.setFocusGroup(&group);
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "skey-test";
-        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsChromium_ = state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         state.uinputTestReady_ = false;
@@ -233,7 +234,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = state.cachedIsWebKitGtk_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = state.cachedIsWebKitGtk_ = 0;
         state.cachedWebKitProgram_ = "google-chrome";
         check(state.effectiveMode() == (nativeSuccess ? SKeyOutputMode::Native : SKeyOutputMode::SurroundingText),
               "omnibox override preserves the requested output mode");
@@ -375,7 +376,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = state.cachedWebKitProgram_ = "unknown-webkit-editor";
         state.cachedIsWebKitGtk_ = 1; // toolkit detection, independent of application identity
-        state.cachedIsChromium_ = state.cachedIsTerminalApp_ = state.cachedIsFirefoxOrSnap_ = 0;
+        state.cachedIsChromium_ = state.cachedIsTerminalApp_ = state.cachedIsGeckoApp_ = 0;
         state.hasAppModeOverride_ = perApp;
         state.appModeOverride_ = SKeyOutputMode::SurroundingText;
         auto press = [&](KeySym sym) {
@@ -428,7 +429,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome-stable";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.cachedMode_ = mode;
         state.modeCacheValid_ = true;
         state.viet_.setRawInput("chaf");
@@ -568,7 +569,7 @@ struct EnginePerformanceTest {
                     input.surroundingText().setText(input.text, reversed ? end : start, reversed ? start : end);
                     auto &state = *input.propertyFor(&engine.factory_);
                     state.cachedProgram_ = "gnome-shell";
-                    state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+                    state.cachedIsChromium_ = state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
                     state.viet_.setRawInput("cha");
                     state.committedLen_ = 3;
                     int sockets[2];
@@ -623,7 +624,7 @@ struct EnginePerformanceTest {
             input.surroundingText().setText(scenario == 0 ? "chxexample" : "chaexample", 3, 10);
             auto &state = *input.propertyFor(&engine.factory_);
             state.cachedProgram_ = program;
-            state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+            state.cachedIsChromium_ = state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
             state.viet_.setRawInput("cha");
             state.committedLen_ = 3;
             int sockets[2];
@@ -680,7 +681,7 @@ struct EnginePerformanceTest {
                 input.surroundingText().setText(input.text, cursor, cursor);
                 auto &state = *input.propertyFor(&engine.factory_);
                 state.cachedProgram_ = "gnome-shell";
-                state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+                state.cachedIsChromium_ = state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
                 state.viet_.setRawInput("ca");
                 state.committedLen_ = 2;
                 int sockets[2];
@@ -799,7 +800,7 @@ struct EnginePerformanceTest {
             input.setCapabilityFlags(CapabilityFlag::Preedit);
             auto &state = *input.propertyFor(&engine.factory_);
             state.cachedProgram_ = "gnome-shell";
-            state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+            state.cachedIsChromium_ = state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
             int sockets[2];
             check(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sockets) == 0,
                   "isolate GNOME edit/retype session");
@@ -965,7 +966,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = mode;
         check(state.useUinputMode(), "both transports share Uinput replacement policy");
@@ -1030,7 +1031,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.cachedMode_ = mode;
         state.modeCacheValid_ = true;
         state.viet_.setShortW(shortW);
@@ -1076,7 +1077,7 @@ struct EnginePerformanceTest {
         input.surroundingText().setText("ban", 3, 3);
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "firefox";
-        state.cachedIsFirefoxOrSnap_ = 1;
+        state.cachedIsGeckoApp_ = 1;
         state.cachedIsChromium_ = state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::SurroundingText;
@@ -1122,7 +1123,7 @@ struct EnginePerformanceTest {
         TestInput input(instance.inputContextManager());
         input.setFocusGroup(&group);
         auto &state = *input.propertyFor(&engine.factory_);
-        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsChromium_ = state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::SurroundingText;
         state.scheduleDeferredCommit("old", "", 50000);
@@ -1164,7 +1165,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.cachedMode_ = SKeyOutputMode::SurroundingText;
         state.modeCacheValid_ = true;
         state.viet_.setRawInput("dda");
@@ -1200,7 +1201,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = program;
         state.cachedIsChromium_ = firefox ? 0 : 1;
-        state.cachedIsFirefoxOrSnap_ = firefox ? 1 : 0;
+        state.cachedIsGeckoApp_ = firefox ? 1 : 0;
         state.cachedIsTerminalApp_ = 0;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         state.modeCacheValid_ = true;
@@ -1234,7 +1235,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome-stable";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         state.modeCacheValid_ = true;
         state.lastActivateUsec_ = now(CLOCK_MONOTONIC);
@@ -1275,7 +1276,7 @@ struct EnginePerformanceTest {
         state.cachedIsChromium_ = 1;
         // Even an IDE with a shell child must retain its editor timing.
         state.cachedIsTerminalApp_ = 1;
-        state.cachedIsFirefoxOrSnap_ = 0;
+        state.cachedIsGeckoApp_ = 0;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         state.modeCacheValid_ = true;
         const auto appKey = skey::appDelayKey(program, wayland);
@@ -1354,7 +1355,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome-stable";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.cachedMode_ = SKeyOutputMode::SurroundingText;
         state.modeCacheValid_ = true;
         state.viet_.setRawInput("chafo");
@@ -1408,7 +1409,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome-stable";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.cachedMode_ = SKeyOutputMode::SurroundingText;
         state.modeCacheValid_ = true;
         state.viet_.setShortW(true);
@@ -1485,7 +1486,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome-stable";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.cachedMode_ = uinput ? SKeyOutputMode::Uinput
                                    : SKeyOutputMode::SurroundingText;
         state.modeCacheValid_ = true;
@@ -1595,7 +1596,7 @@ struct EnginePerformanceTest {
             auto &st = *unnamed.propertyFor(&engine.factory_);
             st.cachedProgram_ = "";
             st.cachedIsChromium_ = 0;
-            st.cachedIsFirefoxOrSnap_ = st.cachedIsTerminalApp_ = 0;
+            st.cachedIsGeckoApp_ = st.cachedIsTerminalApp_ = 0;
             st.cachedMode_ = uinput ? SKeyOutputMode::Uinput
                                     : SKeyOutputMode::SurroundingText;
             st.modeCacheValid_ = true;
@@ -1939,7 +1940,7 @@ struct EnginePerformanceTest {
         state.cachedProgram_ = program;
         const bool firefox = std::string(program) == "firefox";
         state.cachedIsChromium_ = firefox ? 0 : 1;
-        state.cachedIsFirefoxOrSnap_ = firefox ? 1 : 0;
+        state.cachedIsGeckoApp_ = firefox ? 1 : 0;
         state.cachedIsTerminalApp_ = 0;
         // Native X11 embedded Chromium clients (Tabby, VS Code) compose every
         // commit — input_field_policy.h usesCompositionCommits(), keyed on
@@ -1996,7 +1997,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = program;
         state.cachedIsChromium_ = firefox ? 0 : 1;
-        state.cachedIsFirefoxOrSnap_ = firefox ? 1 : 0;
+        state.cachedIsGeckoApp_ = firefox ? 1 : 0;
         state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::Uinput;
@@ -2138,7 +2139,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = program;
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         engine.appDelayOverrides_[skey::appDelayKey(program, wayland)].preCommitMs = overrideMs;
@@ -2185,7 +2186,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         const auto appKey = skey::appDelayKey("google-chrome", true);
@@ -2229,7 +2230,7 @@ struct EnginePerformanceTest {
         input.setCapabilityFlags(client ? CapabilityFlags(CapabilityFlag::Preedit) : CapabilityFlags());
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "skey-test";
-        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsChromium_ = state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::Preedit;
         engine.config_.showPreedit.setValue(true);
@@ -2308,7 +2309,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome-stable";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         state.modeCacheValid_ = true;
         int sockets[2];
@@ -2383,7 +2384,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome-stable";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         state.modeCacheValid_ = true;
         state.viet_.setRawInput("chaf");
@@ -2433,7 +2434,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome-stable";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         state.modeCacheValid_ = true;
         state.viet_.setRawInput("nhaas");
@@ -2498,7 +2499,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = program;
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         state.modeCacheValid_ = true;
         state.addrBarLastTriggerKey_ = FcitxKey_n;
@@ -2535,7 +2536,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome-stable";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         state.modeCacheValid_ = true;
         state.viet_.setRawInput("nhaast");
@@ -2587,7 +2588,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "firefox";
         state.cachedIsChromium_ = state.cachedIsTerminalApp_ = 0;
-        state.cachedIsFirefoxOrSnap_ = 1;
+        state.cachedIsGeckoApp_ = 1;
         state.cachedMode_ = SKeyOutputMode::SurroundingText;
         state.modeCacheValid_ = true;
         state.viet_.setRawInput("twj");
@@ -2624,6 +2625,52 @@ struct EnginePerformanceTest {
               "repeated BS must not issue deletion against the stale pre-selection cache");
     }
 
+    // The fcitx4 module bundled in snaps hides the Ctrl+A selection (the
+    // snapshot stays collapsed): the idle Backspace must reach the app, or
+    // a native delete(-1, 1) removes one character (App Center, 2026-11-19).
+    // A dbus frontend reports its selections: a collapsed caret there is
+    // real and the engine keeps deleting through the surrounding API.
+    static void fcitx4SelectAllBackspace(Instance &instance, const char *frontend, bool passThrough) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("x11:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "snap-store");
+        input.frontendName = frontend;
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlag::SurroundingText);
+        auto &state = *input.propertyFor(&engine.factory_);
+        state.cachedProgram_ = "snap-store";
+        state.cachedIsChromium_ = state.cachedIsTerminalApp_ = state.cachedIsGeckoApp_ = 0;
+        state.cachedMode_ = SKeyOutputMode::SurroundingText;
+        state.modeCacheValid_ = true;
+        for (char ch : std::string("def")) {
+            KeyEvent event(&input, Key(static_cast<KeySym>(ch)));
+            state.keyEvent(event);
+        }
+        input.surroundingText().setText("abc dè", 6, 6);
+        input.updateSurroundingText();
+        KeyEvent selectAll(&input, Key(FcitxKey_a, KeyState::Ctrl));
+        state.keyEvent(selectAll);
+        check(!selectAll.accepted() && state.viet_.getRawInput().empty(),
+              "Ctrl+A passes to the app and ends tracked composition");
+        // Selection hidden: the snapshot still shows a collapsed caret.
+        input.surroundingText().setText("abc dè", 6, 6);
+        input.updateSurroundingText();
+        const int deletions = input.deletions;
+        const size_t forwarded = input.forwarded.size();
+        KeyEvent backspace(&input, Key(FcitxKey_BackSpace));
+        state.keyEvent(backspace);
+        if (passThrough) {
+            check(!backspace.accepted() && input.deletions == deletions &&
+                      input.forwarded.size() == forwarded,
+                  "fcitx4: the idle Backspace reaches the app's hidden selection");
+            check(state.lastRawInput_.empty() && !state.reclaimReady_,
+                  "fcitx4: no stale word left to reclaim after the selection is gone");
+        } else {
+            check(backspace.accepted() && input.deletions == deletions + 1,
+                  "dbus: a collapsed caret is real, delete through the surrounding API");
+        }
+    }
+
     static void firefoxNativeReplacement(Instance &instance) {
         class FirefoxInput : public TestInput {
         public:
@@ -2655,7 +2702,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "firefox";
         state.cachedIsChromium_ = state.cachedIsTerminalApp_ = 0;
-        state.cachedIsFirefoxOrSnap_ = 1;
+        state.cachedIsGeckoApp_ = 1;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::SurroundingText;
         // A private transport ensures a regression cannot inject real keys.
@@ -2696,7 +2743,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "firefox";
         state.cachedIsChromium_ = state.cachedIsTerminalApp_ = 0;
-        state.cachedIsFirefoxOrSnap_ = 1;
+        state.cachedIsGeckoApp_ = 1;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::SurroundingText;
         if (snapshot != 0) {
@@ -2729,7 +2776,7 @@ struct EnginePerformanceTest {
         input.setCapabilityFlags(CapabilityFlag::SurroundingText);
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "soffice.bin";
-        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsChromium_ = state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         // Capture engine requests without opening a real uinput device or
@@ -2821,7 +2868,7 @@ struct EnginePerformanceTest {
         input.setCapabilityFlags(CapabilityFlag::SurroundingText);
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = program;
-        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsChromium_ = state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::Uinput;
 
@@ -2864,7 +2911,7 @@ struct EnginePerformanceTest {
         input.setCapabilityFlags(CapabilityFlag::SurroundingText);
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "skey-test";
-        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ =
+        state.cachedIsChromium_ = state.cachedIsGeckoApp_ =
             state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::SurroundingText;
@@ -2933,7 +2980,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "antigravity-ide";
         state.cachedIsChromium_ = 1;
-        state.cachedIsTerminalApp_ = state.cachedIsFirefoxOrSnap_ = 0;
+        state.cachedIsTerminalApp_ = state.cachedIsGeckoApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::SurroundingText;
         state.viet_.setRawInput("bạn");
@@ -2994,7 +3041,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = program;
         state.cachedIsChromium_ = chromium;
-        state.cachedIsTerminalApp_ = state.cachedIsFirefoxOrSnap_ = 0;
+        state.cachedIsTerminalApp_ = state.cachedIsGeckoApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::SurroundingText;
         state.viet_.setRawInput("bạn");
@@ -3031,7 +3078,7 @@ struct EnginePerformanceTest {
             monitor.focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
             state.cachedProgram_ = "code";
             state.cachedIsChromium_ = 1;
-            state.cachedIsTerminalApp_ = state.cachedIsFirefoxOrSnap_ =
+            state.cachedIsTerminalApp_ = state.cachedIsGeckoApp_ =
                 state.cachedIsFirefoxBrowser_ = 0;
             state.focusSawContentHints_ = true;
             state.modeCacheValid_ = false;
@@ -3141,7 +3188,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = program;
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ =
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ =
             state.cachedIsFirefoxBrowser_ = 0;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         state.modeCacheValid_ = true;
@@ -3258,6 +3305,26 @@ struct EnginePerformanceTest {
               "named non-browser: no omnibox caret guess, no Select transport");
         state.refreshAppMode();
         check(state.cachedProgram_ == "telegram-desktop", "per-app rules are keyed by the named app");
+        // Relay ordering is the relay's, not the omnibox's: a key queued
+        // behind a replacement commit replays as a commit, after a yield.
+        // Forwarded, the space overtook "ếng" and the commit vanished
+        // ("tieengs vieetj" → "ti việt", Telegram snap on GNOME 50).
+        check(state.useOrderedUinputReplay(), "named non-browser: ordered replay behind commits");
+        {
+            engine.config_.outputMode.setValue(SKeyOutputMode::Uinput);
+            state.modeCacheValid_ = false;
+            input.commits.clear();
+            input.forwarded.clear();
+            state.settledKeys_.push_back({Key(FcitxKey_space), false, 10});
+            state.settledKeys_.push_back({Key(FcitxKey_space), true, 11});
+            state.replaySettledKeys();
+            check(input.forwarded.empty() && !input.commits.empty() && input.commits.back() == " ",
+                  "named non-browser: a replayed space is committed, never forwarded");
+            state.settledKeys_.clear();
+            state.settledReplayTimer_.reset();
+            engine.config_.outputMode.setValue(SKeyOutputMode::SurroundingText);
+            state.modeCacheValid_ = false;
+        }
 
         shell(GS::Known, "google-chrome-stable", "google-chrome.desktop");
         state.activate();
@@ -3366,7 +3433,7 @@ struct EnginePerformanceTest {
                                      CapabilityFlag::Preedit);
             auto &relayState = *relay.propertyFor(&engine.factory_);
             relayState.activate();
-            relayState.cachedIsChromium_ = relayState.cachedIsFirefoxOrSnap_ =
+            relayState.cachedIsChromium_ = relayState.cachedIsGeckoApp_ =
                 relayState.cachedIsFirefoxBrowser_ = relayState.cachedIsTerminalApp_ =
                 relayState.cachedIsWebKitGtk_ = 0;
             std::string text;
@@ -3412,7 +3479,7 @@ struct EnginePerformanceTest {
             for (int scenario = 0; scenario < 2; ++scenario) {
                 relayState.activate();
                 relayState.cachedIsChromium_ = scenario;
-                relayState.cachedIsFirefoxOrSnap_ = relayState.cachedIsFirefoxBrowser_ =
+                relayState.cachedIsGeckoApp_ = relayState.cachedIsFirefoxBrowser_ =
                     relayState.cachedIsTerminalApp_ = relayState.cachedIsWebKitGtk_ = 0;
                 std::string shown;
                 for (char c : std::string("vie")) {
@@ -3506,6 +3573,127 @@ struct EnginePerformanceTest {
     // Focus changes must not rescan /proc: each scan walks every process
     // on the main thread (40-140ms under CPU load, 2026-11-18).  Verdicts
     // live per program; a browser's name answers the other questions.
+    // A process with a chosen comm and binary path: a copy of this test
+    // binary, which only sleeps when started with SKEY_TEST_SLEEPER (so the
+    // fixture never depends on what coreutils does with a renamed binary).
+    struct ProbeProcess {
+        pid_t pid = -1;
+        std::string root;
+        std::string exe;
+        // check() exits on failure without unwinding: kill and remove the
+        // probes still alive from an atexit handler instead of leaking them.
+        static std::vector<std::pair<pid_t, std::string>> &alive() {
+            static std::vector<std::pair<pid_t, std::string>> probes;
+            return probes;
+        }
+        static void cleanupAlive() {
+            for (const auto &[probePid, probeRoot] : alive()) {
+                if (probePid > 0) { kill(probePid, SIGKILL); waitpid(probePid, nullptr, 0); }
+                std::error_code ignored;
+                std::filesystem::remove_all(probeRoot, ignored);
+            }
+            alive().clear();
+        }
+        ProbeProcess(const std::string &subdir, const std::string &name, bool libxul) {
+            // alive() first: statics built after atexit() die before it runs.
+            static const bool registered = (alive(), std::atexit(cleanupAlive), true);
+            (void)registered;
+            char rootTemplate[] = "/tmp/skey-probe-XXXXXX";
+            check(mkdtemp(rootTemplate) != nullptr, "create probe fixture");
+            root = rootTemplate;
+            alive().emplace_back(-1, root);
+            const std::string dir = root + "/" + subdir;
+            std::filesystem::create_directories(dir);
+            exe = dir + "/" + name;
+            std::filesystem::copy_file("/proc/self/exe", exe);
+            if (libxul) std::ofstream(dir + "/libxul.so") << "";
+            pid = fork();
+            if (pid == 0) {
+                setenv("SKEY_TEST_SLEEPER", "1", 1);
+                execl(exe.c_str(), name.c_str(), nullptr);
+                _exit(127);
+            }
+            alive().back().first = pid;
+            check(pid > 0, "start probe fixture");
+            std::string comm;
+            for (int i = 0; i < 2000; ++i) {
+                std::ifstream commFile("/proc/" + std::to_string(pid) + "/comm");
+                comm.clear();
+                std::getline(commFile, comm);
+                if (comm == name.substr(0, 15) && skey::processExe(pid) == exe) break;
+                usleep(1000);
+            }
+            check(comm == name.substr(0, 15) && skey::processExe(pid) == exe &&
+                      waitpid(pid, nullptr, WNOHANG) == 0,
+                  "probe fixture runs with its name and binary");
+        }
+        ~ProbeProcess() {
+            if (pid > 0) { kill(pid, SIGKILL); waitpid(pid, nullptr, 0); }
+            std::filesystem::remove_all(root);
+            auto &probes = alive();
+            probes.erase(std::remove_if(probes.begin(), probes.end(),
+                                        [&](const auto &probe) { return probe.second == root; }),
+                         probes.end());
+        }
+    };
+
+    // Snap packaging is not a Gecko trait: only Firefox by name or libxul.so
+    // next to the binary is.  Every snap app used to get Firefox's
+    // workarounds (Telegram: "xin cacs" → "xinác", 2026-11-18).
+    static void geckoAppIdentity(Instance &instance) {
+        struct Case {
+            const char *subdir;
+            const char *name;
+            bool libxul;
+            bool gecko;
+            const char *what;
+        };
+        const Case cases[] = {
+            {"snap/skeyprobe-snap/42/usr/bin", "skeyprobe-snap", false, false,
+             "a snap app that is not Gecko"},
+            {"snap/firefox/42/usr/lib/firefox", "skeyprobe-ffsnp", true, true,
+             "Firefox snap layout (libxul.so beside the binary)"},
+            {"opt/skeyprobe", "skeyprobe-gecko", true, true, "a Gecko fork outside snap"},
+            {"usr/bin", "skeyprobe-plain", false, false, "a plain app"},
+        };
+        for (const auto &c : cases) {
+            ProbeProcess probe(c.subdir, c.name, c.libxul);
+            // /proc scan path (no a11y pid; the scanner is synchronous here).
+            {
+                SKeyEngine engine(&instance, false);
+                FocusGroup group("wayland:test", instance.inputContextManager());
+                TestInput input(instance.inputContextManager(), c.name);
+                input.setFocusGroup(&group);
+                auto &state = *input.propertyFor(&engine.factory_);
+                if (state.isGeckoApp() != c.gecko)
+                    std::cerr << "scan: " << c.what << " gecko=" << state.isGeckoApp() << '\n';
+                check(state.isGeckoApp() == c.gecko, c.what);
+                check(!state.isChromiumCached(), "no Chromium verdict for a probe process");
+            }
+            // a11y pid path.
+            {
+                SKeyEngine engine(&instance, false);
+                engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+                engine.a11yMonitor_->focusProcessId_ = probe.pid;
+                engine.a11yMonitor_->focusSnapshotUsec_ = now(CLOCK_MONOTONIC);
+                FocusGroup group("wayland:test", instance.inputContextManager());
+                TestInput input(instance.inputContextManager(), c.name);
+                input.setFocusGroup(&group);
+                auto &state = *input.propertyFor(&engine.factory_);
+                check(state.a11yAppPid() == probe.pid, "the a11y pid vouches for the probe");
+                if (state.isGeckoApp() != c.gecko)
+                    std::cerr << "pid: " << c.what << " gecko=" << state.isGeckoApp() << '\n';
+                check(state.isGeckoApp() == c.gecko, c.what);
+            }
+        }
+        // Firefox by name needs no process at all.
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput firefox(instance.inputContextManager(), "firefox");
+        firefox.setFocusGroup(&group);
+        check(firefox.propertyFor(&engine.factory_)->isGeckoApp(), "Firefox by name is Gecko");
+    }
+
     static void programScanCache(Instance &instance) {
         SKeyEngine engine(&instance, false);
         FocusGroup group("wayland:test", instance.inputContextManager());
@@ -3608,7 +3796,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ =
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ =
             state.cachedIsFirefoxBrowser_ = 0;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         state.modeCacheValid_ = true;
@@ -3653,7 +3841,7 @@ struct EnginePerformanceTest {
         const auto prime = [&] {
             state.cachedProgram_ = "firefox";
             state.cachedIsChromium_ = state.cachedIsTerminalApp_ = 0;
-            state.cachedIsFirefoxBrowser_ = state.cachedIsFirefoxOrSnap_ = 1;
+            state.cachedIsFirefoxBrowser_ = state.cachedIsGeckoApp_ = 1;
             state.cachedWebKitProgram_ = "firefox";
             state.cachedIsWebKitGtk_ = 0;
         };
@@ -3731,7 +3919,7 @@ struct EnginePerformanceTest {
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "google-chrome";
         state.cachedIsChromium_ = 1;
-        state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ =
+        state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ =
             state.cachedIsFirefoxBrowser_ = 0;
         state.cachedWebKitProgram_ = "google-chrome";
         state.cachedIsWebKitGtk_ = 0;
@@ -3782,7 +3970,7 @@ struct EnginePerformanceTest {
             auto &state = *input.propertyFor(&engine.factory_);
             state.cachedProgram_ = program;
             state.cachedIsChromium_ = chromium ? 1 : 0;
-            state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ =
+            state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ =
                 state.cachedIsFirefoxBrowser_ = 0;
             state.cachedMode_ = SKeyOutputMode::SurroundingText;
             state.modeCacheValid_ = true;
@@ -3857,7 +4045,7 @@ struct EnginePerformanceTest {
             auto &state = *input->propertyFor(&engine.factory_);
             state.cachedProgram_ = program;
             state.cachedIsChromium_ = browser ? 1 : 0;
-            state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ =
+            state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ =
                 state.cachedIsFirefoxBrowser_ = 0;
             state.cachedMode_ = SKeyOutputMode::SurroundingText;
             state.modeCacheValid_ = true;
@@ -3942,7 +4130,7 @@ struct EnginePerformanceTest {
         const auto prime = [&] {
             state.cachedProgram_ = "google-chrome-stable";
             state.cachedIsChromium_ = 1;
-            state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ =
+            state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ =
                 state.cachedIsFirefoxBrowser_ = 0;
             state.cachedMode_ = SKeyOutputMode::Uinput;
             state.modeCacheValid_ = true;
@@ -4028,7 +4216,7 @@ struct EnginePerformanceTest {
             monitor.focusSingleLine_ = true;
             ideState.cachedProgram_ = "code";
             ideState.cachedIsChromium_ = 1;
-            ideState.cachedIsTerminalApp_ = ideState.cachedIsFirefoxOrSnap_ =
+            ideState.cachedIsTerminalApp_ = ideState.cachedIsGeckoApp_ =
                 ideState.cachedIsFirefoxBrowser_ = 0;
             ideState.focusSawContentHints_ = true;
             ideState.modeDecisionPending_ = false;
@@ -4214,7 +4402,7 @@ struct EnginePerformanceTest {
         input.setCapabilityFlags(CapabilityFlags(0x72));
         auto &state = *input.propertyFor(&engine.factory_);
         state.cachedProgram_ = "areca-settings";
-        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsChromium_ = state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::SurroundingText;
         int sockets[2];
@@ -4299,7 +4487,7 @@ struct EnginePerformanceTest {
         input.setFocusGroup(&group);
         input.setCapabilityFlags(CapabilityFlag::SurroundingText);
         auto &state = *input.propertyFor(&engine.factory_);
-        state.cachedIsChromium_ = state.cachedIsFirefoxOrSnap_ = state.cachedIsTerminalApp_ = 0;
+        state.cachedIsChromium_ = state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
         state.modeCacheValid_ = true;
         state.cachedMode_ = SKeyOutputMode::Uinput;
         engine.appDelayOverrides_[skey::appDelayKey("skey-test", wayland)].preCommitMs = 80;
@@ -4397,6 +4585,40 @@ struct EnginePerformanceTest {
         state.finishUinputSettle(0, 0);
         state.finishDeferredCommit(0);
         check(input.commits.size() == 1 && state.settledKeys_.empty(), "cell switch must discard pending transactions");
+
+        // The word's own prefix is not a leftover of the delete: "cac" →
+        // "các" deletes "ac" and leaves "c", equal to the tail's suffix.
+        // The tail-only match re-deleted the c and the space before it
+        // ("xin cacs" → "xinác", Telegram snap through GNOME's relay).
+        input.commits.clear();
+        const int deletesBefore = input.deletions;
+        input.surroundingText().setText("xin c", 5, 5);
+        input.updateSurroundingText();
+        state.deferredCommitText_ = "ác";
+        state.deferredDeletedTail_ = "ac";
+        state.deferredDeleteAnchor_ = "c";
+        state.deferredNativeDeleteLen_ = 2;
+        state.nativeRepairAttempt_ = 0;
+        check(state.missingNativeDeleteChars() == 0,
+              "the remaining prefix letter is not counted as missed");
+        state.finishDeferredCommit(0);
+        check(input.deletions == deletesBefore && input.commits.size() == 1 &&
+                  input.commits[0] == "ác" && state.nativeRepairAttempt_ == 0,
+              "prefix letter equal to the tail's suffix is not a missed delete");
+        // A delete the app dropped whole is still detected (the loop has
+        // exited here: query the verdict, a retry timer cannot be armed).
+        input.surroundingText().setText("xin cac", 7, 7);
+        input.updateSurroundingText();
+        state.deferredDeletedTail_ = "ac";
+        state.deferredDeleteAnchor_ = "c";
+        state.deferredNativeDeleteLen_ = 2;
+        check(state.missingNativeDeleteChars() == 2, "a whole dropped delete is still detected");
+        input.surroundingText().setText("xin c", 5, 5);
+        input.updateSurroundingText();
+        check(state.missingNativeDeleteChars() == 0, "an applied delete leaves nothing missing");
+        state.deferredNativeDeleteLen_ = 0;
+        state.deferredDeletedTail_.clear();
+        state.deferredDeleteAnchor_.clear();
     }
 };
 }
@@ -4520,6 +4742,11 @@ static void policies() {
 }
 
 int main(int argc, char **argv) {
+    // ProbeProcess fixture: a renamed copy of this binary that only sleeps.
+    if (std::getenv("SKEY_TEST_SLEEPER")) {
+        sleep(30);
+        return 0;
+    }
     // activate() reloads per-app modes. Never inherit the test machine's
     // interactive Chrome settings (e.g. a forced Surrounding Text mode).
     char configTemplate[] = "/tmp/skey-engine-test-XXXXXX";
@@ -4587,6 +4814,7 @@ int main(int argc, char **argv) {
         fcitx::EnginePerformanceTest::gnomeRelayNamedApp(instance);
         fcitx::EnginePerformanceTest::unnamedAppRules(instance);
         fcitx::EnginePerformanceTest::programScanCache(instance);
+        fcitx::EnginePerformanceTest::geckoAppIdentity(instance);
         std::cout << "GNOME relayed app identity: " << checks << " checks passed\n";
         return 0;
     }
@@ -4866,6 +5094,8 @@ int main(int argc, char **argv) {
                 fcitx::EnginePerformanceTest::preeditVisibility(instance, wayland, client);
         for (int snapshot : {0, 1, 2, 3})
             fcitx::EnginePerformanceTest::firefoxSelectAllBackspace(instance, snapshot);
+        fcitx::EnginePerformanceTest::fcitx4SelectAllBackspace(instance, "fcitx4", true);
+        fcitx::EnginePerformanceTest::fcitx4SelectAllBackspace(instance, "dbus", false);
         fcitx::EnginePerformanceTest::addressBarSuffixReplacement(instance);
         fcitx::EnginePerformanceTest::addressBarSuffixReplacement(instance, true);
         fcitx::EnginePerformanceTest::addressBarSettleAcrossFocus(instance);

@@ -107,7 +107,7 @@ private:
     /// Detectors: nullopt = a program-wide /proc scan is still running in
     /// the background (see scanTrait()).
     std::optional<bool> detectFirefoxBrowser() const;
-    std::optional<bool> detectFirefoxOrSnap() const;
+    std::optional<bool> detectGeckoApp() const;
     std::optional<bool> detectWebKitGtk() const;
     /// Engine-level (program-keyed, 60s) cache around a /proc-scanning
     /// trait detector; falls through to `detect` for unnamed programs.
@@ -424,7 +424,7 @@ private:
     mutable std::string cachedPtyProgram_;
     mutable bool cachedPtyMaster_ = false;
     mutable int cachedIsTerminalApp_ = -1; // tristate: name list + shell scan
-    mutable int cachedIsFirefoxOrSnap_ = -1;
+    mutable int cachedIsGeckoApp_ = -1;
     mutable int cachedIsFirefoxBrowser_ = -1;
     mutable int cachedIsWebKitGtk_ = -1;
     mutable std::string cachedWebKitProgram_;
@@ -457,7 +457,7 @@ private:
     // Uinput locks in at the deadline.
     mutable bool modeDecisionPending_ = false;
     mutable uint64_t modeDecisionDeadlineUsec_ = 0;
-    bool isFirefoxOrSnap() const;
+    bool isGeckoApp() const;
     std::unique_ptr<EventSourceTime> deferredCommitTimer_;
     std::string deferredCommitText_;
     std::string deferredPrefix_;
@@ -468,6 +468,9 @@ private:
     // consecutive native deletes).
     int deferredNativeDeleteLen_ = 0;
     std::string deferredDeletedTail_;
+    // The word's stable prefix left in front of the deleted tail (kept
+    // apart from deferredPrefix_, which a later key may clear).
+    std::string deferredDeleteAnchor_;
     uint64_t deferredBsSentAt_ = 0;
     uint64_t deferredCommitDeadline_ = 0;
     std::string pendingFlushSuffix_;
@@ -560,12 +563,12 @@ private:
     uint64_t addrBarCycleDeadline_ = 0;
     void armAddrBarCycle();
     void expireAddrBarCycle();
-    // Set before forwarding a raw key in Uinput mode for Firefox/Snap
-    // apps.  fcitx5 calls reset() after unfiltered keys, which clears
-    // viet_ state.  When set, reset()/deactivate() skip viet_ cleanup
-    // to preserve ongoing composition.  Only used for Firefox/Snap
-    // (non-Chromium) apps — Chromium/Electron need clearUI() D-Bus
-    // and are not affected by this guard.
+    // Set before forwarding a raw key in Uinput mode for Gecko apps.
+    // fcitx5 calls reset() after unfiltered keys, which clears viet_
+    // state.  When set, reset()/deactivate() skip viet_ cleanup to
+    // preserve ongoing composition.  Only used for Gecko apps —
+    // Chromium/Electron need clearUI() D-Bus and are not affected by
+    // this guard.
     bool uinputKeyForwarded_ = false;
     // KeySym of the key that triggered the current address bar replacement.
     // X11 may re-deliver this key after Chrome's spurious focus cycles;
@@ -843,7 +846,7 @@ private:
     // Program-level terminal verdict cache — the /proc shell scan runs
     // once per program, not once per focus (see isTerminalAppCached).
     // Program-level cache for the binary-identity traits (Chromium/Gecko
-    // markers, Snap, WebKitGTK).  The per-IC caches are cleared on every
+    // markers, WebKitGTK).  The per-IC caches are cleared on every
     // reset()/activate(); without this a program the a11y pid cannot
     // vouch for (flatpak app-ids, stale snapshots) re-ran full /proc
     // scans (~8ms each) on every focus.  Keyed by trait + program.

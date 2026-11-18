@@ -591,7 +591,7 @@ bool SKeyState::tryX11ForwardedReplacement(int deleteLen,
   bool selectAll = false;
   bool forwardSelect = select;
   const auto &surrounding = ic_->surroundingText();
-  if (isFirefoxOrSnap() && surrounding.isValid() && !oldWord.empty()) {
+  if (isGeckoApp() && surrounding.isValid() && !oldWord.empty()) {
     const auto &value = surrounding.text();
     const auto cursor = std::min(surrounding.cursor(), surrounding.anchor());
     const auto wordLen = utf8::length(oldWord);
@@ -1118,25 +1118,6 @@ static bool processHasShellChildPid(pid_t pid) {
   return false;
 }
 
-// Check a KNOWN pid for a Snap-packaged binary.
-static bool processIsSnapPid(pid_t pid) {
-  char exeBuf[PATH_MAX];
-  std::string exePath = "/proc/" + std::to_string(pid) + "/exe";
-  ssize_t len = readlink(exePath.c_str(), exeBuf, sizeof(exeBuf) - 1);
-  if (len > 0) {
-    exeBuf[len] = '\0';
-    if (std::string(exeBuf).find("/snap/") != std::string::npos)
-      return true;
-  }
-  std::ifstream mapsFile("/proc/" + std::to_string(pid) + "/maps");
-  std::string line;
-  if (mapsFile.is_open() && std::getline(mapsFile, line) &&
-      line.find("/snap/") != std::string::npos) {
-    return true;
-  }
-  return false;
-}
-
 // Auto-detect terminals by their hosted shell: a terminal emulator
 // spawns a shell (bash/zsh/fish/...) as a descendant process, which
 // ordinary GUI apps never do.  Scans /proc for a process whose comm
@@ -1240,9 +1221,14 @@ static bool scanGeckoBrowser(const std::string &program) {
   return firefox;
 }
 
-// The first process matching `prog` by comm: Snap-packaged (exe or first
-// mapping under /snap/) or a Gecko fork (libxul.so next to the binary).
-static bool scanFirefoxOrSnap(const std::string &prog) {
+// The first process matching `prog` by comm is a Gecko app: libxul.so
+// next to its binary (Firefox — snap included —, its forks, Thunderbird).
+// Snap packaging itself is NOT a trait: it was lumped in with Firefox and
+// gave every snap app (Telegram, Chromium, Electron, Flutter) Firefox's
+// workarounds — the delete verifier ate letters in Telegram ("xin cacs"
+// → "xinác", 2026-11-18).  A snap's real difference is its bundled fcitx4
+// module, which the frontend name already tells.
+static bool scanGeckoApp(const std::string &prog) {
   if (prog.empty()) return false;
   DIR *dir = opendir("/proc");
   if (!dir) return false;
@@ -1251,46 +1237,16 @@ static bool scanFirefoxOrSnap(const std::string &prog) {
   while ((entry = readdir(dir)) != nullptr) {
     if (entry->d_type != DT_DIR || !isdigit(entry->d_name[0]))
       continue;
-    std::string commPath = "/proc/" + std::string(entry->d_name) + "/comm";
-    std::ifstream commFile(commPath);
+    std::ifstream commFile("/proc/" + std::string(entry->d_name) + "/comm");
     if (!commFile.is_open())
       continue;
     std::string comm;
     std::getline(commFile, comm);
     if (comm == prog || prog.compare(0, 15, comm) == 0 ||
         comm.compare(0, 15, prog) == 0) {
-      // Found matching process — check exe path for /snap/
-      std::string exePath = "/proc/" + std::string(entry->d_name) + "/exe";
-      char buf[4096];
-      ssize_t len = readlink(exePath.c_str(), buf, sizeof(buf) - 1);
-      if (len > 0) {
-        buf[len] = '\0';
-        std::string exe(buf);
-        if (exe.find("/snap/") != std::string::npos) {
-          found = true;
-          break;
-        }
-        // Gecko fork: libxul.so next to the main binary
-        size_t lastSlash = exe.rfind('/');
-        if (lastSlash != std::string::npos &&
-            access((exe.substr(0, lastSlash) + "/libxul.so").c_str(), F_OK) == 0) {
-          found = true;
-          break;
-        }
-      }
-      // Also check via /proc/PID/maps (some Snap apps use
-      // symlinked launchers where exe doesn't contain /snap/)
-      std::string mapsPath = "/proc/" + std::string(entry->d_name) + "/maps";
-      std::ifstream mapsFile(mapsPath);
-      if (mapsFile.is_open()) {
-        std::string line;
-        if (std::getline(mapsFile, line) &&
-            line.find("/snap/") != std::string::npos) {
-          found = true;
-          break;
-        }
-      }
-      break; // found matching process but not snap — done
+      const auto exe = skey::processExe(static_cast<pid_t>(std::atoi(entry->d_name)));
+      found = !exe.empty() && skey::exeHasGeckoMarker(exe);
+      break; // the first matching process decides
     }
   }
   closedir(dir);
@@ -1369,7 +1325,7 @@ static bool runProgramScan(char trait, const std::string &program) {
   case 'c': value = isChromiumBasedApp(program); break;
   case 't': value = processHasShellChild(program); break;
   case 'g': value = scanGeckoBrowser(program); break;
-  case 'f': value = scanFirefoxOrSnap(program); break;
+  case 'f': value = scanGeckoApp(program); break;
   case 'w': value = scanWebKitGtk(program); break;
   case 'p': value = scanPtyMaster(program); break;
   default: break;
@@ -2418,7 +2374,7 @@ bool SKeyState::commitText(const std::string &utf8, bool uinputReplacement) {
     // The discarded commit was the first letter the user just typed into
     // the new field — re-deliver it there instead of losing it ("chào" →
     // "hào").
-    if (isWayland() && (isChromiumCached() || isFirefoxOrSnap()) &&
+    if (isWayland() && (isChromiumCached() || isGeckoApp()) &&
         !triggerKey.empty() && triggerKey == utf8) {
       SKEY_DEBUG() << "CellSelection: re-deliver trigger key '" << triggerKey
                    << "'";
@@ -2433,7 +2389,7 @@ bool SKeyState::commitText(const std::string &utf8, bool uinputReplacement) {
   const bool sheetsEditor = monitor && monitor->sheetsEditorFocused() &&
                             a11yFocusRelevant();
   const bool firefoxX11Replacement = !isWayland() &&
-      appProgram().find("firefox") != std::string::npos && isFirefoxOrSnap() &&
+      appProgram().find("firefox") != std::string::npos && isGeckoApp() &&
       !ic_->capabilityFlags().test(CapabilityFlag::Url) && !a11yGoogleDocsFocused();
   const bool chromiumPageReplacement = uinputReplacement &&
       isChromiumBrowser(appProgram()) && !inChromiumAddressBar();
@@ -2529,7 +2485,7 @@ void SKeyState::refreshRelayApp(bool atBoundary) {
   relayProgram_ = std::move(program);
   // Every program-derived verdict belongs to the previous identity.
   cachedIsChromium_ = -1;
-  cachedIsFirefoxOrSnap_ = -1;
+  cachedIsGeckoApp_ = -1;
   cachedIsFirefoxBrowser_ = -1;
   cachedIsTerminalApp_ = -1;
   cachedIsWebKitGtk_ = -1;
@@ -3665,7 +3621,7 @@ void SKeyState::refreshScans(bool atBoundary) {
   // caches re-asks, now answered (or still pending → stays armed).
   scanPending_ = false;
   cachedIsChromium_ = -1;
-  cachedIsFirefoxOrSnap_ = -1;
+  cachedIsGeckoApp_ = -1;
   cachedIsFirefoxBrowser_ = -1;
   cachedIsTerminalApp_ = -1;
   cachedIsWebKitGtk_ = -1;
@@ -3737,31 +3693,30 @@ std::optional<bool> SKeyState::detectFirefoxBrowser() const {
   return scanTrait('g', program);
 }
 
-bool SKeyState::isFirefoxOrSnap() const {
-  if (cachedIsFirefoxOrSnap_ < 0) {
+bool SKeyState::isGeckoApp() const {
+  if (cachedIsGeckoApp_ < 0) {
     bool pending = false;
-    const bool value = programTrait('f', [this] { return detectFirefoxOrSnap(); }, &pending);
-    cachedIsFirefoxOrSnap_ = value ? 1 : 0;
+    const bool value = programTrait('f', [this] { return detectGeckoApp(); }, &pending);
+    cachedIsGeckoApp_ = value ? 1 : 0;
   }
-  return cachedIsFirefoxOrSnap_ == 1;
+  return cachedIsGeckoApp_ == 1;
 }
 
-std::optional<bool> SKeyState::detectFirefoxOrSnap() const {
-  if (cachedIsFirefoxOrSnap_ >= 0) {
-    return cachedIsFirefoxOrSnap_ == 1;
+std::optional<bool> SKeyState::detectGeckoApp() const {
+  if (cachedIsGeckoApp_ >= 0) {
+    return cachedIsGeckoApp_ == 1;
   }
   const std::string &prog = appProgram();
-  // Firefox program name (native or Snap)
+  // Firefox by name (deb, snap, flatpak alike)
   if (prog.find("firefox") != std::string::npos) return true;
   // Firefox forks (zen, ...) are recognized by their binary layout:
   // Gecko browsers ship libxul.so next to the main executable.  They
   // share Firefox's reset-after-forwarded-key behavior and need the
-  // same state-preservation guards.
-  // Detect Snap-packaged apps: prefer the a11y-reported PID (one readlink,
-  // no scan) and fall back to the background /proc scan.
+  // same state-preservation guards.  Prefer the a11y-reported PID (one
+  // readlink, no scan); fall back to the background /proc scan.
   if (prog.empty()) return false;
   const int pid = a11yAppPid();
-  if (pid > 0) return processHasGeckoMarker(pid) || processIsSnapPid(pid);
+  if (pid > 0) return processHasGeckoMarker(pid);
   return scanTrait('f', prog);
 }
 
@@ -4096,7 +4051,7 @@ void SKeyState::activate() {
   }
   triggerBackoffUntilUsec_ = 0;
   cachedIsChromium_ = -1;
-  cachedIsFirefoxOrSnap_ = -1;
+  cachedIsGeckoApp_ = -1;
   cachedIsFirefoxBrowser_ = -1;
   cachedIsTerminalApp_ = -1;
   cachedPtyProgram_.clear();
@@ -4208,7 +4163,7 @@ bool SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
         std::min(ov->paceMs, skey::kMaxPaceMs)) *
                1000;
   }
-  if (paceUsec == 1000 && isWayland() && isFirefoxOrSnap() && count >= 3) {
+  if (paceUsec == 1000 && isWayland() && isGeckoApp() && count >= 3) {
     // Firefox's renderer drops consecutive injected BS under load on heavy
     // canvas pages (Sheets: "bạn" → "baạn" when typing fast — the echo
     // only proves dispatch, not application, 2026-09-15).  Pace them so
@@ -4223,7 +4178,7 @@ bool SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
   const bool observeDeletion =
       (isChromiumBrowser(appProgram()) && !inChromiumAddressBar() && !x11SheetsEditor) ||
       (!isWayland() && appProgram().find("firefox") != std::string::npos &&
-       isFirefoxOrSnap() && !ic_->capabilityFlags().test(CapabilityFlag::Url) && !a11yGoogleDocsFocused());
+       isGeckoApp() && !ic_->capabilityFlags().test(CapabilityFlag::Url) && !a11yGoogleDocsFocused());
   // With a11y blind, the browser's address bar is indistinguishable from a
   // web field — arm the deletion ack even when a learned delay override
   // would normally replace it: the ack's miss detection drives the
@@ -4259,7 +4214,7 @@ bool SKeyState::sendBackspaceUinput(int count, uint32_t flags, std::string_view 
     // learned-delay override — the pair-transform race (dd→đ) is real
     // there too, just rare.
     const bool waylandFamily = isWayland() &&
-        (isChromiumCached() || isFirefoxOrSnap()) && !isTerminalAppCached() &&
+        (isChromiumCached() || isGeckoApp()) && !isTerminalAppCached() &&
         !ideTerminalFocused();
     if (!uinputAckUnavailable_ && flags == 0 && count > 1 &&
         ((observeDeletion && *engine_->config().autoDelay &&
@@ -4428,8 +4383,13 @@ bool SKeyState::isX11Tabby() const {
 }
 
 bool SKeyState::useOrderedUinputReplay() const {
-  return selectTransportActive() || gnomeRelayOmnibox() || useX11CompositionCommits() ||
-         (!isWayland() && inChromiumAddressBar());
+  // Any app behind the compositor's IBus relay, not just the omnibox: its
+  // forwarded keys (virtual keyboard) overtake the commits (text-input).
+  // A space queued behind "ếng" was forwarded right after the commit and
+  // the commit vanished ("tieengs vieetj" → "ti việt", Telegram snap on
+  // GNOME 50, 2026-11-18).  Unnamed, Telegram used to pass as the omnibox.
+  return selectTransportActive() || gnomeRelayOmnibox() || gnomeRelayContext() ||
+         useX11CompositionCommits() || (!isWayland() && inChromiumAddressBar());
 }
 
 bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
@@ -4519,7 +4479,7 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     SKEY_DEBUG() << "Uinput: pass " << (uinputShiftSelect_ ? "Left" : "BS")
                  << " " << seenUinputBackspaces_ << "/"
                  << expectedUinputBackspaces_;
-    if (isFirefoxOrSnap()) {
+    if (isGeckoApp()) {
       uinputKeyForwarded_ = true;
     }
     return true; // forward real key to app
@@ -4704,7 +4664,7 @@ bool SKeyState::handlePendingUinputBackspace(KeyEvent &keyEvent) {
     sleepUsec = std::max(sleepUsec, static_cast<uint64_t>(realBs) *
                                         kWaylandNativeCommitDelayPerBsUsec);
   }
-  if (realBs >= 2 && isWayland() && isFirefoxOrSnap()) {
+  if (realBs >= 2 && isWayland() && isGeckoApp()) {
     // Firefox's renderer applies injected BS asynchronously — the sync
     // anchor proves dispatch to the browser process, not renderer
     // application.  With two consecutive deletes the commit landed
@@ -4890,7 +4850,7 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
       // produced the alternating correct/wrong retype rounds).  The
       // backoff stays for the inputs that publish nothing at all.
       const bool familyKeepArmed = isWayland() &&
-          (isChromiumCached() || isFirefoxOrSnap()) && !isTerminalAppCached() &&
+          (isChromiumCached() || isGeckoApp()) && !isTerminalAppCached() &&
           !ideTerminalFocused();
       if (!familyKeepArmed) {
         uinputAckUnavailable_ = true;
@@ -4967,7 +4927,7 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
   const bool postVerifyBlind = blindBrowser && !uinputDeletedWord_.empty() &&
       uinputDeletedLen_ > 0 && !uinputPostVerifyDone_;
   if (!text.empty()) {
-    if (isFirefoxOrSnap()) uinputKeyForwarded_ = true;
+    if (isGeckoApp()) uinputKeyForwarded_ = true;
     const auto &surrounding = ic_->surroundingText();
     SKEY_DEBUG() << "Uinput: settle commit '" << text
                  << "' surrValid=" << surrounding.isValid()
@@ -4975,7 +4935,7 @@ void SKeyState::finishUinputSettle(int retries, int postMs) {
                  << " anchor=" << surrounding.anchor();
     // Firefox still needs a composition transaction after a forwarded
     // delete; a bare commit can insert at its cached pre-delete caret.
-    if (!commitText(text, !forwarded || (!isWayland() && isFirefoxOrSnap()))) return;
+    if (!commitText(text, !forwarded || (!isWayland() && isGeckoApp()))) return;
     if (postVerifyBlind) {
       uinputPostVerifyDone_ = true;
       uinputPostVerify_ = true;
@@ -5051,11 +5011,12 @@ void SKeyState::replaySettledKeys() {
       const bool printable = sym >= FcitxKey_space && sym <= FcitxKey_asciitilde;
       const auto states = event.key().states();
       if ((selectTransportActive() || (!isWayland() && inChromiumAddressBar()) ||
-           gnomeRelayOmnibox() || useX11CompositionCommits()) && printable &&
+           gnomeRelayOmnibox() || gnomeRelayContext() || useX11CompositionCommits()) &&
+          printable &&
           !states.test(KeyState::Ctrl) && !states.test(KeyState::Alt) &&
           !states.test(KeyState::Super)) {
         if (!saved.release) {
-          if (gnomeRelayOmnibox() || useX11CompositionCommits())
+          if (gnomeRelayOmnibox() || gnomeRelayContext() || useX11CompositionCommits())
             commitText(Key::keySymToUTF8(sym));
           else ic_->commitString(Key::keySymToUTF8(sym));
         }
@@ -5271,9 +5232,9 @@ void SKeyState::deactivate() {
 
   // Forwarded replacements use the focus-loss guard below so an old
   // Firefox append cannot bypass the pending deletion's focus barrier.
-  if (uinputKeyForwarded_ && isFirefoxOrSnap() && !x11ForwardedReplacement_ &&
+  if (uinputKeyForwarded_ && isGeckoApp() && !x11ForwardedReplacement_ &&
       !(isNativeX11() && uinputRequest_ && requestChannel_ == EditChannel::Native)) {
-    SKEY_DEBUG() << "Deactivate: Firefox/Snap guard hit, preserving state";
+    SKEY_DEBUG() << "Deactivate: Gecko guard hit, preserving state";
     uinputKeyForwarded_ = false;
     return;
   }
@@ -5395,7 +5356,7 @@ void SKeyState::deactivate() {
 void SKeyState::reset() {
   expireAddrBarCycle();
   SKEY_DEBUG() << "Reset: entered uinputFwd=" << uinputKeyForwarded_
-               << " ffSnap=" << isFirefoxOrSnap() << " prog=" << appProgram();
+               << " gecko=" << isGeckoApp() << " prog=" << appProgram();
   if (addrBarExpectCycle_) {
     SKEY_DEBUG() << "Reset: expecting cycle, skip";
     return;
@@ -5405,12 +5366,12 @@ void SKeyState::reset() {
   // in flight.  Keep the replacement state — deactivate() arms the
   // genuine-loss timer, and the sync-anchor BS completes the commit after
   // reactivation.  The full cleanup below would drop the pending commit
-  // and the word loses its tail ("bạn" → "b"). Firefox/Snap also resets
+  // and the word loses its tail ("bạn" → "b"). Gecko apps also reset
   // after the preceding append's commit, before the first injected BS.
   // Don't compare the new composed word with old surrounding text then.
   // Wayland Chromium pages: the same churn (see deactivate) — the reset
   // that follows the reactivation must not drop the held replacement.
-  if (((!isWayland() && (isChromiumCached() || isFirefoxOrSnap() ||
+  if (((!isWayland() && (isChromiumCached() || isGeckoApp() ||
                          x11ForwardedReplacement_)) ||
        (isWayland() && isChromiumBrowser(appProgram()) &&
         !inChromiumAddressBar())) &&
@@ -5419,12 +5380,12 @@ void SKeyState::reset() {
     SKEY_DEBUG() << "Reset: mid-replacement churn, keep uinput state";
     return;
   }
-  // Firefox/Snap apps in Uinput mode: fcitx5 calls reset() after
+  // Gecko apps in Uinput mode: fcitx5 calls reset() after
   // unfiltered keys.  Skip cleanup to preserve viet_ state for
   // multi-key composition.  Chromium/Electron apps are NOT affected
   // — they need the full cleanup (especially clearUI D-Bus).
-  if (uinputKeyForwarded_ && isFirefoxOrSnap()) {
-    SKEY_DEBUG() << "Reset: Firefox/Snap guard hit, preserving viet_ state";
+  if (uinputKeyForwarded_ && isGeckoApp()) {
+    SKEY_DEBUG() << "Reset: Gecko guard hit, preserving viet_ state";
     uinputKeyForwarded_ = false;
     return;
   }
@@ -5481,7 +5442,7 @@ void SKeyState::reset() {
   // and Surrounding Text. Keep the activation decision for this short,
   // empty-focus window; later resets still invalidate normally.
   const bool preserveInitialBrowserMode =
-      isWayland() && (isFirefoxOrSnap() || isChromiumBrowser(appProgram())) &&
+      isWayland() && (isGeckoApp() || isChromiumBrowser(appProgram())) &&
       viet_.getRawInput().empty() &&
       lastActivateUsec_ > 0 &&
       now(CLOCK_MONOTONIC) - lastActivateUsec_ < 500000;
@@ -5495,7 +5456,7 @@ void SKeyState::reset() {
   lastKeySurrValid_ = false;
   editorEntered_ = false;
   cachedIsChromium_ = -1;
-  cachedIsFirefoxOrSnap_ = -1;
+  cachedIsGeckoApp_ = -1;
   cachedIsFirefoxBrowser_ = -1;
   cachedIsTerminalApp_ = -1;
   cachedPtyProgram_.clear();
@@ -5759,6 +5720,7 @@ void SKeyState::resetForCellChange() {
   pendingFlushSuffix_.clear();
   deferredNativeDeleteLen_ = 0;
   deferredDeletedTail_.clear();
+  deferredDeleteAnchor_.clear();
   addrBarLastTriggerKey_ = 0;
   addrBarTriggerDeadline_ = 0;
   addrBarTriggerKeyTime_ = 0;
@@ -5934,7 +5896,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       (a11yTerminal && notInjecting) ||
       (a11yDocs && notInjecting);
   const bool initialBrowserStabilizing =
-      isWayland() && (isFirefoxOrSnap() || isChromiumBrowser(appProgram())) &&
+      isWayland() && (isGeckoApp() || isChromiumBrowser(appProgram())) &&
       viet_.getRawInput().empty() && lastActivateUsec_ > 0 &&
       now(CLOCK_MONOTONIC) - lastActivateUsec_ < 500000;
   // Back-off: the a11y triggers above re-evaluate the mode at every word
@@ -6553,14 +6515,18 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
     // delete(-1, 1) can collapse that selection without removing its contents.
     // Pass the original key, without a synthetic key or optimistic cache edit.
     // Pending injected backspaces have already been handled above.
-    if (!isWayland() && appProgram().find("firefox") != std::string::npos &&
-        isFirefoxOrSnap()) {
+    // The fcitx4 module bundled in snaps never reports a selection at all:
+    // Ctrl+A then Backspace removed one character (App Center, Ubuntu
+    // 26.04, 2026-11-19).  Firefox snap rides that module too.
+    if (!isWayland() &&
+        ((appProgram().find("firefox") != std::string::npos && isGeckoApp()) ||
+         isFrontendName(ic_, "fcitx4"))) {
       committedLen_ = 0;
       clearLastWord();
       reclaimReady_ = false;
       sepAlreadyDeleted_ = false;
       uinputKeyForwarded_ = true;
-      SKEY_DEBUG() << "SurrBS: Firefox X11 idle BS passthrough (app selection)";
+      SKEY_DEBUG() << "SurrBS: idle BS passthrough (app selection, frontend=" << ic_->frontend() << ")";
       return;
     }
     // The compositor's IBus relay takes the user's own Backspace (the
@@ -6646,7 +6612,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       // reconcile the model afterwards.
       if (((!surrounding.isValid() || surrounding.cursor() == 0) &&
            committedLen_ <= 0) ||
-          (isFirefoxOrSnap() && isWayland() &&
+          (isGeckoApp() && isWayland() &&
            surrounding.isValid() &&
            surrounding.anchor() == surrounding.cursor())) {
         // Native Wayland clients can expose the SurroundingText capability
@@ -7497,7 +7463,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                     appendSurr.anchor() != appendSurr.cursor();
                 if (isWayland() &&
                     (isOfficeSuiteApp(appProgram()) ||
-                     ((isChromiumCached() || isFirefoxOrSnap()) &&
+                     ((isChromiumCached() || isGeckoApp()) &&
                       editorEntered_ && !appendSelection))) {
                   keyEvent.filterAndAccept();
                   SKEY_DEBUG() << "Uinput: commit append '" << keyUtf8
@@ -7546,8 +7512,8 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
               }
               SKEY_DEBUG() << "Uinput: forward append '" << keyUtf8 << "'";
               // fcitx5 will call reset() after unfiltered key; the
-              // guard preserves viet_ for Firefox/Snap apps.
-              if (isFirefoxOrSnap()) {
+              // guard preserves viet_ for Gecko apps.
+              if (isGeckoApp()) {
                 uinputKeyForwarded_ = true;
               }
               return; // forward raw key
@@ -7729,7 +7695,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
                 // Preserve this own-output cycle rather than arming tentative
                 // reattachment, which would discard tw before the tone key.
                 if (!isWayland() && appProgram().find("firefox") != std::string::npos &&
-                    isFirefoxOrSnap()) {
+                    isGeckoApp()) {
                   uinputKeyForwarded_ = true;
                 }
                 commitText(addPart);
@@ -7750,14 +7716,14 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
           // editor is open by then).  Address bar excluded (omnibox has
           // its own machinery). Only unchanged characters can use the raw
           // key: ShortW may already have transformed the first w into ư.
-          if (isWayland() && (isChromiumCached() || isFirefoxOrSnap()) &&
+          if (isWayland() && (isChromiumCached() || isGeckoApp()) &&
               !useUinputMode() &&
               !inChromiumAddressBar() && oldComposed.empty()) {
             committedLen_ = static_cast<int>(utf8::length(newComposed));
             if (newComposed == std::string(1, ch)) {
-              // Firefox/Snap reset() after an unfiltered key — preserve the
+              // Gecko reset() after an unfiltered key — preserve the
               // model like the Uinput forward path does.
-              if (isFirefoxOrSnap()) {
+              if (isGeckoApp()) {
                 uinputKeyForwarded_ = true;
               }
               return; // forward unchanged raw key, unfiltered
@@ -8357,6 +8323,7 @@ void SKeyState::scheduleDeferredCommit(const std::string &text,
   deferredNativeDeleteLen_ = nativeDeleteLen;
   nativeRepairAttempt_ = 0;
   deferredDeletedTail_ = deletedTail;
+  deferredDeleteAnchor_ = nativeDeleteLen > 0 ? stablePrefix : std::string();
 
   // Delay after BackSpace to ensure the app has processed the BS key
   // events before we commit new text via commitString.
@@ -8496,6 +8463,7 @@ void SKeyState::finishDeferredCommit(int postMs) {
   }
   deferredNativeDeleteLen_ = 0;
   deferredDeletedTail_.clear();
+  deferredDeleteAnchor_.clear();
   nativeRepairAttempt_ = 0;
   std::string text = deferredCommitText_ + pendingFlushSuffix_;
   deferredCommitText_.clear();
@@ -8538,7 +8506,12 @@ int SKeyState::missingNativeDeleteChars() {
     return -1; // cannot verify — caller commits as-is
   const int tailLen = static_cast<int>(utf8::length(deferredDeletedTail_));
   // Longest suffix of the deleted tail still present before the cursor =
-  // the number of chars the app failed to delete.
+  // the number of chars the app failed to delete.  Anchored on the word's
+  // stable prefix: the tail alone mistook the prefix's own last letter for
+  // a leftover — "cac" → "các" deletes "ac", the remaining "c" matched the
+  // tail's suffix "c", and the "repair" ate the word's c and then (lagging
+  // push) the space before it: "xin cacs" → "xinác" (Telegram snap via
+  // GNOME's relay, 2026-11-18).
   for (int k = tailLen; k >= 1; --k) {
     size_t start = deferredDeletedTail_.size();
     int chars = 0;
@@ -8550,7 +8523,8 @@ int SKeyState::missingNativeDeleteChars() {
         --start;
       ++chars;
     }
-    if (surroundingCacheEndsWith(surr, std::string_view(deferredDeletedTail_).substr(start)))
+    if (surroundingCacheEndsWith(surr, deferredDeleteAnchor_ +
+                                           deferredDeletedTail_.substr(start)))
       return k;
   }
   return 0; // nothing of the tail remains — deletes fully applied
@@ -8590,6 +8564,7 @@ void SKeyState::repairNativeDeletes() {
   }
   deferredNativeDeleteLen_ = 0;
   deferredDeletedTail_.clear();
+  deferredDeleteAnchor_.clear();
 }
 
 void SKeyState::armSurrNativePostVerify(const std::string &oldComposed,
@@ -8623,7 +8598,7 @@ int SKeyState::surrNativeRepairIfDropped(const fcitx::SurroundingText &surr,
   // stays broken once.
   // Browsers legitimately report an empty field (a chat composer cleared on
   // send, a reset form): only the text-shaped evidence below counts there.
-  if (text.empty() && (isChromiumCached() || isFirefoxOrSnap())) {
+  if (text.empty() && (isChromiumCached() || isGeckoApp())) {
     surrNativePostVerify_ = false;
     return 0;
   }
@@ -8788,7 +8763,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             // X11 Firefox: native deletes are unreliable through the async
             // renderer — anchor through uinput (see the native-path gate
             // above).
-            (!isWayland() && isFirefoxOrSnap()) ||
+            (!isWayland() && isGeckoApp()) ||
             // Apps proven to drop the native delete ride the uinput
             // transport for every replacement (sticky, engine-level).
             engine_->isSurrDeleteBrokenApp(appProgram());
@@ -8854,7 +8829,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         committedLen_ = newLen;
         if (!addedPart.empty()) {
           if (webkitGtkSurroundingFallback() ||
-              (isWayland() && (isChromiumCached() || isFirefoxOrSnap())) ||
+              (isWayland() && (isChromiumCached() || isGeckoApp())) ||
               (!isWayland() && isChromiumBrowser(appProgram()))) {
             // Wayland has no ordering guarantee between forwardKey (via
             // the compositor's virtual-keyboard protocol) and commitString
@@ -8927,11 +8902,11 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
       // for both forwarded and injected Backspaces.
       // Keep the X11 Firefox Uinput workaround for Docs-suite editors,
       // whose renderer can drop native deletes. Do not extend it to every
-      // Firefox/Snap entry: the address bar supplies matching surrounding
+      // Gecko entry: the address bar supplies matching surrounding
       // text, while injected BS may leave it unchanged (go + x -> goõ).
       // Other entries use native deletion only after the validity/suffix
       // checks below; missing/stale snapshots still fall back to Backspace.
-      const bool firefoxDocsUinput = !isWayland() && isFirefoxOrSnap() &&
+      const bool firefoxDocsUinput = !isWayland() && isGeckoApp() &&
                                      a11yGoogleDocsFocused();
       // Chrome's first Wayland web-editor replacement is the least stable:
       // the renderer can publish a valid surrounding snapshot before it is
@@ -8968,7 +8943,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         const auto &surrounding = ic_->surroundingText();
         if (isWayland() &&
             (!surrounding.isValid() || surrounding.text().empty()) &&
-            !isChromiumCached() && !isFirefoxOrSnap()) {
+            !isChromiumCached() && !isGeckoApp()) {
           SKEY_DEBUG() << "Surr: surrounding invalid at replace, "
                           "uinput BS transport";
           deleteViaBackspace(/*deferForwardCommit=*/false, /*forceUinput=*/true);
@@ -9035,7 +9010,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           // deletes and eat characters, so browser-class apps defer the
           // commit through scheduleDeferredCommit.
           beginSurroundingMeasurement(true, oldComposed, deleteLen);
-          if (isFirefoxOrSnap()) {
+          if (isGeckoApp()) {
             // Multiple single-character requests can target the same Firefox
             // surrounding snapshot. Delete the suffix in one transaction.
             ic_->deleteSurroundingText(-deleteLen, deleteLen);
@@ -9066,7 +9041,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
           surroundingInvalidCount_ = 0; // cache works again
           committedLen_ = newLen;
           if (!addedPart.empty()) {
-            if (isWayland() && (isChromiumCached() || isFirefoxOrSnap())) {
+            if (isWayland() && (isChromiumCached() || isGeckoApp())) {
               SKEY_DEBUG() << "Surr: deferred commit '" << addedPart << "'";
               // Chrome and Firefox can acknowledge the surrounding-text
               // transaction while silently dropping deleteSurroundingText.
@@ -9074,7 +9049,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
               // otherwise the stale suffix remains and the new tone is
               // appended ("da" -> "dađã"). Firefox also retains the
               // pre-commit retry below for its coalesced delete requests.
-              if (isChromiumCached() || isFirefoxOrSnap()) {
+              if (isChromiumCached() || isGeckoApp()) {
                 armSurrNativePostVerify(oldComposed, addedPart, newComposed,
                                         deleteLen, newLen);
               }
@@ -9085,8 +9060,8 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
               // than reissuing deletes against a possibly stale snapshot.
               scheduleDeferredCommit(addedPart, stablePrefix,
                                      kNativeDeleteDeferredUsec,
-                                     isFirefoxOrSnap() ? deleteLen : 0,
-                                     isFirefoxOrSnap() ? deletedPart
+                                     isGeckoApp() ? deleteLen : 0,
+                                     isGeckoApp() ? deletedPart
                                                        : std::string());
             } else {
               SKEY_DEBUG() << "Surr: direct commit '" << addedPart << "'";
