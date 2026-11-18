@@ -122,7 +122,9 @@ public:
                   now.time_since_epoch()) %
               1000;
     char buf[40];
-    std::strftime(buf, sizeof(buf), "%H:%M:%S", std::localtime(&t));
+    std::tm local{};
+    localtime_r(&t, &local); // also logged from the background scanner thread
+    std::strftime(buf, sizeof(buf), "%H:%M:%S", &local);
     f << "[" << buf << "." << std::setw(3) << std::setfill('0') << ms.count()
       << "] " << ss_.str() << std::endl;
   }
@@ -345,6 +347,28 @@ static constexpr uint64_t kSurrVerifyQuietUsec = 250000;
 // GNOME's mutter relay makes the surrounding pushes bursty and one edit
 // behind — the environment gets its own handling, the others stay on the
 // fast verified path.
+// Main-thread cost accounting for the "slow key" debug log: where a key or
+// activation spent its time.  Scopes nest rarely; overlap only inflates a
+// category, never hides one.  Main thread only.
+namespace {
+struct MainThreadCost {
+  uint64_t config = 0, a11y = 0, proc = 0;
+};
+MainThreadCost g_cost;
+class CostScope {
+public:
+  explicit CostScope(uint64_t MainThreadCost::*slot) : slot_(slot), start_(now(CLOCK_MONOTONIC)) {}
+  ~CostScope() { g_cost.*slot_ += now(CLOCK_MONOTONIC) - start_; }
+  CostScope(const CostScope &) = delete;
+  CostScope &operator=(const CostScope &) = delete;
+private:
+  uint64_t MainThreadCost::*slot_;
+  uint64_t start_;
+};
+// Debug-only: costs above this are logged with their breakdown.
+constexpr uint64_t kSlowMainThreadUsec = 3000;
+} // namespace
+
 static bool waylandSession() {
   const char *type = getenv("XDG_SESSION_TYPE");
   const char *display = getenv("WAYLAND_DISPLAY");
@@ -370,7 +394,8 @@ static bool gnomeDesktop() {
 // the session environment.
 bool SKeyState::gnomeOmniboxCaret() const {
   const auto &caret = ic_->cursorRect();
-  return isWayland() && (gnomeDesktop() || appProgram() == "gnome-shell") &&
+  if (relayApp_ == RelayApp::Other) return false;
+  return isWayland() && (gnomeDesktop() || ic_->program() == "gnome-shell") &&
          caret.width() <= 2 && caret.height() >= 14 && caret.height() <= 28;
 }
 
@@ -397,8 +422,14 @@ bool SKeyState::waylandBrowserAddressBarCaret() const {
 // a Chromium/Gecko process) is the only identity left — either its browser
 // UI or a field in the page (webContent).
 bool SKeyState::gnomeRelayBrowserFocus(bool gecko, bool webContent) const {
-  if (!isWayland() || !(gnomeDesktop() || appProgram() == "gnome-shell"))
+  if (!isWayland() || !(gnomeDesktop() || ic_->program() == "gnome-shell"))
     return false;
+  // GNOME Shell named the app: its browser kind decides, never a stale
+  // AT-SPI focus left by the browser used before (Telegram snap got the
+  // omnibox verdict of Chrome that way).
+  if (relayApp_ == RelayApp::Other) return false;
+  if (relayApp_ == RelayApp::Chromium && gecko) return false;
+  if (relayApp_ == RelayApp::Gecko && !gecko) return false;
   auto *monitor = engine_->a11yMonitor();
   A11yMonitor::FocusIdentity identity;
   // Same focus, same verdict (see a11yBlind()): a 5s window turned long
@@ -432,11 +463,19 @@ bool SKeyState::addressBarModesAvailable() const {
 bool SKeyState::gnomeRelayOmnibox() const {
   // Mutter may omit the application name (Ubuntu 24.04). Keep this
   // workaround scoped to anonymous/GNOME relay contexts with a thin caret.
-  const auto program = appProgram();
+  // Raw program: appProgram() names a relayed non-browser app instead.
+  if (!skey::gnome::isRelayProgram(ic_->program()) || relayApp_ == RelayApp::Other)
+    return false;
+  // A relayed field declaring the URL purpose is the omnibox (Cinnamon
+  // passes it through; GNOME drops it).  Without it, Chrome's selected
+  // inline autocompletion ate the native delete ("chào" → "chaào",
+  // Cinnamon Wayland with a11y off, 2026-11-18).  The caret alone cannot
+  // tell: Telegram's caret there is just as thin.
+  if (gnomeRelayContext() && ic_->capabilityFlags().test(CapabilityFlag::Url))
+    return true;
   // A browser UI verdict is required when AT-SPI is available.  The old
   // caret-only fallback classified every thin-caret web field as omnibox
   // after Mutter relayed the context as gnome-shell.
-  if (!(program.empty() || program == "gnome-shell")) return false;
   if (gnomeRelayBrowserUI(false) || gnomeRelayBrowserUI(true)) return true;
   // The browser's own focus in the page (any age) rules out the omnibox:
   // the caret shape below matches most thin-caret web fields.
@@ -1018,7 +1057,8 @@ static bool isTerminalAppName(const std::string &prog) {
       "wezterm",        "ghostty", "foot",
       "urxvt",          "rxvt",
       "xterm",          "tabby",
-      "hyper",
+      "hyper",          "ptyxis",
+      "kgx",            "gnome-console",
   };
   for (const char *p : patterns) {
     if (prog.find(p) != std::string::npos) {
@@ -1173,6 +1213,174 @@ static bool processHasShellChild(const std::string &prog) {
   return found;
 }
 
+// ── Program-wide /proc scans ─────────────────────────────────────────────
+// Each walks every process; they run on the engine's background scanner
+// (BackgroundScanner), never on the input thread.  Matching rules are the
+// ones the inline detectors used (moved verbatim, 2026-11-18).
+
+// A process named `program` (comm, 15-char truncation aware) that is a
+// Gecko browser (libxul.so next to its binary).
+static bool scanGeckoBrowser(const std::string &program) {
+  if (program.empty()) return false;
+  bool firefox = false;
+  if (DIR *dir = opendir("/proc")) {
+    while (auto *entry = readdir(dir)) {
+      if (!isdigit(entry->d_name[0])) continue;
+      std::ifstream file(std::string("/proc/") + entry->d_name + "/comm");
+      std::string comm;
+      if (std::getline(file, comm) &&
+          (comm == program || (comm.size() == 15 && program.compare(0, 15, comm) == 0)) &&
+          processHasGeckoMarker(static_cast<pid_t>(std::atoi(entry->d_name)))) {
+        firefox = true;
+        break;
+      }
+    }
+    closedir(dir);
+  }
+  return firefox;
+}
+
+// The first process matching `prog` by comm: Snap-packaged (exe or first
+// mapping under /snap/) or a Gecko fork (libxul.so next to the binary).
+static bool scanFirefoxOrSnap(const std::string &prog) {
+  if (prog.empty()) return false;
+  DIR *dir = opendir("/proc");
+  if (!dir) return false;
+  bool found = false;
+  struct dirent *entry;
+  while ((entry = readdir(dir)) != nullptr) {
+    if (entry->d_type != DT_DIR || !isdigit(entry->d_name[0]))
+      continue;
+    std::string commPath = "/proc/" + std::string(entry->d_name) + "/comm";
+    std::ifstream commFile(commPath);
+    if (!commFile.is_open())
+      continue;
+    std::string comm;
+    std::getline(commFile, comm);
+    if (comm == prog || prog.compare(0, 15, comm) == 0 ||
+        comm.compare(0, 15, prog) == 0) {
+      // Found matching process — check exe path for /snap/
+      std::string exePath = "/proc/" + std::string(entry->d_name) + "/exe";
+      char buf[4096];
+      ssize_t len = readlink(exePath.c_str(), buf, sizeof(buf) - 1);
+      if (len > 0) {
+        buf[len] = '\0';
+        std::string exe(buf);
+        if (exe.find("/snap/") != std::string::npos) {
+          found = true;
+          break;
+        }
+        // Gecko fork: libxul.so next to the main binary
+        size_t lastSlash = exe.rfind('/');
+        if (lastSlash != std::string::npos &&
+            access((exe.substr(0, lastSlash) + "/libxul.so").c_str(), F_OK) == 0) {
+          found = true;
+          break;
+        }
+      }
+      // Also check via /proc/PID/maps (some Snap apps use
+      // symlinked launchers where exe doesn't contain /snap/)
+      std::string mapsPath = "/proc/" + std::string(entry->d_name) + "/maps";
+      std::ifstream mapsFile(mapsPath);
+      if (mapsFile.is_open()) {
+        std::string line;
+        if (std::getline(mapsFile, line) &&
+            line.find("/snap/") != std::string::npos) {
+          found = true;
+          break;
+        }
+      }
+      break; // found matching process but not snap — done
+    }
+  }
+  closedir(dir);
+  return found;
+}
+
+// A process whose exe basename is `program` with libwebkit2gtk-* mapped.
+static bool scanWebKitGtk(const std::string &program) {
+  if (program.empty()) return false;
+  DIR *dir = opendir("/proc");
+  if (!dir) return false;
+  bool webkit = false;
+  while (auto *entry = readdir(dir)) {
+    if (!isdigit(entry->d_name[0])) continue;
+    const std::string base = std::string("/proc/") + entry->d_name;
+    char exe[PATH_MAX];
+    const auto length = readlink((base + "/exe").c_str(), exe, sizeof(exe) - 1);
+    if (length <= 0) continue;
+    exe[length] = '\0';
+    const char *filename = std::strrchr(exe, '/');
+    if (!filename || program != filename + 1) continue;
+    std::ifstream maps(base + "/maps");
+    std::string line;
+    while (std::getline(maps, line)) {
+      const auto slash = line.rfind('/');
+      if (slash != std::string::npos &&
+          line.compare(slash + 1, 14, "libwebkit2gtk-") == 0) {
+        webkit = true;
+        break;
+      }
+    }
+    if (webkit) break;
+  }
+  closedir(dir);
+  return webkit;
+}
+
+// A process whose exe basename is `program` holding a pty master fd.
+static bool scanPtyMaster(const std::string &program) {
+  if (program.empty()) return false;
+  DIR *processes = opendir("/proc");
+  if (!processes) return false;
+  bool owns = false;
+  while (auto *entry = readdir(processes)) {
+    if (!isdigit(static_cast<unsigned char>(entry->d_name[0]))) continue;
+    const std::string base = std::string("/proc/") + entry->d_name;
+    char executable[PATH_MAX];
+    const auto length = readlink((base + "/exe").c_str(), executable, sizeof(executable) - 1);
+    if (length <= 0) continue;
+    executable[length] = 0;
+    const char *name = strrchr(executable, '/');
+    if (program != (name ? name + 1 : executable)) continue;
+    DIR *descriptors = opendir((base + "/fdinfo").c_str());
+    if (!descriptors) continue;
+    while (auto *fd = readdir(descriptors)) {
+      if (!isdigit(static_cast<unsigned char>(fd->d_name[0]))) continue;
+      std::ifstream info(base + "/fdinfo/" + fd->d_name);
+      std::string line;
+      while (std::getline(info, line)) {
+        if (line.rfind("tty-index:", 0) == 0) { owns = true; break; }
+      }
+      if (owns) break;
+    }
+    closedir(descriptors);
+    if (owns) break;
+  }
+  closedir(processes);
+  return owns;
+}
+
+// BackgroundScanner runner: trait letter → scan (thread-safe, /proc only).
+static bool runProgramScan(char trait, const std::string &program) {
+  const uint64_t started = now(CLOCK_MONOTONIC);
+  bool value = false;
+  switch (trait) {
+  case 'c': value = isChromiumBasedApp(program); break;
+  case 't': value = processHasShellChild(program); break;
+  case 'g': value = scanGeckoBrowser(program); break;
+  case 'f': value = scanFirefoxOrSnap(program); break;
+  case 'w': value = scanWebKitGtk(program); break;
+  case 'p': value = scanPtyMaster(program); break;
+  default: break;
+  }
+  const uint64_t took = now(CLOCK_MONOTONIC) - started;
+  if (took >= 2000)
+    SKEY_DEBUG() << "ProcScan: background trait=" << trait << " program='" << program
+                 << "' took=" << took / 1000.0 << "ms -> " << value;
+  return value;
+}
+
 /// Detect lock screen / login screen programs by name.
 /// These should NEVER process Vietnamese transforms — the user is
 /// typing a password.  CapabilityFlag::PasswordOrSensitive (Wayland)
@@ -1215,10 +1423,19 @@ public:
 
   void select(InputContext *) const override {
     state_->appExcluded_ = false;
-    engine_->saveAppExcluded(state_->appProgram(), false);
     state_->appModeOverride_ = mode_;
     state_->hasAppModeOverride_ = true;
     state_->modeCacheValid_ = false;
+    if (state_->appUnnamed()) {
+      // No name tells this app apart (GNOME/Cinnamon relay, unresolved
+      // IBus client): a saved rule would apply to every such app.
+      state_->unnamedFocusOverride_ = true;
+      SKEY_INFO() << "Mode switched to " << outputModeName(mode_)
+                  << " for this field only (app has no name, not saved)";
+      state_->dismissModeMenu();
+      return;
+    }
+    engine_->saveAppExcluded(state_->appProgram(), false);
     engine_->saveAppMode(state_->appProgram(), mode_);
     SKEY_INFO() << "Mode switched to " << outputModeName(mode_);
     state_->dismissModeMenu();
@@ -1260,6 +1477,13 @@ public:
   void select(InputContext *) const override {
     bool newExcluded = !state_->appExcluded_;
     state_->appExcluded_ = newExcluded;
+    if (state_->appUnnamed()) {
+      state_->unnamedFocusOverride_ = true;
+      SKEY_INFO() << "App " << (newExcluded ? "excluded" : "included")
+                  << " for this field only (app has no name, not saved)";
+      state_->dismissModeMenu();
+      return;
+    }
     engine_->saveAppExcluded(state_->appProgram(), newExcluded);
     SKEY_INFO() << "App '" << state_->appProgram()
                 << (newExcluded ? "' excluded" : "' included");
@@ -1275,6 +1499,30 @@ private:
 // SKeyEngine
 // ---------------------------------------------------------------------------
 
+GnomeFocusWatcher::Snapshot SKeyEngine::gnomeFocusSnapshot() const {
+  if (gnomeFocusOverride_) return *gnomeFocusOverride_;
+  return gnomeFocus_ ? gnomeFocus_->snapshot() : GnomeFocusWatcher::Snapshot{};
+}
+
+uint64_t SKeyEngine::gnomeFocusGeneration() const {
+  if (gnomeFocusOverride_) return gnomeFocusOverride_->generation;
+  return gnomeFocus_ ? gnomeFocus_->generation() : 0;
+}
+
+// Why GNOME's focused-app watcher stays off, or nullptr to run it.
+static const char *gnomeFocusWatchOffReason() {
+  if (const char *off = getenv("SKEY_DISABLE_GNOME_APP_WATCH"); off && *off && std::string_view(off) != "0")
+    return "disabled by SKEY_DISABLE_GNOME_APP_WATCH";
+  if (!waylandSession()) return "not a Wayland session";
+  const char *desktop = getenv("XDG_CURRENT_DESKTOP");
+  // Unset: a daemon started outside the session may still sit under GNOME.
+  if (desktop && *desktop && std::string_view(desktop).find("GNOME") == std::string_view::npos)
+    return "not a GNOME desktop";
+  if (skey::gnome::fcitxNamesRelayedApps(Instance::version()))
+    return "fcitx5 names GNOME apps itself (>= 5.1.22)";
+  return nullptr;
+}
+
 SKeyEngine::~SKeyEngine() {
   // States cancel requests during destruction; both injectors must still live.
   factory_.unregister();
@@ -1288,6 +1536,9 @@ SKeyEngine::SKeyEngine(Instance *instance, bool initializeDesktop)
   // and calls propertyFor(&factory_), which asserts the factory is
   // registered on the manager — at startup an IC can already exist
   // (portal monitor query) before the addon constructor finishes.
+  // Program-wide /proc scans run off the input thread; engines without a
+  // desktop (tests) scan inline so verdicts stay deterministic.
+  procScanner_ = std::make_unique<skey::BackgroundScanner>(runProgramScan, !initializeDesktop);
   instance_->inputContextManager().registerProperty("skeyState", &factory_);
   surroundingWatcher_ = instance_->watchEvent(
       EventType::InputContextSurroundingTextUpdated, EventWatcherPhase::PreInputMethod,
@@ -1313,6 +1564,14 @@ SKeyEngine::SKeyEngine(Instance *instance, bool initializeDesktop)
   a11yMonitor_->setAutoEnableA11y(*config_.autoEnableA11y);
   if (*config_.autoEnableA11y)
     a11yMonitor_->start();
+
+  if (const char *off = gnomeFocusWatchOffReason()) {
+    SKEY_INFO() << "GnomeFocus: watcher off: " << off << " (fcitx5 " << Instance::version() << ")";
+  } else {
+    gnomeFocus_ = std::make_unique<GnomeFocusWatcher>();
+    gnomeFocus_->start();
+    SKEY_INFO() << "GnomeFocus: watcher started (fcitx5 " << Instance::version() << ")";
+  }
 
   SKEY_INFO() << "SKey Vietnamese Input Method loaded";
 }
@@ -1410,14 +1669,42 @@ void SKeyEngine::setupTrayMenu() {
 
 void SKeyEngine::keyEvent(const InputMethodEntry &entry, KeyEvent &keyEvent) {
   FCITX_UNUSED(entry);
+  g_cost = {};
+  const uint64_t started = now(CLOCK_MONOTONIC);
   auto *state = keyEvent.inputContext()->propertyFor(&factory_);
   if (state) {
     state->keyEvent(keyEvent);
+  }
+  if (!g_skeyDebugEnabled || keyEvent.isRelease()) return;
+  const uint64_t spent = now(CLOCK_MONOTONIC) - started;
+  // Key timestamps are the compositor's/toolkit's CLOCK_MONOTONIC in ms on
+  // Wayland: the gap shows how long the key waited before reaching skey.
+  int64_t queuedMs = -1;
+  if (keyEvent.time() != 0 && waylandSession()) {
+    const int64_t delta = static_cast<int64_t>(started / 1000) - static_cast<int64_t>(keyEvent.time());
+    if (delta >= 0 && delta < 10000) queuedMs = delta;
+  }
+  if (spent >= kSlowMainThreadUsec || queuedMs >= 30) {
+    SKEY_DEBUG() << "SlowKey: '" << keyEvent.key().toString() << "' spent=" << spent / 1000.0
+                 << "ms config=" << g_cost.config / 1000.0 << " a11y=" << g_cost.a11y / 1000.0
+                 << " proc=" << g_cost.proc / 1000.0 << " queued=" << queuedMs << "ms";
   }
 }
 
 void SKeyEngine::activate(const InputMethodEntry &entry,
                           InputContextEvent &event) {
+  g_cost = {};
+  const uint64_t activateStarted = now(CLOCK_MONOTONIC);
+  struct SlowActivateLog {
+    uint64_t started;
+    ~SlowActivateLog() {
+      const uint64_t spent = now(CLOCK_MONOTONIC) - started;
+      if (g_skeyDebugEnabled && spent >= kSlowMainThreadUsec)
+        SKEY_DEBUG() << "SlowActivate: spent=" << spent / 1000.0 << "ms config="
+                     << g_cost.config / 1000.0 << " a11y=" << g_cost.a11y / 1000.0
+                     << " proc=" << g_cost.proc / 1000.0;
+    }
+  } slowActivateLog{activateStarted};
   auto *ic = event.inputContext();
 
   // Re-read config to pick up runtime changes (e.g. Debug toggle)
@@ -1829,6 +2116,7 @@ void SKeyEngine::maybeSaveAppDelays(bool force) {
 }
 
 void SKeyEngine::reloadConfig() {
+  CostScope cost(&MainThreadCost::config);
   const bool previousShowPreedit = config_.showPreedit.value();
   // Normalize retired enum names before parsing, preserving all other keys.
   RawConfig raw;
@@ -2199,8 +2487,79 @@ bool SKeyState::commitText(const std::string &utf8, bool uinputReplacement) {
   return true;
 }
 
+bool SKeyState::appUnnamed() const {
+  const auto &program = appProgram();
+  return program.empty() || (program == "gnome-shell" && gnomeRelayContext());
+}
+
+bool SKeyState::gnomeRelayContext() const {
+  return isWayland() && std::string_view(ic_->frontend()) == "ibus" &&
+         skey::gnome::isRelayProgram(ic_->program());
+}
+
+void SKeyState::refreshRelayApp(bool atBoundary) {
+  const uint64_t generation = engine_->gnomeFocusGeneration();
+  if (generation == relayGeneration_) return;
+  if (!gnomeRelayContext()) {
+    relayGeneration_ = generation;
+    relayApp_ = RelayApp::Unresolved;
+    relayProgram_.clear();
+    return;
+  }
+  const auto snap = engine_->gnomeFocusSnapshot();
+  // A change announced but not answered yet: keep what this focus has.
+  if (snap.state == GnomeFocusWatcher::State::Pending) return;
+  RelayApp app = RelayApp::Unresolved;
+  std::string program;
+  if (snap.state == GnomeFocusWatcher::State::Known && !snap.program.empty()) {
+    if (skey::isChromiumBrowser(snap.program)) app = RelayApp::Chromium;
+    else if (skey::isFirefoxBrowser(snap.program)) app = RelayApp::Gecko;
+    else {
+      app = RelayApp::Other;
+      program = snap.program;
+    }
+  }
+  if (app == relayApp_ && program == relayProgram_) {
+    relayGeneration_ = generation;
+    return;
+  }
+  if (!atBoundary) return; // finish the word under the identity it began with
+  relayGeneration_ = generation;
+  relayApp_ = app;
+  relayProgram_ = std::move(program);
+  // Every program-derived verdict belongs to the previous identity.
+  cachedIsChromium_ = -1;
+  cachedIsFirefoxOrSnap_ = -1;
+  cachedIsFirefoxBrowser_ = -1;
+  cachedIsTerminalApp_ = -1;
+  cachedIsWebKitGtk_ = -1;
+  cachedPtyProgram_.clear();
+  modeCacheValid_ = false;
+  triggerBackoffUntilUsec_ = 0;
+  static std::string lastLogged;
+  std::string line = std::string(GnomeFocusWatcher::stateName(snap.state)) + " id='" + snap.appId +
+                     "' program='" + appProgram() + "' kind=" + std::to_string(static_cast<int>(relayApp_)) +
+                     " (" + snap.note + ")";
+  if (line != lastLogged) {
+    SKEY_INFO() << "GnomeFocus: relayed app " << line;
+    lastLogged = std::move(line);
+  }
+}
+
 const std::string &SKeyState::appProgram() const {
   const std::string &prog = ic_->program();
+  if (relayApp_ == RelayApp::Other && gnomeRelayContext()) return relayProgram_;
+  // fcitx5 >= 5.1.22 names relayed GNOME apps by Shell app id: classify
+  // and key them by what their .desktop file launches, as elsewhere.
+  if (isWayland() && prog.size() > 8 &&
+      prog.compare(prog.size() - 8, 8, ".desktop") == 0) {
+    if (desktopIdProgramFor_ != prog) {
+      desktopIdProgramFor_ = prog;
+      desktopIdProgram_ = skey::gnome::programForAppId(
+          prog, skey::gnome::readInstalledDesktopFile);
+    }
+    return desktopIdProgram_;
+  }
   if (!prog.empty()) {
     return prog;
   }
@@ -2244,13 +2603,23 @@ void SKeyState::refreshAppMode() {
 
   hasAppModeOverride_ = false;
   appExcluded_ = false;
+  unnamedFocusOverride_ = false;
+  // An unnamed app shares its key with every other unnamed app: rules
+  // saved under it by older versions are ignored.
+  if (appUnnamed()) return;
 
   // Per-app config is keyed by the resolved app name — appProgram()
   // falls back to X11 WM_CLASS when the IBus frontend reports an empty
   // program name (AppImages etc.).
   RawConfig cfg;
-  readAsIni(cfg, "conf/skey-app-modes.conf");
+  {
+    CostScope cost(&MainThreadCost::config);
+    readAsIni(cfg, "conf/skey-app-modes.conf");
+  }
   auto *val = cfg.valueByPath(prog);
+  // fcitx5 >= 5.1.22 app ids: keep rules saved under the raw id working.
+  if (!val && !prog.empty() && ic_->program() != prog && !gnomeRelayContext())
+    val = cfg.valueByPath(ic_->program());
   if (val) {
     std::string modeStr = *val;
     if (modeStr.size() >= 2 && modeStr.front() == '"' && modeStr.back() == '"')
@@ -3206,11 +3575,14 @@ bool SKeyState::isChromiumCached() const {
     const std::string &prog = appProgram();
     bool chromium =
         isChromiumBrowser(prog) || prog.find("electron") != std::string::npos;
-    if (!chromium) {
-      chromium = programTrait('c', [&] {
+    // A Gecko browser by name is never Chromium: skip the /proc scan.
+    bool pending = false;
+    if (!chromium && !skey::isFirefoxBrowser(prog)) {
+      chromium = programTrait('c', [&]() -> std::optional<bool> {
         int pid = a11yAppPid();
-        return pid > 0 ? processHasChromiumMarkers(pid) : isChromiumBasedApp(prog);
-      });
+        if (pid > 0) return processHasChromiumMarkers(pid);
+        return scanTrait('c', prog);
+      }, &pending);
     }
     cachedIsChromium_ = chromium ? 1 : 0;
   }
@@ -3226,56 +3598,92 @@ static constexpr uint64_t kProgramTraitTtlUsec = 60000000; // 60s
 // reset/activate burst of a single focus into one scan.
 static constexpr uint64_t kLoadedTraitTtlUsec = 5000000; // 5s
 
-bool SKeyState::programTrait(char trait, const std::function<bool()> &detect) const {
+bool SKeyState::programTrait(char trait,
+                             const std::function<std::optional<bool>()> &detect,
+                             bool *pending) const {
+  if (pending) *pending = false;
   const auto &program = appProgram();
   // GNOME's relay context names the shell, not the app behind it — the
   // verdict there follows the a11y pid and must not be shared.
-  if (program.empty() || program == "gnome-shell") return detect();
+  if (program.empty() || program == "gnome-shell") {
+    CostScope cost(&MainThreadCost::proc);
+    const uint64_t scanStart = now(CLOCK_MONOTONIC);
+    const auto value = detect();
+    const uint64_t took = now(CLOCK_MONOTONIC) - scanStart;
+    if (took >= 2000)
+      SKEY_DEBUG() << "ProcScan: trait=" << trait << " relay program='" << program
+                   << "' took=" << took / 1000.0 << "ms (uncached)";
+    if (!value && pending) *pending = true;
+    return value.value_or(false);
+  }
   const std::string key = std::string(1, trait) + program;
   const auto stamp = now(CLOCK_MONOTONIC);
   auto &cache = engine_->programTraits_;
   if (auto it = cache.find(key); it != cache.end()) {
-    const uint64_t ttl = trait == 'w' ? kLoadedTraitTtlUsec : kProgramTraitTtlUsec;
+    // 't' (terminal shell scan): session-long, as the old per-program cache.
+    const uint64_t ttl = trait == 'w' ? kLoadedTraitTtlUsec
+                         : trait == 't' ? UINT64_MAX : kProgramTraitTtlUsec;
     if (stamp - it->second.atUsec < ttl) return it->second.value;
   }
-  const bool value = detect();
+  std::optional<bool> value;
+  {
+    CostScope cost(&MainThreadCost::proc);
+    const uint64_t scanStart = now(CLOCK_MONOTONIC);
+    value = detect();
+    const uint64_t took = now(CLOCK_MONOTONIC) - scanStart;
+    if (took >= 2000)
+      SKEY_DEBUG() << "ProcScan: trait=" << trait << " program='" << program
+                   << "' took=" << took / 1000.0 << "ms";
+  }
+  if (!value) {
+    // Scanning in the background: answer "no" for now, never cache it.
+    if (pending) *pending = true;
+    return false;
+  }
   if (cache.size() >= 256) cache.clear();
-  cache[key] = {value, stamp};
+  cache[key] = {*value, stamp};
+  return *value;
+}
+
+std::optional<bool> SKeyState::scanTrait(char trait, const std::string &program) const {
+  auto value = engine_->procScanner_->take(trait, program);
+  if (!value) {
+    if (!scanPending_)
+      SKEY_DEBUG() << "ProcScan: trait=" << trait << " program='" << program
+                   << "' queued in the background";
+    scanPending_ = true;
+  }
   return value;
+}
+
+void SKeyState::refreshScans(bool atBoundary) {
+  if (!scanPending_ || !atBoundary) return;
+  const uint64_t generation = engine_->procScanner_->generation();
+  if (generation == scanGenerationSeen_) return;
+  scanGenerationSeen_ = generation;
+  // Provisional "no" verdicts were never cached: clearing the per-IC
+  // caches re-asks, now answered (or still pending → stays armed).
+  scanPending_ = false;
+  cachedIsChromium_ = -1;
+  cachedIsFirefoxOrSnap_ = -1;
+  cachedIsFirefoxBrowser_ = -1;
+  cachedIsTerminalApp_ = -1;
+  cachedIsWebKitGtk_ = -1;
+  cachedPtyProgram_.clear();
+  modeCacheValid_ = false;
+  triggerBackoffUntilUsec_ = 0;
+  SKEY_DEBUG() << "ProcScan: background verdicts arrived, re-evaluating";
 }
 
 bool SKeyState::ownsPtyMaster() const {
   const auto &program = appProgram();
   if (program.empty()) return false;
   if (cachedPtyProgram_ == program) return cachedPtyMaster_;
+  // Pending: a provisional "no" for this focus; refreshScans() re-asks
+  // between words once the background scan answered.
+  const auto owns = scanTrait('p', program);
   cachedPtyProgram_ = program;
-  cachedPtyMaster_ = false;
-  DIR *processes = opendir("/proc");
-  if (!processes) return false;
-  while (auto *entry = readdir(processes)) {
-    if (!isdigit(static_cast<unsigned char>(entry->d_name[0]))) continue;
-    const std::string base = std::string("/proc/") + entry->d_name;
-    char executable[PATH_MAX];
-    const auto length = readlink((base + "/exe").c_str(), executable, sizeof(executable) - 1);
-    if (length <= 0) continue;
-    executable[length] = 0;
-    const char *name = strrchr(executable, '/');
-    if (program != (name ? name + 1 : executable)) continue;
-    DIR *descriptors = opendir((base + "/fdinfo").c_str());
-    if (!descriptors) continue;
-    while (auto *fd = readdir(descriptors)) {
-      if (!isdigit(static_cast<unsigned char>(fd->d_name[0]))) continue;
-      std::ifstream info(base + "/fdinfo/" + fd->d_name);
-      std::string line;
-      while (std::getline(info, line)) {
-        if (line.rfind("tty-index:", 0) == 0) { cachedPtyMaster_ = true; break; }
-      }
-      if (cachedPtyMaster_) break;
-    }
-    closedir(descriptors);
-    if (cachedPtyMaster_) break;
-  }
-  closedir(processes);
+  cachedPtyMaster_ = owns.value_or(false);
   return cachedPtyMaster_;
 }
 
@@ -3284,148 +3692,77 @@ bool SKeyState::isTerminalAppCached() const {
     return cachedIsTerminalApp_ == 1;
   }
   const std::string &prog = appProgram();
-  // Program-level cache: the verdict is a property of the program, so a
-  // /proc scan happens at most once per program per session — subsequent
-  // focuses of the same app are O(1).
-  if (prog == engine_->terminalCachedProgram_ &&
-      engine_->terminalCachedVerdict_ >= 0) {
-    cachedIsTerminalApp_ = engine_->terminalCachedVerdict_;
-    return cachedIsTerminalApp_ == 1;
-  }
   bool term = isTerminalAppName(prog);
   if (!term) {
-    int pid = a11yAppPid();
-    term = pid > 0 ? processHasShellChildPid(pid) : processHasShellChild(prog);
+    if (skey::gnome::isRelayProgram(prog)) {
+      // No name to look the process up by (the name scan never matched
+      // one; it only walked all of /proc): only the a11y pid can tell.
+      const int pid = a11yAppPid();
+      term = pid > 0 && processHasShellChildPid(pid);
+    } else if (!isChromiumBrowser(prog) && !skey::isFirefoxBrowser(prog)) {
+      // A browser by name is never a terminal.  Otherwise the shell scan
+      // (40-100ms over a busy /proc) runs once per program per session —
+      // the old single-slot cache rescanned on every app switch.
+      bool pending = false;
+      term = programTrait('t', [&]() -> std::optional<bool> {
+        const int pid = a11yAppPid();
+        if (pid > 0) return processHasShellChildPid(pid);
+        return scanTrait('t', prog);
+      }, &pending);
+    }
   }
   cachedIsTerminalApp_ = term ? 1 : 0;
-  engine_->terminalCachedProgram_ = prog;
-  engine_->terminalCachedVerdict_ = cachedIsTerminalApp_;
   return term;
 }
 
 bool SKeyState::isFirefoxBrowserCached() const {
-  if (cachedIsFirefoxBrowser_ < 0)
-    cachedIsFirefoxBrowser_ =
-        programTrait('g', [this] { return detectFirefoxBrowser(); }) ? 1 : 0;
+  // A Chromium browser by name is never Gecko: skip the /proc scan.
+  if (cachedIsFirefoxBrowser_ < 0 && isChromiumBrowser(appProgram()))
+    cachedIsFirefoxBrowser_ = 0;
+  if (cachedIsFirefoxBrowser_ < 0) {
+    bool pending = false;
+    const bool firefox = programTrait('g', [this] { return detectFirefoxBrowser(); }, &pending);
+    cachedIsFirefoxBrowser_ = firefox ? 1 : 0;
+  }
   return cachedIsFirefoxBrowser_ == 1;
 }
 
-bool SKeyState::detectFirefoxBrowser() const {
+std::optional<bool> SKeyState::detectFirefoxBrowser() const {
   if (cachedIsFirefoxBrowser_ >= 0) return cachedIsFirefoxBrowser_ == 1;
   const auto &program = appProgram();
-  bool firefox = skey::isFirefoxBrowser(program);
-  if (!firefox && !program.empty() &&
-      program.find("thunderbird") == std::string::npos) {
-    const int pid = a11yAppPid();
-    if (pid > 0) {
-      firefox = processHasGeckoMarker(pid);
-    } else if (DIR *dir = opendir("/proc")) {
-      while (auto *entry = readdir(dir)) {
-        if (!isdigit(entry->d_name[0])) continue;
-        std::ifstream file(std::string("/proc/") + entry->d_name + "/comm");
-        std::string comm;
-        if (std::getline(file, comm) &&
-            (comm == program || (comm.size() == 15 && program.compare(0, 15, comm) == 0)) &&
-            processHasGeckoMarker(static_cast<pid_t>(std::atoi(entry->d_name)))) {
-          firefox = true;
-          break;
-        }
-      }
-      closedir(dir);
-    }
-  }
-  cachedIsFirefoxBrowser_ = firefox ? 1 : 0;
-  return firefox;
+  if (skey::isFirefoxBrowser(program)) return true;
+  if (program.empty() || program.find("thunderbird") != std::string::npos) return false;
+  const int pid = a11yAppPid();
+  if (pid > 0) return processHasGeckoMarker(pid);
+  return scanTrait('g', program);
 }
 
 bool SKeyState::isFirefoxOrSnap() const {
-  if (cachedIsFirefoxOrSnap_ < 0)
-    cachedIsFirefoxOrSnap_ =
-        programTrait('f', [this] { return detectFirefoxOrSnap(); }) ? 1 : 0;
+  if (cachedIsFirefoxOrSnap_ < 0) {
+    bool pending = false;
+    const bool value = programTrait('f', [this] { return detectFirefoxOrSnap(); }, &pending);
+    cachedIsFirefoxOrSnap_ = value ? 1 : 0;
+  }
   return cachedIsFirefoxOrSnap_ == 1;
 }
 
-bool SKeyState::detectFirefoxOrSnap() const {
+std::optional<bool> SKeyState::detectFirefoxOrSnap() const {
   if (cachedIsFirefoxOrSnap_ >= 0) {
     return cachedIsFirefoxOrSnap_ == 1;
   }
   const std::string &prog = appProgram();
   // Firefox program name (native or Snap)
-  if (prog.find("firefox") != std::string::npos) {
-    cachedIsFirefoxOrSnap_ = 1;
-    return true;
-  }
+  if (prog.find("firefox") != std::string::npos) return true;
   // Firefox forks (zen, ...) are recognized by their binary layout:
   // Gecko browsers ship libxul.so next to the main executable.  They
   // share Firefox's reset-after-forwarded-key behavior and need the
   // same state-preservation guards.
   // Detect Snap-packaged apps: prefer the a11y-reported PID (one readlink,
-  // no scan) and fall back to the full /proc scan.
-  if (!prog.empty()) {
-    int pid = a11yAppPid();
-    if (pid > 0) {
-      cachedIsFirefoxOrSnap_ =
-          (processHasGeckoMarker(pid) || processIsSnapPid(pid)) ? 1 : 0;
-      return cachedIsFirefoxOrSnap_ == 1;
-    }
-    DIR *dir = opendir("/proc");
-    if (dir) {
-      struct dirent *entry;
-      while ((entry = readdir(dir)) != nullptr) {
-        if (entry->d_type != DT_DIR || !isdigit(entry->d_name[0]))
-          continue;
-        std::string commPath = "/proc/" + std::string(entry->d_name) + "/comm";
-        std::ifstream commFile(commPath);
-        if (!commFile.is_open())
-          continue;
-        std::string comm;
-        std::getline(commFile, comm);
-        if (comm == prog || prog.compare(0, 15, comm) == 0 ||
-            comm.compare(0, 15, prog) == 0) {
-          // Found matching process — check exe path for /snap/
-          std::string exePath = "/proc/" + std::string(entry->d_name) + "/exe";
-          char buf[4096];
-          ssize_t len = readlink(exePath.c_str(), buf, sizeof(buf) - 1);
-          if (len > 0) {
-            buf[len] = '\0';
-            std::string exe(buf);
-            if (exe.find("/snap/") != std::string::npos) {
-              closedir(dir);
-              cachedIsFirefoxOrSnap_ = 1;
-              return true;
-            }
-            // Gecko fork: libxul.so next to the main binary
-            size_t lastSlash = exe.rfind('/');
-            if (lastSlash != std::string::npos &&
-                access((exe.substr(0, lastSlash) + "/libxul.so").c_str(),
-                       F_OK) == 0) {
-              closedir(dir);
-              cachedIsFirefoxOrSnap_ = 1;
-              return true;
-            }
-          }
-          // Also check via /proc/PID/maps (some Snap apps use
-          // symlinked launchers where exe doesn't contain /snap/)
-          std::string mapsPath =
-              "/proc/" + std::string(entry->d_name) + "/maps";
-          std::ifstream mapsFile(mapsPath);
-          if (mapsFile.is_open()) {
-            std::string line;
-            if (std::getline(mapsFile, line) &&
-                line.find("/snap/") != std::string::npos) {
-              closedir(dir);
-              cachedIsFirefoxOrSnap_ = 1;
-              return true;
-            }
-          }
-          break; // found matching process but not snap — done
-        }
-      }
-      closedir(dir);
-    }
-  }
-  cachedIsFirefoxOrSnap_ = 0;
-  return false;
+  // no scan) and fall back to the background /proc scan.
+  if (prog.empty()) return false;
+  const int pid = a11yAppPid();
+  if (pid > 0) return processHasGeckoMarker(pid) || processIsSnapPid(pid);
+  return scanTrait('f', prog);
 }
 
 // Frontend-name comparison that works on every fcitx5 release: the newer
@@ -3453,42 +3790,20 @@ bool SKeyState::webkitGtkSurroundingFallback() const {
     cachedIsWebKitGtk_ = -1;
   }
   if (cachedIsWebKitGtk_ >= 0) return cachedIsWebKitGtk_;
-  if (program.empty()) return (cachedIsWebKitGtk_ = 0);
-  cachedIsWebKitGtk_ = programTrait('w', [this] { return detectWebKitGtk(); }) ? 1 : 0;
+  // Browsers by name never run WebKitGTK: skip the /proc + maps scan.
+  if (program.empty() || isChromiumBrowser(program) || skey::isFirefoxBrowser(program))
+    return (cachedIsWebKitGtk_ = 0);
+  bool pending = false;
+  const bool webkit = programTrait('w', [this] { return detectWebKitGtk(); }, &pending);
+  cachedIsWebKitGtk_ = webkit ? 1 : 0;
   return cachedIsWebKitGtk_;
 }
 
-bool SKeyState::detectWebKitGtk() const {
-  const auto program = appProgram();
-  cachedIsWebKitGtk_ = 0;
+std::optional<bool> SKeyState::detectWebKitGtk() const {
   // WebKitGTK's GTK3 IM context handles retrieve-surrounding but not
   // delete-surrounding. Detect the loaded toolkit, never application names.
   // GTK4 has a different library/forward-key contract and is not included.
-  DIR *dir = opendir("/proc");
-  if (!dir) return false;
-  while (auto *entry = readdir(dir)) {
-    if (!isdigit(entry->d_name[0])) continue;
-    const std::string base = std::string("/proc/") + entry->d_name;
-    char exe[PATH_MAX];
-    const auto length = readlink((base + "/exe").c_str(), exe, sizeof(exe) - 1);
-    if (length <= 0) continue;
-    exe[length] = '\0';
-    const char *filename = std::strrchr(exe, '/');
-    if (!filename || program != filename + 1) continue;
-    std::ifstream maps(base + "/maps");
-    std::string line;
-    while (std::getline(maps, line)) {
-      const auto slash = line.rfind('/');
-      if (slash != std::string::npos &&
-          line.compare(slash + 1, 14, "libwebkit2gtk-") == 0) {
-        cachedIsWebKitGtk_ = 1;
-        break;
-      }
-    }
-    if (cachedIsWebKitGtk_) break;
-  }
-  closedir(dir);
-  return cachedIsWebKitGtk_;
+  return scanTrait('w', appProgram());
 }
 
 bool SKeyState::useNativeSurroundingApi() const {
@@ -3578,6 +3893,24 @@ void SKeyState::activate() {
   // apps — the focused X11 window may have changed.
   appNameAttempted_ = false;
   resolvedProgram_.clear();
+  // Fresh focus: re-read GNOME Shell's focused-app verdict.  A word never
+  // spans an activation, so the new identity applies immediately.
+  // Pending must not inherit the previous focus's name.
+  relayGeneration_ = UINT64_MAX;
+  relayApp_ = RelayApp::Unresolved;
+  relayProgram_.clear();
+  refreshRelayApp(true);
+  // A menu choice for an unnamed app belongs to the focus it was made in;
+  // the relay's single context serves the next app too.  Chromium's
+  // deactivate→activate churn (<500ms) is the same focus.
+  if (unnamedFocusOverride_ &&
+      !(lastDeactivateTime_ > 0 && now(CLOCK_MONOTONIC) - lastDeactivateTime_ < 500000)) {
+    unnamedFocusOverride_ = false;
+    hasAppModeOverride_ = false;
+    appExcluded_ = false;
+    modeCacheValid_ = false;
+    SKEY_DEBUG() << "Activate: dropped the unnamed app's per-focus mode choice";
+  }
   // Fresh focus: no tentative word state carries over.
   surrResetTentative_ = false;
 
@@ -3695,12 +4028,23 @@ void SKeyState::activate() {
 
   // Load per-app mode preference / exclusion, keyed by the resolved app
   // name (X11 WM_CLASS fallback for empty-program IBus-frontend apps).
-  hasAppModeOverride_ = false;
-  appExcluded_ = false;
-  {
+  // Unnamed apps (see appUnnamed()) never read a saved rule; a menu choice
+  // made in this focus survives Chromium's activation churn (above).
+  if (!(appUnnamed() && unnamedFocusOverride_)) {
+    hasAppModeOverride_ = false;
+    appExcluded_ = false;
+    unnamedFocusOverride_ = false;
+  }
+  if (!appUnnamed()) {
     RawConfig cfg;
-    readAsIni(cfg, "conf/skey-app-modes.conf");
+    {
+      CostScope cost(&MainThreadCost::config);
+      readAsIni(cfg, "conf/skey-app-modes.conf");
+    }
     auto *val = cfg.valueByPath(appProgram());
+    // fcitx5 >= 5.1.22 app ids: keep rules saved under the raw id working.
+    if (!val && ic_->program() != appProgram() && !gnomeRelayContext())
+      val = cfg.valueByPath(ic_->program());
     if (val) {
       // Normalize: strip quotes that safeSaveAsIni adds for values
       // containing spaces (e.g. "Surrounding Text" → Surrounding Text).
@@ -5306,7 +5650,12 @@ bool SKeyState::checkCellSelection() {
     // same way it does in Uinput).
     if (isChromiumBrowser(appProgram()) && useSurroundingText()) {
       std::string identity, cell;
-      if (mon->isRunning() && mon->currentSheetsCell(identity, cell)) {
+      bool sheetsRead;
+      {
+        CostScope cost(&MainThreadCost::a11y);
+        sheetsRead = mon->isRunning() && mon->currentSheetsCell(identity, cell);
+      }
+      if (sheetsRead) {
         // Async PropertyChange can arrive AFTER g/o of the new cell. Never
         // reset from that generation in Sheets: compare an authoritative read
         // before processing the key, and retain the baseline on query failure.
@@ -5417,6 +5766,10 @@ void SKeyState::resetForCellChange() {
 }
 
 void SKeyState::keyEvent(KeyEvent &keyEvent) {
+  // The shell can name the app after its field got focus: pick the late
+  // name up, switching identity only between words.
+  refreshRelayApp(viet_.getRawInput().empty());
+  refreshScans(viet_.getRawInput().empty());
   const bool ximIdentity = isNativeX11() && std::string_view(ic_->frontend()) == "xim" &&
       keyEvent.time() != 0 && keyEvent.rawKey().code() != 0 &&
       !(uinputDeleting_ && (keyEvent.rawKey().sym() == FcitxKey_BackSpace ||
@@ -6141,6 +6494,16 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       }
       SKEY_DEBUG() << "SurrBS compose -> '" << viet_.getComposed()
                    << "' len=" << committedLen_;
+      if (gnomeRelayContext()) {
+        // The compositor's IBus relay (GNOME Shell, Cinnamon) drops or
+        // delays a forwarded BS, and its surrounding copy lags: the user's
+        // first Backspace deleted nothing (Telegram on Cinnamon,
+        // 2026-11-18).  The app deletes the last rendered char itself —
+        // the engine above already follows it, as in Uinput mode.
+        wordWasBackspaced_ = true;
+        SKEY_DEBUG() << "SurrBS: relay, pass the user's BS through";
+        return; // do NOT filter
+      }
       if (forwardUserBackspace()) {
         const auto &surrounding = ic_->surroundingText();
         if (surrounding.isValid() && surrounding.anchor() != surrounding.cursor()) {
@@ -6200,9 +6563,12 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
       SKEY_DEBUG() << "SurrBS: Firefox X11 idle BS passthrough (app selection)";
       return;
     }
+    // The compositor's IBus relay takes the user's own Backspace (the
+    // pass-through path below): its forwarded keys and lagging surrounding
+    // copy make native/forwarded deletes unreliable there.
     if ((useNativeSurroundingApi() ||
          (effectiveMode() == SKeyOutputMode::SurroundingText && webkitGtkSurroundingFallback())) &&
-        !inChromiumAddressBar()) {
+        !inChromiumAddressBar() && !gnomeRelayContext()) {
       if (forwardUserBackspace()) {
         const auto &surrounding = ic_->surroundingText();
         const bool selected = surrounding.isValid() &&
@@ -6946,6 +7312,7 @@ void SKeyState::keyEvent(KeyEvent &keyEvent) {
         const uint64_t snapBefore =
             mon ? mon->a11ySnapshotUsec() : 0;
         uint64_t waitUntil = now(CLOCK_MONOTONIC) + 30000;
+        CostScope a11yWait(&MainThreadCost::a11y);
         for (;;) {
           const uint64_t observed = mon ? mon->a11ySnapshotUsec() : 0;
           if (!mon || !mon->a11yState(txt, ss, se, kA11ySnapshotMaxAgeUsec))
@@ -8407,6 +8774,8 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         // were dispatched before the commit is sent (kernel 7.0 PTY
         // interleaving — see the keyEvent terminal path).
         bool usesUinputBs = forceUinput || useNativeBackspaceTransport() ||
+            // The compositor's IBus relay drops or delays forwarded keys.
+            gnomeRelayContext() ||
             (isNativeX11() && std::string_view(ic_->frontend()) == "xim") ||
             (useUinputMode() &&
              (isWayland() || !isTerminalAppCached() || isChromiumCached())) ||
@@ -8615,7 +8984,11 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         // cursor — correct when the caret has not moved (the lag case).
         // The caret-moved case is caught by the surrounding-based reset
         // before the replacement.
-        const bool staleButWayland = cacheStale && isWayland();
+        // Not through the compositor's IBus relay: it converts the
+        // character count to bytes on its own copy — the same stale one —
+        // so a stale snapshot ending in a multi-byte letter deletes the
+        // wrong amount.  The relay takes the uinput fallback instead.
+        const bool staleButWayland = cacheStale && isWayland() && !gnomeRelayContext();
         if ((!surrounding.isValid() ||
              surrounding.cursor() < static_cast<unsigned int>(deleteLen) ||
              cacheStale) &&
@@ -8675,7 +9048,11 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
             // snapshot is being refreshed.  Send one atomic suffix delete
             // for that path; this keeps the replacement transaction ordered
             // and avoids removing the prefix ("ban" -> "ạn").
-            if (isWayland() && isChromiumCached()) {
+            // The compositor's IBus relay (GNOME Shell, Cinnamon) forwards
+            // edits over text-input-v3, which keeps only the LAST deletion
+            // of a turn: two single deletes removed one char ("chao" + f →
+            // "chaào" in Telegram on Cinnamon, 2026-11-18).
+            if (isWayland() && (isChromiumCached() || gnomeRelayContext())) {
               ic_->deleteSurroundingText(-deleteLen, deleteLen);
             } else {
               for (int i = 0; i < deleteLen; ++i) {

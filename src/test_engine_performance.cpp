@@ -20,6 +20,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <thread>
+#include <condition_variable>
+#include <mutex>
 
 static void check(bool value, const char *message);
 
@@ -83,9 +85,10 @@ public:
     struct Forward { fcitx::Key key; bool release; int time; };
     std::vector<Forward> forwarded;
     int deletions = 0;
+    int deleteCalls = 0;
 protected:
     void commitStringImpl(const std::string &text) override { commits.push_back(text); }
-    void deleteSurroundingTextImpl(int, unsigned size) override { deletions += size; }
+    void deleteSurroundingTextImpl(int, unsigned size) override { deletions += size; ++deleteCalls; }
     void forwardKeyImpl(const fcitx::ForwardKeyEvent &event) override {
         forwarded.push_back({event.rawKey(), event.isRelease(), event.time()});
     }
@@ -3201,6 +3204,395 @@ struct EnginePerformanceTest {
         check(state.gnomeRelayOmnibox(), "relay with a11y blind keeps the thin-caret fallback");
     }
 
+    // GNOME Shell names the relayed app (GnomeFocusWatcher): a named
+    // non-browser must never inherit a stale browser a11y verdict (Telegram
+    // snap got Select from Chrome's omnibox focus), browsers keep the relay
+    // identity, and a late name only switches between words.
+    static void gnomeRelayNamedApp(Instance &instance) {
+        using GS = GnomeFocusWatcher::State;
+        using RA = SKeyState::RelayApp;
+        SKeyEngine engine(&instance, false);
+        engine.config_.outputMode.setValue(SKeyOutputMode::SurroundingText);
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+        auto &monitor = *engine.a11yMonitor_;
+        ChromiumProcess browser;
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        TestInput input(instance.inputContextManager(), "gnome-shell");
+        input.frontendName = "ibus";
+        input.setFocusGroup(&group);
+        input.setCapabilityFlags(CapabilityFlags(0x110012));
+        input.setCursorRect(Rect(344, 86, 345, 104)); // omnibox-like thin caret
+        auto &state = *input.propertyFor(&engine.factory_);
+        // Chrome's omnibox focus, left behind long ago: the Telegram repro.
+        monitor.focusBus_ = ":1.35";
+        monitor.focusPath_ = "/focus/79";
+        monitor.focusProcessId_ = browser.pid;
+        monitor.focusRole_ = 79;
+        monitor.focusInWebDoc_ = false;
+        monitor.browserUIFocused_ = true;
+        monitor.focusSnapshotUsec_ = now(CLOCK_MONOTONIC) - 6000000;
+        uint64_t generation = 0;
+        const auto shell = [&](GS st, const std::string &program, const std::string &id = "") {
+            GnomeFocusWatcher::Snapshot snap;
+            snap.state = st;
+            snap.program = program;
+            snap.appId = id;
+            snap.note = "test";
+            snap.generation = ++generation;
+            engine.gnomeFocusOverride_ = snap;
+        };
+
+        state.refreshRelayApp(true);
+        check(state.relayApp() == RA::Unresolved && state.appProgram() == "gnome-shell",
+              "no watcher: the relay keeps its gnome-shell identity");
+        check(state.gnomeRelayOmnibox(), "no watcher: the existing a11y omnibox verdict is unchanged");
+
+        shell(GS::Known, "telegram-desktop", "telegram-desktop_telegram-desktop.desktop");
+        state.activate();
+        check(state.relayApp() == RA::Other && state.appProgram() == "telegram-desktop",
+              "named non-browser: appProgram is the app");
+        check(!state.gnomeRelayOmnibox() && !state.gnomeRelayBrowserUI(false) &&
+              !state.gnomeRelayBrowserUI(true) && !state.gnomeRelayBrowserFocus(false, true),
+              "named non-browser: a stale browser a11y focus gives no browser verdict");
+        check(!state.gnomeOmniboxCaret() && !state.addressBarModesAvailable() && !state.selectTransportActive(),
+              "named non-browser: no omnibox caret guess, no Select transport");
+        state.refreshAppMode();
+        check(state.cachedProgram_ == "telegram-desktop", "per-app rules are keyed by the named app");
+
+        shell(GS::Known, "google-chrome-stable", "google-chrome.desktop");
+        state.activate();
+        check(state.relayApp() == RA::Chromium && state.appProgram() == "gnome-shell",
+              "named Chromium keeps the relay identity for its tuned transport");
+        check(state.gnomeRelayOmnibox() && !state.gnomeRelayBrowserUI(true),
+              "named Chromium: the Chromium a11y verdict stands, the Gecko one never applies");
+
+        shell(GS::Known, "firefox", "firefox_firefox.desktop");
+        state.activate();
+        check(state.relayApp() == RA::Gecko && !state.gnomeRelayBrowserUI(false),
+              "named Firefox never takes a Chromium verdict");
+
+        // Pending at activation: never the previous focus's name.
+        shell(GS::Known, "telegram-desktop");
+        state.activate();
+        shell(GS::Pending, "");
+        state.activate();
+        check(state.relayApp() == RA::Unresolved && state.appProgram() == "gnome-shell",
+              "pending at activation: unresolved, not the previous app");
+        shell(GS::Shell, "gnome-shell");
+        state.refreshRelayApp(true);
+        check(state.relayApp() == RA::Unresolved && state.appProgram() == "gnome-shell",
+              "overview / lock screen: the shell itself");
+        shell(GS::Unknown, "");
+        state.refreshRelayApp(true);
+        check(state.relayApp() == RA::Unresolved, "unknown app: unresolved");
+
+        // A late name switches identity between words only.
+        shell(GS::Known, "telegram-desktop");
+        state.activate();
+        auto press = [&](KeySym sym) {
+            KeyEvent event(&input, Key(sym));
+            state.keyEvent(event);
+        };
+        press(FcitxKey_c);
+        press(FcitxKey_a);
+        shell(GS::Known, "kgx", "org.gnome.Console.desktop");
+        press(FcitxKey_n);
+        check(state.relayApp() == RA::Other && state.appProgram() == "telegram-desktop",
+              "mid-word: the word finishes under the identity it began with");
+        press(FcitxKey_space);
+        press(FcitxKey_x);
+        check(state.appProgram() == "kgx", "next word: the late name applies");
+        check(state.isTerminalAppCached(), "GNOME Console is a terminal by name");
+
+        // Only the relay context is ever renamed.
+        TestInput chrome(instance.inputContextManager(), "google-chrome");
+        chrome.frontendName = "ibus";
+        chrome.setFocusGroup(&group);
+        auto &chromeState = *chrome.propertyFor(&engine.factory_);
+        shell(GS::Known, "telegram-desktop");
+        chromeState.activate();
+        check(chromeState.relayApp() == RA::Unresolved && chromeState.appProgram() == "google-chrome",
+              "a real program name is never replaced");
+        TestInput dbusRelay(instance.inputContextManager(), "gnome-shell");
+        dbusRelay.setFocusGroup(&group);
+        auto &dbusState = *dbusRelay.propertyFor(&engine.factory_);
+        dbusState.activate();
+        check(dbusState.appProgram() == "gnome-shell", "only the ibus relay frontend is renamed");
+
+        // fcitx5 >= 5.1.22 reports Shell app ids itself.
+        TestInput named(instance.inputContextManager(), "skey-test-nosuch_app.desktop");
+        named.setFocusGroup(&group);
+        auto &namedState = *named.propertyFor(&engine.factory_);
+        engine.gnomeFocusOverride_.reset();
+        check(namedState.appProgram() == "app", "a Shell app id maps to a program name");
+        engine.gnomeFocusOverride_.reset();
+
+        // A relayed field with the URL purpose is the omnibox, even with no
+        // AT-SPI and no name (Cinnamon passes Url through) — unless the
+        // shell named a non-browser app.
+        {
+            engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+            TestInput omnibox(instance.inputContextManager(), "");
+            omnibox.frontendName = "ibus";
+            omnibox.setFocusGroup(&group);
+            omnibox.setCapabilityFlags(CapabilityFlags(CapabilityFlag::SurroundingText) |
+                                       CapabilityFlag::Preedit | CapabilityFlag::Url);
+            auto &omniState = *omnibox.propertyFor(&engine.factory_);
+            omniState.activate();
+            check(omniState.gnomeRelayOmnibox() && omniState.addressBarModesAvailable(),
+                  "relay + Url purpose: the omnibox");
+
+            TestInput dbusUrl(instance.inputContextManager(), "");
+            dbusUrl.setFocusGroup(&group);
+            dbusUrl.setCapabilityFlags(CapabilityFlags(CapabilityFlag::SurroundingText) | CapabilityFlag::Url);
+            auto &dbusUrlState = *dbusUrl.propertyFor(&engine.factory_);
+            dbusUrlState.activate();
+            check(!dbusUrlState.gnomeRelayContext(), "Url outside the ibus relay is not the relay omnibox signal");
+            shell(GS::Known, "telegram-desktop");
+            omniState.activate();
+            check(!omniState.gnomeRelayOmnibox(), "a named non-browser never takes the Url omnibox verdict");
+            engine.gnomeFocusOverride_.reset();
+        }
+
+        // The compositor relay keeps only the last deletion of a turn: a
+        // native replacement must be ONE suffix delete ("chao" + f).
+        // No AT-SPI focus (Cinnamon test machine had a11y off).
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+        for (const char *relayProgram : {"", "gnome-shell"}) {
+            TestInput relay(instance.inputContextManager(), relayProgram);
+            relay.frontendName = "ibus";
+            relay.setFocusGroup(&group);
+            relay.setCapabilityFlags(CapabilityFlags(CapabilityFlag::SurroundingText) |
+                                     CapabilityFlag::Preedit);
+            auto &relayState = *relay.propertyFor(&engine.factory_);
+            relayState.activate();
+            relayState.cachedIsChromium_ = relayState.cachedIsFirefoxOrSnap_ =
+                relayState.cachedIsFirefoxBrowser_ = relayState.cachedIsTerminalApp_ =
+                relayState.cachedIsWebKitGtk_ = 0;
+            std::string text;
+            for (char c : std::string("chaof")) {
+                relay.surroundingText().setText(text, utf8::length(text), utf8::length(text));
+                relay.updateSurroundingText();
+                const int callsBefore = relay.deleteCalls, deletedBefore = relay.deletions;
+                KeyEvent event(&relay, Key(static_cast<KeySym>(c)));
+                relayState.keyEvent(event);
+                if (relay.deleteCalls > callsBefore) {
+                    check(relay.deleteCalls - callsBefore == 1,
+                          "relay replacement deletes the suffix in one request");
+                    text.resize(text.size() - (relay.deletions - deletedBefore)); // ASCII suffix
+                }
+                for (const auto &commit : relay.commits) text += commit;
+                relay.commits.clear();
+                if (!event.accepted()) text += c;
+            }
+            if (text != "chào") std::cerr << "relay '" << relayProgram << "' typed '" << text << "'\n";
+            check(text == "chào", "relay types chào");
+            // The user's Backspace reaches the app itself: forwarded keys
+            // and native deletes are dropped or lag behind in the relay.
+            const int deletesBefore = relay.deleteCalls;
+            const size_t forwardsBefore = relay.forwarded.size();
+            KeyEvent composingBs(&relay, Key(FcitxKey_BackSpace));
+            relayState.keyEvent(composingBs);
+            check(!composingBs.accepted() && relay.deleteCalls == deletesBefore &&
+                  relay.forwarded.size() == forwardsBefore,
+                  "relay: Backspace inside a word passes through to the app");
+            check(relayState.viet_.getComposed() == "chà", "relay: the word model follows the app's delete");
+            KeyEvent space(&relay, Key(FcitxKey_space));
+            relayState.keyEvent(space);
+            relay.commits.clear();
+            KeyEvent idleBs(&relay, Key(FcitxKey_BackSpace));
+            relayState.keyEvent(idleBs);
+            check(!idleBs.accepted() && relay.deleteCalls == deletesBefore &&
+                  relay.forwarded.size() == forwardsBefore,
+                  "relay: Backspace after a word passes through to the app");
+
+            // A stale snapshot (the relay converts the count on that same
+            // copy) or a Chromium page with no snapshot: never a native
+            // delete, never a forwarded Backspace.
+            for (int scenario = 0; scenario < 2; ++scenario) {
+                relayState.activate();
+                relayState.cachedIsChromium_ = scenario;
+                relayState.cachedIsFirefoxOrSnap_ = relayState.cachedIsFirefoxBrowser_ =
+                    relayState.cachedIsTerminalApp_ = relayState.cachedIsWebKitGtk_ = 0;
+                std::string shown;
+                for (char c : std::string("vie")) {
+                    relay.surroundingText().setText(shown, utf8::length(shown), utf8::length(shown));
+                    relay.updateSurroundingText();
+                    KeyEvent letter(&relay, Key(static_cast<KeySym>(c)));
+                    relayState.keyEvent(letter);
+                    for (const auto &commit : relay.commits) shown += commit;
+                    relay.commits.clear();
+                }
+                if (scenario == 0) {
+                    relay.surroundingText().setText("x vi", 4, 4); // lags one letter behind "vie"
+                } else {
+                    relay.surroundingText().invalidate();
+                }
+                relay.updateSurroundingText();
+                const int deletes = relay.deleteCalls;
+                const size_t forwards = relay.forwarded.size();
+                KeyEvent tone(&relay, Key(FcitxKey_e)); // "vie" + e -> "viê"
+                relayState.keyEvent(tone);
+                check(relay.deleteCalls == deletes,
+                      scenario ? "relay Chromium without a snapshot: no native delete"
+                               : "relay with a stale snapshot: no native delete on that copy");
+                check(relay.forwarded.size() == forwards,
+                      scenario ? "relay Chromium without a snapshot: no forwarded Backspace"
+                               : "relay with a stale snapshot: no forwarded Backspace");
+                relayState.resetForCellChange();
+            }
+        }
+    }
+
+    // A program name that cannot tell apps apart (the GNOME/Cinnamon relay's
+    // shared context, an unresolved client) must never key a saved rule:
+    // it would apply to every such app.  The menu choice lasts one focus.
+    static void unnamedAppRules(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+        const std::string rules = std::string(std::getenv("XDG_CONFIG_HOME")) +
+                                  "/fcitx5/conf/skey-app-modes.conf";
+        std::filesystem::create_directories(std::filesystem::path(rules).parent_path());
+        std::ofstream(rules) << "gnome-shell=\"Uinput\"\n";
+        auto fileText = [&] {
+            std::ifstream in(rules);
+            return std::string(std::istreambuf_iterator<char>(in), {});
+        };
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        auto selectMenu = [](TestInput &input, SKeyState &state, int index) {
+            state.showModeMenu();
+            input.inputPanel().candidateList()->candidate(index).select(&input);
+        };
+        for (const char *program : {"", "gnome-shell"}) {
+            TestInput relay(instance.inputContextManager(), program);
+            relay.frontendName = "ibus";
+            relay.setFocusGroup(&group);
+            relay.setCapabilityFlags(CapabilityFlags(CapabilityFlag::SurroundingText));
+            relay.setCursorRect(Rect(10, 500, 18, 520)); // wide caret: no omnibox guess
+            auto &state = *relay.propertyFor(&engine.factory_);
+            state.activate();
+            check(state.appUnnamed(), "relay context is unnamed");
+            check(!state.hasAppModeOverride_, "a rule saved under the relay name is ignored");
+            const std::string before = fileText();
+            selectMenu(relay, state, 2); // "3. Surrounding Text"
+            check(state.hasAppModeOverride_ && state.appModeOverride_ == SKeyOutputMode::SurroundingText &&
+                      state.unnamedFocusOverride_,
+                  "unnamed app: the menu choice applies to this focus");
+            check(fileText() == before, "unnamed app: nothing is saved");
+            state.deactivate();
+            state.activate();
+            check(state.hasAppModeOverride_, "unnamed app: Chromium churn keeps the choice");
+            state.deactivate();
+            state.lastDeactivateTime_ -= 1000000;
+            state.activate();
+            check(!state.hasAppModeOverride_ && !state.unnamedFocusOverride_,
+                  "unnamed app: the next real focus drops the choice");
+        }
+        TestInput dbusShell(instance.inputContextManager(), "gnome-shell");
+        dbusShell.setFocusGroup(&group);
+        auto &dbusShellState = *dbusShell.propertyFor(&engine.factory_);
+        check(!dbusShellState.appUnnamed(), "gnome-shell outside the ibus relay is a real name");
+        TestInput named(instance.inputContextManager(), "skey-test-named");
+        named.setFocusGroup(&group);
+        named.setCapabilityFlags(CapabilityFlags(CapabilityFlag::SurroundingText));
+        named.setCursorRect(Rect(10, 500, 18, 520));
+        auto &namedState = *named.propertyFor(&engine.factory_);
+        namedState.activate();
+        selectMenu(named, namedState, 2);
+        check(fileText().find("skey-test-named") != std::string::npos && !namedState.unnamedFocusOverride_,
+              "named app: the choice is saved as before");
+    }
+
+    // Focus changes must not rescan /proc: each scan walks every process
+    // on the main thread (40-140ms under CPU load, 2026-11-18).  Verdicts
+    // live per program; a browser's name answers the other questions.
+    static void programScanCache(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        auto traits = [&](const std::string &program) {
+            std::string found;
+            for (char trait : {'t', 'w', 'g', 'c'})
+                if (engine.programTraits_.count(std::string(1, trait) + program)) found += trait;
+            return found;
+        };
+        TestInput first(instance.inputContextManager(), "skeyprobe-one");
+        TestInput second(instance.inputContextManager(), "skeyprobe-two");
+        for (auto *input : {&first, &second}) input->setFocusGroup(&group);
+        auto &one = *first.propertyFor(&engine.factory_);
+        auto &two = *second.propertyFor(&engine.factory_);
+        one.isTerminalAppCached();
+        two.isTerminalAppCached();
+        check(traits("skeyprobe-one").find('t') != std::string::npos &&
+                  traits("skeyprobe-two").find('t') != std::string::npos,
+              "terminal verdicts are cached per program, not in one slot");
+        const auto cachedAt = engine.programTraits_["tskeyprobe-one"].atUsec;
+        one.cachedIsTerminalApp_ = -1;
+        one.isTerminalAppCached();
+        check(engine.programTraits_["tskeyprobe-one"].atUsec == cachedAt,
+              "switching back reuses the program's terminal verdict");
+        for (const char *browser : {"google-chrome", "firefox"}) {
+            TestInput input(instance.inputContextManager(), browser);
+            input.setFocusGroup(&group);
+            auto &state = *input.propertyFor(&engine.factory_);
+            check(!state.isTerminalAppCached() && !state.webkitGtkSurroundingFallback(),
+                  "a browser by name is neither a terminal nor WebKitGTK");
+            state.isFirefoxBrowserCached();
+            state.isChromiumCached();
+            // Firefox's own 'g' entry is the name match itself (no scan).
+            const std::string expected = std::string(browser) == "firefox" ? "g" : "";
+            if (traits(browser) != expected)
+                std::cerr << browser << " traits='" << traits(browser) << "'\n";
+            check(traits(browser) == expected, "a browser by name runs no /proc scan");
+        }
+
+        // Real engines scan in the background: the first focus of an unknown
+        // app never waits on /proc.  The provisional "no" holds for the word
+        // in progress; the real verdict applies from the next word.
+        std::mutex gateMutex;
+        std::condition_variable gate;
+        bool open = false;
+        engine.procScanner_ = std::make_unique<skey::BackgroundScanner>(
+            [&](char trait, const std::string &) {
+                std::unique_lock<std::mutex> lock(gateMutex);
+                gate.wait(lock, [&] { return open; });
+                return trait == 'c'; // an Electron app nobody can name
+            }, false);
+        engine.config_.outputMode.setValue(SKeyOutputMode::SurroundingText);
+        TestInput electron(instance.inputContextManager(), "skeyprobe-shell");
+        electron.setFocusGroup(&group);
+        electron.setCapabilityFlags(CapabilityFlags(CapabilityFlag::SurroundingText));
+        auto &app = *electron.propertyFor(&engine.factory_);
+        app.activate();
+        check(!app.isChromiumCached() && app.scanPending_,
+              "unknown app: provisional 'no' while the scan runs in the background");
+        check(!engine.programTraits_.count("cskeyprobe-shell"),
+              "a provisional verdict is never cached per program");
+        auto press = [&](KeySym sym) {
+            KeyEvent event(&electron, Key(sym));
+            app.keyEvent(event);
+        };
+        press(FcitxKey_a);
+        {
+            std::lock_guard<std::mutex> lock(gateMutex);
+            open = true;
+        }
+        gate.notify_all();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (engine.procScanner_->busy() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        check(!engine.procScanner_->busy(), "background scans finish");
+        press(FcitxKey_b);
+        check(!app.isChromiumCached(), "mid-word: the verdict stays as the word began");
+        press(FcitxKey_space);
+        press(FcitxKey_c);
+        check(app.isChromiumCached() && !app.scanPending_,
+              "next word: the background verdict applies");
+        check(engine.programTraits_.count("cskeyprobe-shell") &&
+                  engine.programTraits_["cskeyprobe-shell"].value,
+              "the real verdict is cached per program");
+        engine.procScanner_.reset(); // before the gate it waits on goes away
+    }
+
     // A word typed in the omnibox must not continue in the page: the
     // omnibox churn guard swallows the focus cycle of a real click into a
     // Google Sheets cell, so the reset has to come from the a11y focus.
@@ -4189,6 +4581,16 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    if (std::getenv("SKEY_TEST_GNOME_FOCUS_ONLY")) {
+        setenv("XDG_CURRENT_DESKTOP", "GNOME", 1);
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::gnomeRelayNamedApp(instance);
+        fcitx::EnginePerformanceTest::unnamedAppRules(instance);
+        fcitx::EnginePerformanceTest::programScanCache(instance);
+        std::cout << "GNOME relayed app identity: " << checks << " checks passed\n";
+        return 0;
+    }
+
     if (std::getenv("SKEY_TEST_GNOME_MENU_ONLY")) {
         setenv("XDG_CURRENT_DESKTOP", "GNOME", 1);
         fcitx::Instance instance(argc, argv);
@@ -4528,6 +4930,7 @@ int main(int argc, char **argv) {
     {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::gnomeRelayAddressBar(instance);
+        fcitx::EnginePerformanceTest::gnomeRelayNamedApp(instance);
     }
     {
         fcitx::Instance instance(argc, argv);

@@ -5,6 +5,7 @@ set(CMAKE_AUTORCC OFF)
 
 set(SKEY_SOURCES
     engine.cpp
+    gnome_focus_watcher.cpp
     native_injector.cpp
     uinput_injector.cpp
     vietnamese.cpp
@@ -102,6 +103,19 @@ if(BUILD_TESTING)
     target_compile_features(test_sheets_cell_tracker PRIVATE cxx_std_17)
     add_test(NAME SheetsCellTracking COMMAND test_sheets_cell_tracker)
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_background_scan.cpp")
+        add_executable(test_background_scan test_background_scan.cpp)
+        target_link_libraries(test_background_scan pthread)
+        target_compile_features(test_background_scan PRIVATE cxx_std_17)
+        add_test(NAME BackgroundScan COMMAND test_background_scan)
+        set_tests_properties(BackgroundScan PROPERTIES TIMEOUT 15)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_gnome_app_identity.cpp")
+        add_executable(test_gnome_app_identity test_gnome_app_identity.cpp)
+        target_compile_features(test_gnome_app_identity PRIVATE cxx_std_17)
+        add_test(NAME GnomeAppIdentity COMMAND test_gnome_app_identity)
+    endif()
+
     add_executable(test_app_delay_key test_app_delay_key.cpp)
     target_compile_features(test_app_delay_key PRIVATE cxx_std_17)
     add_test(NAME AppDelayKey COMMAND test_app_delay_key)
@@ -138,6 +152,9 @@ if(BUILD_TESTING)
     add_test(NAME A11yOwnerGeneration COMMAND ${CMAKE_COMMAND} -E env
         SKEY_TEST_A11Y_OWNER_ONLY=1 $<TARGET_FILE:test_engine_performance>)
     set_tests_properties(A11yOwnerGeneration PROPERTIES TIMEOUT 15)
+    add_test(NAME GnomeRelayedAppIdentity COMMAND ${CMAKE_COMMAND} -E env
+        SKEY_TEST_GNOME_FOCUS_ONLY=1 $<TARGET_FILE:test_engine_performance>)
+    set_tests_properties(GnomeRelayedAppIdentity PROPERTIES TIMEOUT 15)
     add_test(NAME GnomeAddressBarMenu COMMAND ${CMAKE_COMMAND} -E env
         SKEY_TEST_GNOME_MENU_ONLY=1 $<TARGET_FILE:test_engine_performance>)
     add_test(NAME GnomeX11AddressBarAuto COMMAND ${CMAKE_COMMAND} -E env
@@ -176,6 +193,14 @@ if(BUILD_TESTING)
         target_compile_features(test_a11y_integration PRIVATE cxx_std_17)
         add_test(NAME A11yIntegration COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:test_a11y_integration>)
         set_tests_properties(A11yIntegration PROPERTIES TIMEOUT 15)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_gnome_focus_watcher.cpp")
+            add_executable(test_gnome_focus_watcher test_gnome_focus_watcher.cpp gnome_focus_watcher.cpp)
+            target_link_libraries(test_gnome_focus_watcher ${DBUS_LIBRARIES} pthread)
+            target_include_directories(test_gnome_focus_watcher PRIVATE ${DBUS_INCLUDE_DIRS})
+            target_compile_features(test_gnome_focus_watcher PRIVATE cxx_std_17)
+            add_test(NAME GnomeFocusWatcher COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:test_gnome_focus_watcher>)
+            set_tests_properties(GnomeFocusWatcher PROPERTIES TIMEOUT 30)
+        endif()
     endif()
 endif()
 
