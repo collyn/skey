@@ -1155,6 +1155,63 @@ struct EnginePerformanceTest {
               "coalesced suffix commits once at original deadline, not the 100ms Uinput delay");
     }
 
+    // fcitx5's own Wayland frontend converts a character delete to bytes on
+    // its copy of the surrounding text.  A copy that lags behind the screen
+    // may ride the native delete only when it counts the same bytes: "th"
+    // shown as "thây" turned "thấy" into "thâyấy" (Chrome, KDE Wayland).
+    static void waylandStaleByteDelete(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        struct Case {
+            const char *frontend, *stale, *oldWord, *newWord;
+            bool native;
+            const char *message;
+        };
+        const Case cases[] = {
+            {"wayland", "th", "thây", "thấy", false,
+             "wayland frontend: a stale copy counting fewer bytes never deletes natively"},
+            {"wayland", "t", "thây", "thấy", false,
+             "wayland frontend: a stale copy too short for the delete never deletes natively"},
+            {"wayland", "tha", "thay", "thây", true,
+             "wayland frontend: a stale copy counting the same bytes keeps the native delete"},
+            {"dbus", "th", "thây", "thấy", true,
+             "dbus frontend: the app converts the count itself, stale copy keeps native"},
+        };
+        for (const auto &c : cases) {
+            TestInput input(instance.inputContextManager(), "google-chrome");
+            input.frontendName = c.frontend;
+            input.setFocusGroup(&group);
+            input.setCapabilityFlags(CapabilityFlag::SurroundingText);
+            auto &state = *input.propertyFor(&engine.factory_);
+            state.cachedProgram_ = "google-chrome";
+            state.cachedIsChromium_ = 1;
+            state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
+            state.modeCacheValid_ = true;
+            state.cachedMode_ = SKeyOutputMode::SurroundingText;
+            state.addrBarHadFirstWord_ = true; // past the first-word uinput transaction
+            state.uinputTestReady_ = true;
+            int uinputBs = 0;
+            state.uinputTestSend_ = [&](int count, uint32_t, uint32_t) {
+                uinputBs += count;
+                return true;
+            };
+            const std::string stale = c.stale;
+            input.surroundingText().setText(stale, utf8::length(stale), utf8::length(stale));
+            state.committedLen_ = static_cast<int>(utf8::length(std::string(c.oldWord)));
+            state.surroundingCommit(c.oldWord, c.newWord);
+            if (c.native) {
+                check(input.deleteCalls == 1 && uinputBs == 0 && input.forwarded.empty(),
+                      c.message);
+            } else {
+                // Backspace fallback (uinput live; forwarded in the harness).
+                check(input.deleteCalls == 0 && (uinputBs > 0 || !input.forwarded.empty()),
+                      c.message);
+            }
+            state.resetForCellChange();
+        }
+    }
+
     static void waylandRepeatedLetter(Instance &instance, bool replay, bool timestamped) {
         SKeyEngine engine(&instance, false);
         FocusGroup group("wayland:test", instance.inputContextManager());
@@ -4953,6 +5010,10 @@ int main(int argc, char **argv) {
             fcitx::Instance instance(argc, argv);
             fcitx::EnginePerformanceTest::surroundingDeadline(instance, wayland, native);
         }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::waylandStaleByteDelete(instance);
+    }
     for (bool replay : {false, true})
         for (bool timestamped : {false, true}) {
             fcitx::Instance instance(argc, argv);

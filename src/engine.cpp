@@ -3728,6 +3728,30 @@ static bool isFrontendName(const fcitx::InputContext *ic, const char *name) {
   return frontend && std::strcmp(frontend, name) == 0;
 }
 
+// fcitx5's own Wayland frontend turns a character delete into BYTES on ITS
+// copy of the surrounding text (WaylandIMInputContextV1/V2::
+// deleteSurroundingTextDelegate), and the app applies those bytes at its real
+// cursor.  A stale copy is harmless only while the characters it counts span
+// as many bytes as the ones really on screen: Chrome had pushed "th" but shown
+// "thây", so deleting 2 removed 2 bytes of "ây", the app rejected the split
+// letter and "thấy" came out "thâyấy" (KDE Wayland, 2026-11-19).  A copy whose
+// cursor sits before the deletion makes fcitx5 drop the request outright.
+static bool staleDeleteSpansSameBytes(const fcitx::SurroundingText &st,
+                                      int deleteLen,
+                                      const std::string &deletedPart) {
+  if (!st.isValid() || deleteLen <= 0)
+    return false;
+  const auto &text = st.text();
+  const size_t cursor = st.cursor();
+  const size_t count = static_cast<size_t>(deleteLen);
+  if (cursor < count || cursor > fcitx::utf8::length(text))
+    return false;
+  const size_t startBytes = fcitx::utf8::ncharByteLength(text.begin(), cursor - count);
+  const size_t sizeBytes =
+      fcitx::utf8::ncharByteLength(text.begin() + startBytes, count);
+  return sizeBytes == deletedPart.size();
+}
+
 bool SKeyState::waylandNativeSurroundingProbe() const {
   // Only the compositor's native Wayland text-input path has the complete
   // surrounding/delete contract when the capability bit is omitted.  The
@@ -8963,7 +8987,13 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         // character count to bytes on its own copy — the same stale one —
         // so a stale snapshot ending in a multi-byte letter deletes the
         // wrong amount.  The relay takes the uinput fallback instead.
-        const bool staleButWayland = cacheStale && isWayland() && !gnomeRelayContext();
+        // fcitx5's own Wayland frontend does the same conversion, so a stale
+        // copy may ride the native delete only when it counts the same bytes
+        // (see staleDeleteSpansSameBytes).
+        const bool staleButWayland =
+            cacheStale && isWayland() && !gnomeRelayContext() &&
+            (!isFrontendName(ic_, "wayland") ||
+             staleDeleteSpansSameBytes(surrounding, deleteLen, deletedPart));
         if ((!surrounding.isValid() ||
              surrounding.cursor() < static_cast<unsigned int>(deleteLen) ||
              cacheStale) &&
