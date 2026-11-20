@@ -22,12 +22,15 @@
 #include "charset.h"
 #include "vietnamese.h"
 #include "a11y_monitor.h"
+#include "gnome_focus_watcher.h"
+#include "background_scan.h"
 #include "sheets_cell_tracker.h"
 #include "app_delay_key.h"
 #include "surrounding_cursor.h"
 #include "uinput_delete_ack.h"
 #include "input_field_policy.h"
 #include "native_injector.h"
+#include "wlroots_probe.h"
 #include "uinput_injector.h"
 #include <deque>
 #ifdef SKEY_TESTING
@@ -102,12 +105,25 @@ private:
     bool inFirefoxAddressBar() const;
     bool x11AddressBarCaret() const;
     bool isFirefoxBrowserCached() const;
-    bool detectFirefoxBrowser() const;
-    bool detectFirefoxOrSnap() const;
-    bool detectWebKitGtk() const;
+    /// Detectors: nullopt = a program-wide /proc scan is still running in
+    /// the background (see scanTrait()).
+    std::optional<bool> detectFirefoxBrowser() const;
+    std::optional<bool> detectGeckoApp() const;
+    std::optional<bool> detectWebKitGtk() const;
     /// Engine-level (program-keyed, 60s) cache around a /proc-scanning
     /// trait detector; falls through to `detect` for unnamed programs.
-    bool programTrait(char trait, const std::function<bool()> &detect) const;
+    /// A pending detector answers false and is NOT cached per program; the
+    /// caller keeps that provisional verdict per IC until refreshScans().
+    bool programTrait(char trait, const std::function<std::optional<bool>()> &detect,
+                      bool *pending = nullptr) const;
+    /// Program-wide /proc scan through the engine's background scanner:
+    /// nullopt while it runs (marks this state for re-evaluation).
+    std::optional<bool> scanTrait(char trait, const std::string &program) const;
+    /// Re-evaluates provisional verdicts once their scans finished —
+    /// between words only (`atBoundary`), like the relay identity.
+    void refreshScans(bool atBoundary);
+    mutable bool scanPending_ = false;
+    uint64_t scanGenerationSeen_ = 0;
     bool isX11Tabby() const;
     bool useOrderedUinputReplay() const;
     bool forwardUserBackspace() const;
@@ -171,6 +187,23 @@ private:
     bool gnomeRelayBrowserUI(bool gecko) const;
     bool gnomeRelayBrowserFocus(bool gecko, bool webContent) const;
     bool gnomeRelayOmnibox() const;
+    /// GNOME Wayland relay context: fcitx5 reports the app behind GNOME
+    /// Shell's IBus bridge as "gnome-shell" (or nothing).  Raw program only.
+    bool gnomeRelayContext() const;
+    /// No program name tells this app apart from others (empty, or the
+    /// GNOME/Cinnamon relay's shared context): per-app rules are neither
+    /// read nor saved for it.
+    bool appUnnamed() const;
+    /// A menu choice made for an unnamed app: lasts for this focus only.
+    bool unnamedFocusOverride_ = false;
+    /// What GnomeFocusWatcher says about the relayed app, latched per word
+    /// (see refreshRelayApp()).  Browsers keep the relay identity for their
+    /// tuned GNOME transport paths; Other substitutes appProgram().
+    enum class RelayApp : uint8_t { Unresolved, Chromium, Gecko, Other };
+    RelayApp relayApp() const { return relayApp_; }
+    /// Re-reads the watcher's verdict.  A change only takes effect between
+    /// words (`atBoundary`) so one word never mixes two app identities.
+    void refreshRelayApp(bool atBoundary);
     /// Auto uses Select in detected browser address bars on X11 and Wayland.
     bool autoSelectAddressBar() const;
     /// Address-bar mode controls also cover Mutter's anonymous relay target.
@@ -337,6 +370,12 @@ private:
     // Cleared on each activate(); see appProgram().
     mutable bool appNameAttempted_ = false;
     mutable std::string resolvedProgram_;
+    // GNOME relay identity (see refreshRelayApp()).
+    RelayApp relayApp_ = RelayApp::Unresolved;
+    std::string relayProgram_;
+    uint64_t relayGeneration_ = UINT64_MAX; // UINT64_MAX: re-read on next refresh
+    // fcitx5 >= 5.1.22 names relayed apps by Shell app id ("x.desktop").
+    mutable std::string desktopIdProgram_, desktopIdProgramFor_{"\x01"};
     mutable bool modeCacheValid_ = false;
     mutable SKeyOutputMode cachedMode_ = SKeyOutputMode::SurroundingText;
     // Word-boundary re-eval trigger back-off (see kTriggerBackoffUsec):
@@ -386,7 +425,7 @@ private:
     mutable std::string cachedPtyProgram_;
     mutable bool cachedPtyMaster_ = false;
     mutable int cachedIsTerminalApp_ = -1; // tristate: name list + shell scan
-    mutable int cachedIsFirefoxOrSnap_ = -1;
+    mutable int cachedIsGeckoApp_ = -1;
     mutable int cachedIsFirefoxBrowser_ = -1;
     mutable int cachedIsWebKitGtk_ = -1;
     mutable std::string cachedWebKitProgram_;
@@ -419,7 +458,7 @@ private:
     // Uinput locks in at the deadline.
     mutable bool modeDecisionPending_ = false;
     mutable uint64_t modeDecisionDeadlineUsec_ = 0;
-    bool isFirefoxOrSnap() const;
+    bool isGeckoApp() const;
     std::unique_ptr<EventSourceTime> deferredCommitTimer_;
     std::string deferredCommitText_;
     std::string deferredPrefix_;
@@ -430,6 +469,9 @@ private:
     // consecutive native deletes).
     int deferredNativeDeleteLen_ = 0;
     std::string deferredDeletedTail_;
+    // The word's stable prefix left in front of the deleted tail (kept
+    // apart from deferredPrefix_, which a later key may clear).
+    std::string deferredDeleteAnchor_;
     uint64_t deferredBsSentAt_ = 0;
     uint64_t deferredCommitDeadline_ = 0;
     std::string pendingFlushSuffix_;
@@ -522,12 +564,12 @@ private:
     uint64_t addrBarCycleDeadline_ = 0;
     void armAddrBarCycle();
     void expireAddrBarCycle();
-    // Set before forwarding a raw key in Uinput mode for Firefox/Snap
-    // apps.  fcitx5 calls reset() after unfiltered keys, which clears
-    // viet_ state.  When set, reset()/deactivate() skip viet_ cleanup
-    // to preserve ongoing composition.  Only used for Firefox/Snap
-    // (non-Chromium) apps — Chromium/Electron need clearUI() D-Bus
-    // and are not affected by this guard.
+    // Set before forwarding a raw key in Uinput mode for Gecko apps.
+    // fcitx5 calls reset() after unfiltered keys, which clears viet_
+    // state.  When set, reset()/deactivate() skip viet_ cleanup to
+    // preserve ongoing composition.  Only used for Gecko apps —
+    // Chromium/Electron need clearUI() D-Bus and are not affected by
+    // this guard.
     bool uinputKeyForwarded_ = false;
     // KeySym of the key that triggered the current address bar replacement.
     // X11 may re-deliver this key after Chrome's spurious focus cycles;
@@ -695,6 +737,10 @@ public:
     /// Sticky per-program "native delete is dropped" flag (Surr mode).
     bool isSurrDeleteBrokenApp(const std::string &prog) const;
     void markSurrDeleteBrokenApp(const std::string &prog);
+    /// Native mode on a wlroots-family compositor (input-method-v2 with
+    /// virtual keyboard, not KDE/GNOME): replacements ride Fcitx5's own
+    /// forwardKey instead of the Libei portal.  Probed once per daemon.
+    bool wlrootsNative();
     void setInputMethod(SKeyInputMethod method);
     void saveAppMode(const std::string &app, SKeyOutputMode mode);
     void saveAppExcluded(const std::string &app, bool excluded);
@@ -729,6 +775,9 @@ public:
 
     void updateMenuActions();
     A11yMonitor *a11yMonitor() const { return a11yMonitor_.get(); }
+    /// The GNOME focused-app verdict; Unavailable without a watcher.
+    GnomeFocusWatcher::Snapshot gnomeFocusSnapshot() const;
+    uint64_t gnomeFocusGeneration() const;
     const Key &modeMenuKey() const { return modeMenuKey_; }
 
     /// Look up a macro expansion by shortcut key.
@@ -786,6 +835,7 @@ private:
     SimpleAction omSurrounding_;
     SimpleAction omNative_;
     skey::NativeInjector native_;
+    std::optional<bool> wlrootsNative_; // probe result; tests preset it
     SimpleAction omPreedit_;
     SimpleAction omUinput_;
     SimpleAction omAuto_;
@@ -801,21 +851,26 @@ private:
     std::string chromiumBareCapsProgram_;
     // Program-level terminal verdict cache — the /proc shell scan runs
     // once per program, not once per focus (see isTerminalAppCached).
-    std::string terminalCachedProgram_;
-    int terminalCachedVerdict_ = -1; // -1 = unset
     // Program-level cache for the binary-identity traits (Chromium/Gecko
-    // markers, Snap, WebKitGTK).  The per-IC caches are cleared on every
+    // markers, WebKitGTK).  The per-IC caches are cleared on every
     // reset()/activate(); without this a program the a11y pid cannot
     // vouch for (flatpak app-ids, stale snapshots) re-ran full /proc
     // scans (~8ms each) on every focus.  Keyed by trait + program.
     struct ProgramTrait { bool value; uint64_t atUsec; };
     std::unordered_map<std::string, ProgramTrait> programTraits_;
+    // Runs the program-wide /proc scans off the main thread (inline for
+    // engines without a desktop, i.e. tests).
+    std::unique_ptr<skey::BackgroundScanner> procScanner_;
     bool chromiumHadBareCaps_ = false;
 
     std::set<std::string> surrDeleteBrokenApps_;
 
     // AT-SPI2 accessibility monitor for address bar detection
     std::unique_ptr<A11yMonitor> a11yMonitor_;
+    // Names the app behind GNOME Shell's relay (fcitx5 < 5.1.22 only).
+    std::unique_ptr<GnomeFocusWatcher> gnomeFocus_;
+    // Test seam: replaces the watcher's snapshot when set.
+    std::optional<GnomeFocusWatcher::Snapshot> gnomeFocusOverride_;
 
     // Cached mode-menu key parsed from config string (default: grave/backtick `)
     Key modeMenuKey_;
