@@ -355,6 +355,9 @@ msgstr "Kiểu gõ:"
 msgid "Native (XTest/Libei)"
 msgstr "Native (XTest/Libei)"
 
+msgid "Native (wlroots)"
+msgstr "Native (wlroots)"
+
 #: src/settings/general_tab.cpp:62
 msgid "Bảng mã:"
 msgstr "Bảng mã:"

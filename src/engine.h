@@ -30,6 +30,7 @@
 #include "uinput_delete_ack.h"
 #include "input_field_policy.h"
 #include "native_injector.h"
+#include "wlroots_probe.h"
 #include "uinput_injector.h"
 #include <deque>
 #ifdef SKEY_TESTING
@@ -736,6 +737,10 @@ public:
     /// Sticky per-program "native delete is dropped" flag (Surr mode).
     bool isSurrDeleteBrokenApp(const std::string &prog) const;
     void markSurrDeleteBrokenApp(const std::string &prog);
+    /// Native mode on a wlroots-family compositor (input-method-v2 with
+    /// virtual keyboard, not KDE/GNOME): replacements ride Fcitx5's own
+    /// forwardKey instead of the Libei portal.  Probed once per daemon.
+    bool wlrootsNative();
     void setInputMethod(SKeyInputMethod method);
     void saveAppMode(const std::string &app, SKeyOutputMode mode);
     void saveAppExcluded(const std::string &app, bool excluded);
@@ -830,6 +835,7 @@ private:
     SimpleAction omSurrounding_;
     SimpleAction omNative_;
     skey::NativeInjector native_;
+    std::optional<bool> wlrootsNative_; // probe result; tests preset it
     SimpleAction omPreedit_;
     SimpleAction omUinput_;
     SimpleAction omAuto_;

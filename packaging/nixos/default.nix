@@ -10,6 +10,7 @@
   libxcb,
   libX11,
   libXtst,
+  wayland,
   libei,
   libportal,
   fcitx5,
@@ -91,6 +92,7 @@ stdenv.mkDerivation (finalAttrs: {
     libxcb
     libX11
     libXtst
+    wayland
     libei
     libportal
     qt6.qtbase

@@ -355,6 +355,9 @@ msgstr "Input method:"
 msgid "Native (XTest/Libei)"
 msgstr "Native (XTest/Libei)"
 
+msgid "Native (wlroots)"
+msgstr "Native (wlroots)"
+
 #: src/settings/general_tab.cpp:62
 msgid "Bảng mã:"
 msgstr "Charset:"
@@ -463,8 +466,8 @@ msgid "Bật Native trên Wayland"
 msgstr "Enable Native on Wayland"
 
 #: src/settings/general_tab.cpp:144
-msgid "Cho phép Native mở hộp thoại xin quyền portal trên Wayland. X11 dùng XTest mà không cần bật tùy chọn này."
-msgstr "Allow Native to open a portal permission dialog on Wayland. X11 uses XTest without this option."
+msgid "Cho phép Native trên Wayland: KDE/GNOME mở hộp thoại xin quyền portal (Libei); Sway, Hyprland và các compositor wlroots khác dùng bàn phím ảo của Fcitx5, không cần xin quyền. X11 dùng XTest mà không cần bật tùy chọn này."
+msgstr "Allow Native on Wayland: KDE/GNOME open a portal permission dialog (Libei); Sway, Hyprland and other wlroots compositors use Fcitx5's virtual keyboard with no permission prompt. X11 uses XTest without this option."
 
 #: src/settings/general_tab.cpp:159
 msgid "Bật A11y"

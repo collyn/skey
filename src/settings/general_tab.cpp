@@ -141,7 +141,7 @@ void GeneralTab::setupUI() {
   enableNativeCheck_ =
       new QCheckBox(T("Bật Native trên Wayland"), checkFrame);
   enableNativeCheck_->setToolTip(T(
-      "Cho phép Native mở hộp thoại xin quyền portal trên Wayland. X11 dùng XTest mà không cần bật tùy chọn này."));
+      "Cho phép Native trên Wayland: KDE/GNOME mở hộp thoại xin quyền portal (Libei); Sway, Hyprland và các compositor wlroots khác dùng bàn phím ảo của Fcitx5, không cần xin quyền. X11 dùng XTest mà không cần bật tùy chọn này."));
   checkLayout->addWidget(enableNativeCheck_, 3, 1);
   checkLayout->addWidget(debugCheck_, 5, 1);
   connect(replaceUinputWithNativeCheck_, &QCheckBox::toggled, this,

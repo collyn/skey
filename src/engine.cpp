@@ -558,6 +558,17 @@ FCITX_DEFINE_LOG_CATEGORY(skey_log, "skey");
 #define SKEY_DEBUG() SKeyLogger()
 #define SKEY_INFO() SKeyLogger()
 
+static bool isFrontendName(const fcitx::InputContext *ic, const char *name) {
+  const char *frontend = ic->frontend();
+  return frontend && std::strcmp(frontend, name) == 0;
+}
+
+// Fcitx5's own text-input frontend: "wayland" on input-method-v1 (KWin),
+// "wayland_v2" on input-method-v2 (wlroots family).
+static bool isWaylandImFrontend(const fcitx::InputContext *ic) {
+  return isFrontendName(ic, "wayland") || isFrontendName(ic, "wayland_v2");
+}
+
 bool SKeyState::tryX11ForwardedReplacement(int deleteLen,
                                           const std::string &text,
                                           int finalLen,
@@ -633,11 +644,33 @@ bool SKeyState::tryX11ForwardedReplacement(int deleteLen,
     }
   }
   const auto ov = appDelayOverrideResolved();
-  const uint64_t delay = ov.preCommitMs >= 0
+  uint64_t delay = ov.preCommitMs >= 0
       ? static_cast<uint64_t>(std::min(ov.preCommitMs, skey::kMaxPreCommitMs)) * 1000
       : std::max<uint64_t>(15000, static_cast<uint64_t>(deleteLen) * 4000);
+  // wlroots text-input apps: the virtual-keyboard Backspaces and the
+  // input-method commit reach the app on different objects.  GTK4 and
+  // Firefox applied a commit sent right after the keys BEFORE them, and a
+  // commit carrying the serial from before the app's post-delete update is
+  // dropped (nested Sway 1.11, 2026-11-20).  Commit once the app's push
+  // shows the deletion — Fcitx5 has then taken the new serial.  Apps
+  // without surrounding text keep the fixed settle, during which the event
+  // loop still picks up the new serial.
+  if (std::string_view(route.reason) == "wlroots-virtual-keyboard" &&
+      isFrontendName(ic_, "wayland_v2") && edit.sym() == FcitxKey_BackSpace &&
+      ov.preCommitMs < 0) {
+    if (uinputAckUnavailable_ &&
+        now(CLOCK_MONOTONIC) >= uinputAckUnavailableDeadlineUsec_)
+      uinputAckUnavailable_ = false;
+    if (!uinputAckUnavailable_ && surrounding.isValid() &&
+        uinputDeleteAck_.start(surrounding.text(), surrounding.cursor(),
+                               surrounding.anchor(), oldWord,
+                               static_cast<unsigned>(deleteLen),
+                               now(CLOCK_MONOTONIC))) {
+      delay = skey::UinputDeleteAck::pollUsec;
+    }
+  }
   engine_->noteAppSleep(appProgram(), false, delay);
-  SKEY_DEBUG() << "Uinput: X11 " << ic_->frontend()
+  SKEY_DEBUG() << "Uinput: " << (isWayland() ? "wlroots " : "X11 ") << ic_->frontend()
                << (selectAll ? " forward Ctrl+A=" : forwardSelect ? " forward Shift+Left=" : " forward BS=")
                << deleteLen
                << ", settle " << delay / 1000 << "ms reason=" << route.reason;
@@ -881,7 +914,12 @@ SKeyState::EditRoute SKeyState::editRoute(bool injectedOnly) const {
   if (uinputRequest_ && (uinputDeleting_ || uinputSettling_))
     return {requestChannel_, "transaction-pinned"};
   const auto mode = effectiveMode();
-  const bool native = !nativeUnavailable_ && (mode == SKeyOutputMode::Native ||
+  // wlroots-family compositors have no Libei portal.  Native rides Fcitx5's
+  // own forwardKey there (its virtual keyboard on input-method-v2, the app's
+  // module over D-Bus); paths that need an injector fall back to uinput.
+  const bool wlrootsForward = mode == SKeyOutputMode::Native &&
+                              !isNativeX11() && engine_->wlrootsNative();
+  const bool native = !wlrootsForward && !nativeUnavailable_ && (mode == SKeyOutputMode::Native ||
       (isNativeX11() && mode == SKeyOutputMode::SurroundingText &&
        (!addressBarModesAvailable() || engine_->config().chromiumAddressBarMode.value() == SKeyChromiumAddressBarMode::Auto) &&
        (hasAppModeOverride_ ? appModeOverride_ : engine_->config().outputMode.value()) == SKeyOutputMode::Auto &&
@@ -892,6 +930,14 @@ SKeyState::EditRoute SKeyState::editRoute(bool injectedOnly) const {
   const EditChannel fallback = native ? EditChannel::Native : EditChannel::Uinput;
   auto keep = [fallback](const char *reason) { return EditRoute{fallback, reason}; };
   if (injectedOnly) return keep(native ? "native-configured" : "uinput-configured");
+  if (wlrootsForward) {
+    const std::string_view frontend(ic_->frontend());
+    // wayland_v2 = Fcitx5 on input-method-v2, forwarding through its
+    // virtual keyboard; D-Bus clients synthesize the keys in the app.
+    if (frontend == "wayland_v2" || frontend == "dbus")
+      return {EditChannel::FcitxForward, "wlroots-virtual-keyboard"};
+    return keep("wlroots-frontend-needs-injector");
+  }
   if (isWayland()) return keep("wayland-input");
   if (!isNativeX11()) return keep("xwayland-input");
   const auto support = skey::forwardedKeySupport(inputField());
@@ -1584,7 +1630,7 @@ void SKeyEngine::setupTrayMenu() {
   omNative_.connect<SimpleAction::Activated>([this](InputContext *) {
     if (waylandSession() && !config_.enableNative.value()) return;
     setOutputMode(SKeyOutputMode::Native);
-    native_.start();
+    if (!wlrootsNative()) native_.start(); // wlroots needs no portal
   });
 
   omAction_.setShortText(_("Output Mode"));
@@ -1757,6 +1803,21 @@ void SKeyEngine::setOutputMode(SKeyOutputMode mode) {
   updateMenuActions();
 }
 
+bool SKeyEngine::wlrootsNative() {
+  if (!wlrootsNative_) {
+    const char *desktop = getenv("XDG_CURRENT_DESKTOP");
+    // KDE/GNOME keep Libei even if a compositor plugin someday adds the
+    // protocols; elsewhere the registry decides.
+    wlrootsNative_ = waylandSession() &&
+                     !skey::desktopUsesLibei(desktop ? desktop : "") &&
+                     skey::compositorHasInputMethodKeyboard();
+    SKEY_INFO() << "Native: wlroots virtual keyboard "
+                << (*wlrootsNative_ ? "available" : "unavailable")
+                << " (desktop=" << (desktop ? desktop : "") << ")";
+  }
+  return *wlrootsNative_;
+}
+
 bool SKeyEngine::isSurrDeleteBrokenApp(const std::string &prog) const {
   return !prog.empty() && surrDeleteBrokenApps_.count(prog) > 0;
 }
@@ -1829,7 +1890,9 @@ void SKeyEngine::updateMenuActions() {
   omMenu_.addAction(&omPreedit_);
   if (!replace && nativeEnabled) omMenu_.addAction(&omNative_);
   if (replace && !nativeEnabled) omMenu_.removeAction(&omNative_);
-  omNative_.setShortText(replace ? _("Native") : _("Native (XTest/Libei)"));
+  omNative_.setShortText(replace ? _("Native")
+                         : waylandSession() && wlrootsNative() ? _("Native (wlroots)")
+                                                               : _("Native (XTest/Libei)"));
   auto om = config_.outputMode.value();
   if (replace && om == SKeyOutputMode::Uinput) om = SKeyOutputMode::Native;
   omAuto_.setChecked(om == SKeyOutputMode::Auto);
@@ -3723,10 +3786,6 @@ std::optional<bool> SKeyState::detectGeckoApp() const {
 // Frontend-name comparison that works on every fcitx5 release: the newer
 // InputContext::frontendName() API is not available in older headers (the
 // CI builds against a release where frontend() is the only accessor).
-static bool isFrontendName(const fcitx::InputContext *ic, const char *name) {
-  const char *frontend = ic->frontend();
-  return frontend && std::strcmp(frontend, name) == 0;
-}
 
 // fcitx5's own Wayland frontend turns a character delete into BYTES on ITS
 // copy of the surrounding text (WaylandIMInputContextV1/V2::
@@ -3758,7 +3817,7 @@ bool SKeyState::waylandNativeSurroundingProbe() const {
   // D-Bus frontend may still expose a readable snapshot, but Telegram and
   // similar Qt clients can ignore deleteSurroundingText(); treating that
   // snapshot as a writable API makes held Backspace appear to do nothing.
-  return isWayland() && isFrontendName(ic_, "wayland") &&
+  return isWayland() && isWaylandImFrontend(ic_) &&
          !isChromiumCached() && !isTerminalAppCached();
 }
 
@@ -8992,7 +9051,7 @@ void SKeyState::surroundingCommit(const std::string &oldComposed,
         // (see staleDeleteSpansSameBytes).
         const bool staleButWayland =
             cacheStale && isWayland() && !gnomeRelayContext() &&
-            (!isFrontendName(ic_, "wayland") ||
+            (!isWaylandImFrontend(ic_) ||
              staleDeleteSpansSameBytes(surrounding, deleteLen, deletedPart));
         if ((!surrounding.isValid() ||
              surrounding.cursor() < static_cast<unsigned int>(deleteLen) ||

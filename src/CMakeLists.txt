@@ -16,6 +16,7 @@ set(SKEY_SOURCES
     a11y_monitor.cpp
     icon_resolver.cpp
     x11_app_name.cpp
+    wlroots_probe.cpp
 )
 
 # Find dbus-1 for AT-SPI2 accessibility monitoring, and xcb for the
@@ -24,6 +25,9 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(DBUS REQUIRED dbus-1)
 pkg_check_modules(XCB REQUIRED xcb)
 pkg_check_modules(NATIVE_X11 REQUIRED IMPORTED_TARGET x11 xtst)
+# Native mode on wlroots-family compositors: detect input-method-v2 plus
+# virtual-keyboard (Fcitx5's own Wayland frontend already needs it).
+pkg_check_modules(WAYLAND_CLIENT QUIET IMPORTED_TARGET wayland-client)
 
 add_library(skey MODULE ${SKEY_SOURCES})
 target_link_libraries(skey
@@ -242,4 +246,18 @@ if(LIBEI_FOUND AND LIBPORTAL_FOUND)
     endforeach()
 else()
     message(WARNING "Libei backend disabled: requires libei >= 1.0 and libportal >= 0.7.1")
+endif()
+
+if(WAYLAND_CLIENT_FOUND)
+    message(STATUS "wlroots Native backend enabled (wayland-client ${WAYLAND_CLIENT_VERSION})")
+    set(SKEY_WAYLAND_TARGETS skey)
+    if(TARGET test_engine_performance)
+        list(APPEND SKEY_WAYLAND_TARGETS test_engine_performance)
+    endif()
+    foreach(target IN LISTS SKEY_WAYLAND_TARGETS)
+        target_compile_definitions(${target} PRIVATE SKEY_HAVE_WAYLAND_CLIENT=1)
+        target_link_libraries(${target} PkgConfig::WAYLAND_CLIENT)
+    endforeach()
+else()
+    message(WARNING "wlroots Native backend disabled: requires wayland-client")
 endif()

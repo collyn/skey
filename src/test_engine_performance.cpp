@@ -1159,6 +1159,89 @@ struct EnginePerformanceTest {
     // its copy of the surrounding text.  A copy that lags behind the screen
     // may ride the native delete only when it counts the same bytes: "th"
     // shown as "thây" turned "thấy" into "thâyấy" (Chrome, KDE Wayland).
+    // Native mode on a wlroots-family compositor rides Fcitx5's forwardKey
+    // (its virtual keyboard) and commits once the app's push shows the
+    // deletion; KDE/GNOME keep the Libei channel.
+    static void wlrootsNativeForward(Instance &instance) {
+        SKeyEngine engine(&instance, false);
+        engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
+        FocusGroup group("wayland:test", instance.inputContextManager());
+        auto setup = [&](TestInput &input, const char *frontend) -> SKeyState & {
+            input.frontendName = frontend;
+            input.setFocusGroup(&group);
+            input.setCapabilityFlags(CapabilityFlag::SurroundingText);
+            auto &state = *input.propertyFor(&engine.factory_);
+            state.cachedProgram_ = "gtk4-demo";
+            state.cachedIsChromium_ = state.cachedIsGeckoApp_ = state.cachedIsTerminalApp_ = 0;
+            state.modeCacheValid_ = true;
+            state.cachedMode_ = SKeyOutputMode::Native;
+            return state;
+        };
+        using Channel = SKeyState::EditChannel;
+
+        engine.wlrootsNative_ = false; // KDE/GNOME
+        {
+            TestInput input(instance.inputContextManager(), "gtk4-demo");
+            auto &state = setup(input, "wayland");
+            check(state.editRoute().channel == Channel::Native,
+                  "KDE/GNOME Native keeps the Libei channel");
+        }
+        engine.wlrootsNative_ = true;
+        {
+            TestInput input(instance.inputContextManager(), "gtk4-demo");
+            auto &state = setup(input, "xim");
+            check(state.editRoute().channel == Channel::Uinput,
+                  "wlroots Native without an IM key channel falls back to uinput");
+        }
+        {
+            TestInput input(instance.inputContextManager(), "gtk4-demo");
+            auto &state = setup(input, "dbus");
+            check(state.editRoute().channel == Channel::FcitxForward,
+                  "wlroots Native: D-Bus clients take the ordered forwardKey");
+        }
+        TestInput input(instance.inputContextManager(), "gtk4-demo");
+        auto &state = setup(input, "wayland_v2");
+        check(state.editRoute().channel == Channel::FcitxForward &&
+                  std::string_view(state.editRoute().reason) == "wlroots-virtual-keyboard",
+              "wlroots Native routes through Fcitx5's virtual keyboard");
+        check(state.editRoute(true).channel == Channel::Uinput,
+              "wlroots Native: injector-only paths use uinput, never the portal");
+        int uinputCalls = 0;
+        state.uinputTestReady_ = true;
+        state.uinputTestSend_ = [&](int, uint32_t, uint32_t) { ++uinputCalls; return true; };
+
+        input.surroundingText().setText("xin thay", 8, 8);
+        input.updateSurroundingText();
+        state.viet_.setRawInput("thay");
+        state.committedLen_ = 4;
+        KeyEvent tone(&input, Key(FcitxKey_a)); // thay + a -> thây
+        state.keyEvent(tone);
+        int bsPress = 0;
+        for (const auto &f : input.forwarded)
+            if (f.key.sym() == FcitxKey_BackSpace && !f.release) ++bsPress;
+        check(tone.accepted() && bsPress == 2 && input.deleteCalls == 0 && uinputCalls == 0,
+              "wlroots replacement forwards two Backspaces, no native delete or uinput");
+        check(input.commits.empty() && state.uinputDeleteAck_.active(),
+              "wlroots replacement waits for the app to show the deletion");
+
+        // The app has not applied the keys yet: the commit must hold.
+        auto stopAt = [&](uint64_t usec) {
+            auto stop = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + usec, 1,
+                [&](EventSourceTime *, uint64_t) { instance.eventLoop().exit(); return true; });
+            auto push = instance.eventLoop().addTimeEvent(CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 6000, 1,
+                [&](EventSourceTime *, uint64_t) {
+                    check(input.commits.empty(), "no commit before the app shows the deletion");
+                    input.surroundingText().setText("xin th", 6, 6);
+                    input.updateSurroundingText();
+                    return true;
+                });
+            instance.eventLoop().exec();
+        };
+        stopAt(40000);
+        check(input.commits == std::vector<std::string>{"ây"} && !state.uinputDeleting_,
+              "wlroots replacement commits after the acknowledged deletion");
+    }
+
     static void waylandStaleByteDelete(Instance &instance) {
         SKeyEngine engine(&instance, false);
         engine.a11yMonitor_ = std::make_unique<A11yMonitor>();
@@ -1175,6 +1258,8 @@ struct EnginePerformanceTest {
              "wayland frontend: a stale copy too short for the delete never deletes natively"},
             {"wayland", "tha", "thay", "thây", true,
              "wayland frontend: a stale copy counting the same bytes keeps the native delete"},
+            {"wayland_v2", "th", "thây", "thấy", false,
+             "wayland_v2 frontend (wlroots) converts on its copy the same way"},
             {"dbus", "th", "thây", "thấy", true,
              "dbus frontend: the app converts the count itself, stale copy keeps native"},
         };
@@ -5013,6 +5098,10 @@ int main(int argc, char **argv) {
     {
         fcitx::Instance instance(argc, argv);
         fcitx::EnginePerformanceTest::waylandStaleByteDelete(instance);
+    }
+    {
+        fcitx::Instance instance(argc, argv);
+        fcitx::EnginePerformanceTest::wlrootsNativeForward(instance);
     }
     for (bool replay : {false, true})
         for (bool timestamped : {false, true}) {
